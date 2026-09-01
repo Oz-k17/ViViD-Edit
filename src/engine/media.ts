@@ -35,8 +35,9 @@ export function uid(prefix: string): string {
 
 // ---------- IndexedDB ----------
 
-// アプリ名を変えてもキーは変えない。変えると保存済みの素材が全部見えなくなるため。
-const DB_NAME = 'tateyoko-studio';
+const DB_NAME = 'vivid-edit';
+/** アプリ名を変える前に使っていた DB。中身があれば引き継いでから捨てる。 */
+const LEGACY_DB_NAME = 'tateyoko-studio';
 const STORE = 'assets';
 
 function openDb(): Promise<IDBDatabase | null> {
@@ -87,6 +88,49 @@ async function dbAll(): Promise<StoredAsset[]> {
     request.onsuccess = () => resolve(request.result as StoredAsset[]);
     request.onerror = () => resolve([]);
   });
+}
+
+/**
+ * 旧名の DB に残っている素材を読む。
+ * open は存在しない DB を作ってしまうので、onupgradeneeded が走ったら
+ * 「元々無かった」とみなして作った分を消す。
+ */
+function legacyRecords(): Promise<StoredAsset[]> {
+  return new Promise((resolve) => {
+    if (typeof indexedDB === 'undefined') return resolve([]);
+    let created = false;
+    const request = indexedDB.open(LEGACY_DB_NAME);
+    request.onupgradeneeded = () => {
+      created = true;
+    };
+    request.onerror = () => resolve([]);
+    request.onsuccess = () => {
+      const db = request.result;
+      if (created || !db.objectStoreNames.contains(STORE)) {
+        db.close();
+        if (created) indexedDB.deleteDatabase(LEGACY_DB_NAME);
+        return resolve([]);
+      }
+      const tx = db.transaction(STORE, 'readonly');
+      const all = tx.objectStore(STORE).getAll();
+      all.onsuccess = () => {
+        db.close();
+        resolve(all.result as StoredAsset[]);
+      };
+      all.onerror = () => {
+        db.close();
+        resolve([]);
+      };
+    };
+  });
+}
+
+/** 旧 DB の素材を新しい DB へ移す（アプリ名変更にともなう一度きりの処理）。 */
+async function migrateLegacyAssets(): Promise<void> {
+  const records = await legacyRecords();
+  if (records.length === 0) return;
+  for (const record of records) await dbPut(record);
+  if (typeof indexedDB !== 'undefined') indexedDB.deleteDatabase(LEGACY_DB_NAME);
 }
 
 // ---------- 解析 ----------
@@ -297,6 +341,7 @@ class MediaRegistry {
   async restore(): Promise<void> {
     if (this.restored) return;
     this.restored = true;
+    await migrateLegacyAssets();
     for (const record of await dbAll()) {
       const { blob, ...rest } = record;
       this.assets.set(rest.id, { ...rest, url: URL.createObjectURL(blob) });

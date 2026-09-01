@@ -7,6 +7,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { setLang, type Lang } from '../i18n';
 import { uid } from '../model/factory';
 import type { AspectKey, Sequence, TextProps } from '../model/types';
+import { migrateStorageKey } from './storage';
 
 export type ShortcutAction =
   | 'playPause'
@@ -94,9 +95,12 @@ export interface LayoutTemplate {
 
 export type Template = TextTemplate | LayoutTemplate;
 
-// 保存キーは据え置き（変えると設定とテンプレートが失われる）。
-const SETTINGS_KEY = 'tateyoko.settings';
-const TEMPLATES_KEY = 'tateyoko.templates';
+const SETTINGS_KEY = 'vivid.settings';
+const TEMPLATES_KEY = 'vivid.templates';
+
+// 旧名で保存されていた分を引き継ぐ（アプリ名変更にともなう一度きりの処理）。
+migrateStorageKey('tateyoko.settings', SETTINGS_KEY);
+migrateStorageKey('tateyoko.templates', TEMPLATES_KEY);
 
 function load<T>(key: string, fallback: T): T {
   try {

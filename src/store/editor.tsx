@@ -18,11 +18,14 @@ import {
 } from 'react';
 import { createProject } from '../model/factory';
 import { ASPECT_PRESETS, type AspectKey, type Project, type Sequence } from '../model/types';
+import { migrateStorageKey } from './storage';
 
 const HISTORY_LIMIT = 80;
 const COALESCE_MS = 700;
-// 保存キーは据え置き（変えると編集中のプロジェクトが失われる）。
-const PROJECT_KEY = 'tateyoko.project';
+const PROJECT_KEY = 'vivid.project';
+
+// 旧名で保存されていた分を引き継ぐ（アプリ名変更にともなう一度きりの処理）。
+migrateStorageKey('tateyoko.project', PROJECT_KEY);
 
 interface State {
   project: Project;
