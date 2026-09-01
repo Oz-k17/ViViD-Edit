@@ -5,11 +5,15 @@ import { player } from '../../engine/player';
 import { renderFrame, type Rect } from '../../engine/renderer';
 import { clipAtTime, clipsOnTrack, splitAt } from '../../model/ops';
 import { clipEnd, type Clip, type Sequence } from '../../model/types';
+import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
 
-/** プレビューは実解像度で描くと重いので、長辺 720px 程度に落として描画する。 */
-function previewSize(sequence: Sequence) {
-  const scale = Math.min(1, 720 / Math.max(sequence.width, sequence.height));
+/**
+ * プレビューを描く解像度。実解像度のまま描くと重いので落とす。
+ * 素材が重くて再生がカクつくときは、設定でさらに下げられる（書き出しには影響しない）。
+ */
+function previewSize(sequence: Sequence, longEdge: number) {
+  const scale = Math.min(1, longEdge / Math.max(sequence.width, sequence.height));
   return { width: Math.round(sequence.width * scale), height: Math.round(sequence.height * scale) };
 }
 
@@ -28,6 +32,7 @@ type Drag =
 
 export function PreviewStage() {
   const { sequence, selection, setSelection, apply } = useEditor();
+  const { settings } = useApp();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const boundsRef = useRef<Map<string, Rect>>(new Map());
   const dragRef = useRef<Drag>({ kind: 'none' });
@@ -37,7 +42,10 @@ export function PreviewStage() {
   const latest = useRef({ sequence, selection, guides });
   latest.current = { sequence, selection, guides };
 
-  const size = useMemo(() => previewSize(sequence), [sequence.width, sequence.height]);
+  const size = useMemo(
+    () => previewSize(sequence, settings.previewQuality),
+    [sequence.width, sequence.height, settings.previewQuality],
+  );
 
   useEffect(() => {
     player.update(sequence);
@@ -45,8 +53,15 @@ export function PreviewStage() {
 
   useEffect(() => {
     const sources = player.renderSources();
+    // getContext は毎フレーム呼ばず一度だけ取る。
+    let ctx: CanvasRenderingContext2D | null = null;
+    let ctxOwner: HTMLCanvasElement | null = null;
     player.start((time) => {
-      const ctx = canvasRef.current?.getContext('2d', { alpha: false });
+      const canvas = canvasRef.current;
+      if (canvas && canvas !== ctxOwner) {
+        ctx = canvas.getContext('2d', { alpha: false });
+        ctxOwner = canvas;
+      }
       const { sequence: seq, selection: sel, guides: g } = latest.current;
       if (ctx) {
         boundsRef.current = renderFrame(ctx, seq, time, sources, { guides: g, selectedIds: sel });
@@ -184,10 +199,27 @@ export function PreviewStage() {
 
 function Transport({ guides, onToggleGuides }: { guides: boolean; onToggleGuides: () => void }) {
   const { sequence, apply, selection } = useEditor();
-  const time = usePlayerTime();
   const playing = usePlayerPlaying();
   const duration = player.duration;
   const frame = 1 / (sequence.fps || 30);
+  const timeRef = useRef<HTMLSpanElement>(null);
+  const scrubRef = useRef<HTMLInputElement>(null);
+
+  // 時刻の表示は毎フレーム更新が要るが、React を通すと再描画のたびに
+  // ツリー全体を作り直すことになるので、DOM を直接書き換える。
+  useEffect(
+    () =>
+      player.subscribeFrame((t) => {
+        if (timeRef.current) timeRef.current.textContent = formatTime(t, true, sequence.fps);
+        const scrub = scrubRef.current;
+        // つまみを掴んでいる間は上書きしない。
+        if (scrub && document.activeElement !== scrub) {
+          scrub.max = String(Math.max(0.01, player.duration));
+          scrub.value = String(Math.min(t, player.duration));
+        }
+      }),
+    [sequence.fps],
+  );
 
   const boundaries = useMemo(() => {
     const points = new Set<number>([0]);
@@ -201,11 +233,12 @@ function Transport({ guides, onToggleGuides }: { guides: boolean; onToggleGuides
   }, [sequence]);
 
   const jump = (direction: -1 | 1) => {
+    const now = player.time;
     if (direction < 0) {
-      const previous = [...boundaries].reverse().find((b) => b < time - 0.05);
+      const previous = [...boundaries].reverse().find((b) => b < now - 0.05);
       player.seek(previous ?? 0);
     } else {
-      const next = boundaries.find((b) => b > time + 0.05);
+      const next = boundaries.find((b) => b > now + 0.05);
       player.seek(next ?? duration);
     }
   };
@@ -214,18 +247,19 @@ function Transport({ guides, onToggleGuides }: { guides: boolean; onToggleGuides
     <div className="transport">
       <div className="transport-scrub">
         <input
+          ref={scrubRef}
           type="range"
           min={0}
           max={Math.max(0.01, duration)}
           step={0.01}
-          value={Math.min(time, duration)}
+          defaultValue={0}
           onChange={(e) => player.seek(Number(e.target.value))}
           aria-label="再生位置"
         />
       </div>
       <div className="transport-row">
         <span className="timecode">
-          {formatTime(time, true, sequence.fps)} <em>/ {formatTime(duration)}</em>
+          <span ref={timeRef}>{formatTime(player.time, true, sequence.fps)}</span> <em>/ {formatTime(duration)}</em>
         </span>
         <div className="transport-buttons">
           <button type="button" title="前の継ぎ目へ" onClick={() => jump(-1)}>

@@ -16,7 +16,6 @@ import { clipFromAsset } from '../../model/factory';
 import { clipEnd, TRANSITION_META, type Clip, type Sequence, type Track } from '../../model/types';
 import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
-import { usePlayerTime } from './PreviewStage';
 
 export const MEDIA_DND_TYPE = 'application/x-vivid-media';
 const MIN_PPS = 6;
@@ -423,6 +422,9 @@ function ClipBlock({
   );
 }
 
+/** 追従スクロールの確認間隔（ミリ秒）。毎フレームやると同期レイアウトを起こす。 */
+const FOLLOW_CHECK_MS = 250;
+
 function Playhead({
   pps,
   follow,
@@ -432,21 +434,30 @@ function Playhead({
   follow: boolean;
   scrollRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  const time = usePlayerTime();
-  const x = time * pps;
+  const ref = useRef<HTMLDivElement>(null);
 
+  // 再生ヘッドは毎フレーム動くので、React の再描画ではなく transform を直接書き換える。
+  // 追従スクロールは scrollLeft を読む＝同期レイアウトが走るため、毎フレームではなく間引く。
   useEffect(() => {
-    if (!follow) return;
-    const box = scrollRef.current;
-    if (!box) return;
-    const margin = 80;
-    if (x < box.scrollLeft + margin || x > box.scrollLeft + box.clientWidth - margin) {
-      box.scrollLeft = Math.max(0, x - box.clientWidth / 2);
-    }
-  }, [x, follow, scrollRef]);
+    let lastCheck = 0;
+    return player.subscribeFrame((time) => {
+      const x = time * pps;
+      if (ref.current) ref.current.style.transform = `translateX(${x}px)`;
+      if (!follow) return;
+      const now = performance.now();
+      if (now - lastCheck < FOLLOW_CHECK_MS) return;
+      lastCheck = now;
+      const box = scrollRef.current;
+      if (!box) return;
+      const margin = 80;
+      if (x < box.scrollLeft + margin || x > box.scrollLeft + box.clientWidth - margin) {
+        box.scrollLeft = Math.max(0, x - box.clientWidth / 2);
+      }
+    });
+  }, [pps, follow, scrollRef]);
 
   return (
-    <div className="tl-playhead" style={{ transform: `translateX(${x}px)` }}>
+    <div className="tl-playhead" ref={ref} style={{ transform: `translateX(${player.time * pps}px)` }}>
       <span className="tl-playhead-grip" />
     </div>
   );

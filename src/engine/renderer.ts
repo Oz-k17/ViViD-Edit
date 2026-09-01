@@ -126,6 +126,53 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.closePath();
 }
 
+// ---------- 背景ぼかし ----------
+
+/**
+ * 背景のぼかしを作る。
+ *
+ * 全解像度のまま ctx.filter = blur(...) をかけると、毎フレームその計算が走って
+ * プレビューのコマ落ちの原因になる。ぼかした絵はもともと細部が無いので、
+ * 小さく描いてからぼかし、拡大して使っても見た目はほとんど変わらない。
+ * ぼかし半径も同じ比率で縮めるので結果は一致する。
+ */
+const BACKDROP_MAX_EDGE = 160;
+let backdropCanvas: HTMLCanvasElement | null = null;
+
+function blurredBackdrop(
+  frame: CanvasImageSource,
+  targetWidth: number,
+  targetHeight: number,
+  blurPx: number,
+): HTMLCanvasElement | null {
+  if (targetWidth <= 0 || targetHeight <= 0) return null;
+  const scale = Math.min(1, BACKDROP_MAX_EDGE / Math.max(targetWidth, targetHeight));
+  const w = Math.max(1, Math.round(targetWidth * scale));
+  const h = Math.max(1, Math.round(targetHeight * scale));
+
+  if (!backdropCanvas) backdropCanvas = document.createElement('canvas');
+  const canvas = backdropCanvas;
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  ctx.filter = `blur(${Math.max(1, blurPx * scale).toFixed(2)}px) brightness(0.6) saturate(1.15)`;
+  try {
+    // ぼかしで端が透けないよう、少しはみ出させて描く。
+    const bleed = Math.max(2, blurPx * scale * 2);
+    ctx.drawImage(frame, -bleed, -bleed, w + bleed * 2, h + bleed * 2);
+  } catch {
+    return null;
+  }
+  ctx.filter = 'none';
+  return canvas;
+}
+
 // ---------- 映像 ----------
 
 interface DrawContext {
@@ -167,8 +214,10 @@ function drawVisualClip(
       const zoom = clip.bgBlur.zoom || 1;
       const bw = backdrop.w * zoom;
       const bh = backdrop.h * zoom;
-      ctx.filter = `blur(${(dc.sequence.width * clip.bgBlur.strength * dc.pixelScale).toFixed(2)}px) brightness(0.6) saturate(1.15)`;
-      ctx.drawImage(frame, backdrop.x - (bw - backdrop.w) / 2, backdrop.y - (bh - backdrop.h) / 2, bw, bh);
+      const blurred = blurredBackdrop(frame, bw, bh, dc.sequence.width * clip.bgBlur.strength);
+      if (blurred) {
+        ctx.drawImage(blurred, backdrop.x - (bw - backdrop.w) / 2, backdrop.y - (bh - backdrop.h) / 2, bw, bh);
+      }
     }
 
     ctx.filter = effectFilter(clip.effects, dc.pixelScale);

@@ -29,6 +29,8 @@ export class Player {
   private lastNow = 0;
   private timeListeners = new Set<Listener>();
   private stateListeners = new Set<Listener>();
+  /** 毎フレーム呼ぶ購読。React の再描画を挟まず DOM を直接書き換える用。 */
+  private frameListeners = new Set<(time: number) => void>();
   private onFrame: ((time: number) => void) | null = null;
 
   time = 0;
@@ -52,13 +54,16 @@ export class Player {
             next = this.duration;
             this.playing = false;
             this.emitState();
+            this.emitTime();
           }
         }
         this.time = next;
-        this.emitTime();
       }
       this.sync();
       this.onFrame?.(this.time);
+      // 再生中の時刻表示は React を通さない。毎フレーム再描画すると
+      // それだけでコマ落ちの原因になるため。
+      this.frameListeners.forEach((fn) => fn(this.time));
       this.raf = requestAnimationFrame(tick);
     };
     this.raf = requestAnimationFrame(tick);
@@ -171,6 +176,9 @@ export class Player {
     const active = new Map<string, ActiveClip>();
     for (const entry of this.activeClips()) active.set(entry.clip.id, entry);
 
+    // トラックは毎フレーム find で探すと クリップ数 × トラック数 の走査になる。
+    const trackById = new Map(sequence.tracks.map((t) => [t.id, t]));
+
     for (const clip of sequence.clips) {
       if (clip.kind === 'text' || clip.kind === 'image') continue;
       const el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
@@ -191,7 +199,7 @@ export class Player {
         continue;
       }
 
-      const track = sequence.tracks.find((t) => t.id === clip.trackId);
+      const track = trackById.get(clip.trackId);
       const target = this.targetSourceTime(clip, this.time);
       const speed = Math.max(0.0625, Math.min(16, clip.speed || 1));
       if (el.playbackRate !== speed) el.playbackRate = speed;
@@ -245,6 +253,14 @@ export class Player {
   subscribeTime = (fn: Listener) => {
     this.timeListeners.add(fn);
     return () => this.timeListeners.delete(fn);
+  };
+
+  /** 毎フレームの通知。React の state ではなく DOM を直接更新する用途に使う。 */
+  subscribeFrame = (fn: (time: number) => void) => {
+    this.frameListeners.add(fn);
+    return () => {
+      this.frameListeners.delete(fn);
+    };
   };
 
   subscribeState = (fn: Listener) => {

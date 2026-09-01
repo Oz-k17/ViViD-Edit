@@ -5,6 +5,7 @@ import { Field, Panel, Segmented, Toggle } from '../components/ui';
 import { ASPECT_PRESETS } from '../model/types';
 import {
   SHORTCUT_LABELS,
+  type PreviewQuality,
   shortcutFromEvent,
   shortcutLabel,
   useApp,
@@ -59,6 +60,22 @@ export default function SettingsPage() {
             />
           </Field>
           <Toggle label="タイムラインでクリップの端に吸着する" checked={settings.snap} onChange={(snap) => updateSettings({ snap })} />
+
+          <Field label="プレビューの画質" hint="書き出しには影響しません">
+            <Segmented
+              value={String(settings.previewQuality)}
+              options={[
+                { value: '1080', label: '高' },
+                { value: '720', label: '標準' },
+                { value: '480', label: '軽い' },
+              ]}
+              onChange={(value) => updateSettings({ previewQuality: Number(value) as PreviewQuality })}
+            />
+          </Field>
+          <p className="muted small">
+            重い素材で再生がカクつくときは「軽い」にすると滑らかになります。プレビューの表示だけが粗くなり、
+            書き出される動画の画質は変わりません。
+          </p>
         </Panel>
 
         <Panel title="書き出しの既定値">

@@ -300,6 +300,39 @@ function probeAudio(url: string): Promise<number> {
   return withDeadline<number>(work, () => 0);
 }
 
+// ---------- 再生要素の置き場 ----------
+
+/**
+ * 再生用の <video> / <audio> を置いておく、画面には見えない場所。
+ *
+ * DOM から切り離したままの <video> は「表示されていない」と見なされ、
+ * ブラウザがデコードを間引くことがある（プレビューがカクつく原因になる）。
+ * 完全に隠すと同じ扱いになるので、ごく小さく・ほぼ透明にして
+ * 「表示はされている」状態を保つ。
+ */
+let stage: HTMLElement | null = null;
+
+function mediaStage(): HTMLElement | null {
+  if (typeof document === 'undefined') return null;
+  if (stage?.isConnected) return stage;
+  stage = document.createElement('div');
+  stage.dataset.role = 'media-stage';
+  stage.setAttribute('aria-hidden', 'true');
+  Object.assign(stage.style, {
+    position: 'fixed',
+    left: '0',
+    top: '0',
+    width: '2px',
+    height: '2px',
+    overflow: 'hidden',
+    opacity: '0.01',
+    pointerEvents: 'none',
+    zIndex: '-1',
+  });
+  document.body.appendChild(stage);
+  return stage;
+}
+
 // ---------- レジストリ ----------
 
 class MediaRegistry {
@@ -424,6 +457,7 @@ class MediaRegistry {
       el.disablePictureInPicture = true;
     }
     el.load();
+    mediaStage()?.appendChild(el);
     this.elements.set(key, el);
     return el;
   }
@@ -446,6 +480,7 @@ class MediaRegistry {
     el.pause();
     el.removeAttribute('src');
     el.load();
+    el.remove();
     this.elements.delete(key);
   }
 

@@ -52,9 +52,13 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
 
 export type LayoutMode = 'desktop' | 'mobile';
 
+/** プレビューを描く解像度（長辺の px）。書き出しの画質には影響しない。 */
+export type PreviewQuality = 480 | 720 | 1080;
+
 export interface Settings {
   lang: Lang;
   layout: LayoutMode;
+  previewQuality: PreviewQuality;
   exportQuality: number;
   exportAspect: AspectKey;
   exportFormat: 'auto' | 'mp4' | 'webm';
@@ -70,6 +74,7 @@ function guessLayout(): LayoutMode {
 export const DEFAULT_SETTINGS: Settings = {
   lang: 'ja',
   layout: 'desktop',
+  previewQuality: 720,
   exportQuality: 1080,
   exportAspect: '9:16',
   exportFormat: 'auto',
