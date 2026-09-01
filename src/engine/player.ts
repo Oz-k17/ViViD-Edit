@@ -224,32 +224,36 @@ export class Player {
       audioGraph.setGain(el, silent ? 0 : clip.volume * env);
 
       if (this.playing) {
-        // 正なら進みすぎ、負なら遅れている。
-        const drift = el.currentTime - target;
-        const distance = Math.abs(drift);
+  const drift = el.currentTime - target;
+  const distance = Math.abs(drift);
+  const now = performance.now();
+  const cooldownActive =
+    now - (this.lastSeekAt.get(clip.id) ?? -Infinity) < SEEK_COOLDOWN_MS;
 
-        if (distance > DRIFT_SOFT_LIMIT) {
-          // カットを跨いだ直後など、大きく飛んでいる場合だけシークする。
-          const now = performance.now();
-          if (now - (this.lastSeekAt.get(clip.id) ?? -Infinity) > SEEK_COOLDOWN_MS) {
-            this.lastSeekAt.set(clip.id, now);
-            try {
-              el.currentTime = target;
-            } catch {
-              /* noop */
-            }
-          }
-          if (el.playbackRate !== speed) el.playbackRate = speed;
-        } else if (distance > DRIFT_IGNORE) {
-          // 小さなズレはシークせず、再生速度をわずかに変えて吸収する。
-          // シークと違ってデコードが途切れないので、映像が止まって見えない。
-          const adjusted = speed * (drift < 0 ? 1 + CATCH_UP_RATE : 1 - CATCH_UP_RATE);
-          if (el.playbackRate !== adjusted) el.playbackRate = adjusted;
-        } else if (el.playbackRate !== speed) {
-          el.playbackRate = speed;
-        }
+  if (distance > DRIFT_SOFT_LIMIT && !cooldownActive) {
+    // 大きく飛んでいて、かつシークしてよいタイミングのときだけシーク。
+    this.lastSeekAt.set(clip.id, now);
+    try {
+      el.currentTime = target;
+    } catch {
+      /* noop */
+    }
+    if (el.playbackRate !== speed) el.playbackRate = speed;
+  } else if (distance > DRIFT_IGNORE) {
+    // シークできない/しない間も、等倍に戻さず補正をかけ続ける。
+    // ズレが大きいほど強くかけることで、ソフトリミットに達する前に収束させる。
+    const strength = Math.min(1, distance / DRIFT_SOFT_LIMIT);
+    const rate =
+      CATCH_UP_RATE_MIN + (CATCH_UP_RATE_MAX - CATCH_UP_RATE_MIN) * strength;
+    const adjusted = speed * (drift < 0 ? 1 + rate : 1 - rate);
+    if (el.playbackRate !== adjusted) el.playbackRate = adjusted;
+  } else if (el.playbackRate !== speed) {
+    el.playbackRate = speed;
+  }
 
-        if (el.paused) void el.play().catch(() => undefined);
+  if (el.paused) void el.play().catch(() => undefined);
+}
+
       } else {
         if (!el.paused) el.pause();
         if (el.playbackRate !== speed) el.playbackRate = speed;
