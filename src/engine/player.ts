@@ -1,27 +1,33 @@
 /**
- * 再生エンジン。
- * 壁時計（performance.now）を基準にタイムライン時刻を進め、
- * 各クリップの <video> をそこへ追従させる。映像側の currentTime を基準にしないのは、
- * クリップをまたぐたびに時間が飛んで同期が崩れるため。
+ * 再生エンジン（マルチトラック）。
+ * 壁時計（performance.now）でタイムライン時刻を進め、各クリップの <video>/<audio> をそこへ追従させる。
+ * 映像側の currentTime を基準にすると、カットをまたぐたびに時間が飛んで同期が崩れるため。
  */
 
-import { audioGraph, fadeEnvelope } from './audio';
+import { audioGraph } from './audio';
 import { mediaRegistry } from './media';
-import type { RenderContext } from './renderer';
-import { clipAt, clipDuration, projectDuration, sourceTimeFor, type Clip, type Project } from '../types';
+import { fadeEnvelope, type RenderSources } from './renderer';
+import { clipAtTime, previousAdjacent, sequenceDuration } from '../model/ops';
+import { sourceTimeAt, type Clip, type Sequence } from '../model/types';
 
-/** 追従がこれ以上ズレたらシークし直す（秒）。 */
+/** これ以上ズレたらシークし直す（秒）。 */
 const DRIFT_TOLERANCE = 0.28;
-/** 次のクリップを何秒前から準備しておくか。 */
+/** 次のクリップを何秒前から頭出ししておくか。 */
 const PREROLL = 1.2;
 
 type Listener = () => void;
 
+interface ActiveClip {
+  clip: Clip;
+  /** トランジションで前のカットを引き延ばして鳴らしている状態。 */
+  trailing: boolean;
+}
+
 export class Player {
-  private project: Project | null = null;
+  private sequence: Sequence | null = null;
   private raf = 0;
   private lastNow = 0;
-  private listeners = new Set<Listener>();
+  private timeListeners = new Set<Listener>();
   private stateListeners = new Set<Listener>();
   private onFrame: ((time: number) => void) | null = null;
 
@@ -63,21 +69,18 @@ export class Player {
     this.raf = 0;
   }
 
-  /** プロジェクトが変わるたびに呼ぶ。要素の生成 / 破棄と尺の更新を行う。 */
-  update(project: Project) {
-    this.project = project;
-    this.duration = projectDuration(project);
+  /** シーケンスが変わるたびに呼ぶ。再生要素の生成 / 破棄と尺の更新。 */
+  update(sequence: Sequence) {
+    this.sequence = sequence;
+    this.duration = sequenceDuration(sequence);
     if (this.time > this.duration) this.time = this.duration;
 
     const live = new Set<string>();
-    for (const clip of project.clips) {
-      if (clip.kind !== 'video') continue;
-      live.add(clip.id);
-      mediaRegistry.mediaElement(clip.id, clip.mediaId);
-    }
-    if (project.music) {
-      live.add('music');
-      mediaRegistry.mediaElement('music', project.music.mediaId);
+    for (const clip of sequence.clips) {
+      if (clip.kind === 'video' || clip.kind === 'audio') {
+        live.add(clip.id);
+        mediaRegistry.mediaElement(clip.id, clip.mediaId);
+      }
     }
     for (const key of mediaRegistry.activeKeys()) {
       if (!live.has(key)) mediaRegistry.releaseElement(key);
@@ -85,7 +88,7 @@ export class Player {
   }
 
   play() {
-    if (!this.project || this.duration <= 0) return;
+    if (!this.sequence || this.duration <= 0) return;
     audioGraph.ensure();
     if (this.time >= this.duration - 0.01) this.time = 0;
     this.playing = true;
@@ -111,8 +114,8 @@ export class Player {
     this.emitTime();
   }
 
-  nudge(deltaSeconds: number) {
-    this.seek(this.time + deltaSeconds);
+  nudge(delta: number) {
+    this.seek(this.time + delta);
   }
 
   setLoop(on: boolean) {
@@ -121,127 +124,127 @@ export class Player {
   }
 
   private pauseAll() {
-    const project = this.project;
-    if (!project) return;
-    for (const clip of project.clips) {
-      const el = clip.kind === 'video' ? mediaRegistry.mediaElement(clip.id, clip.mediaId) : null;
-      if (el && !el.paused) el.pause();
-    }
-    if (project.music) {
-      const el = mediaRegistry.mediaElement('music', project.music.mediaId);
+    const sequence = this.sequence;
+    if (!sequence) return;
+    for (const clip of sequence.clips) {
+      const el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
       if (el && !el.paused) el.pause();
     }
   }
 
-  private syncClip(clip: Clip, active: boolean) {
-    const el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
-    if (!el) return;
-
-    if (!active) {
-      if (!el.paused) el.pause();
-      audioGraph.setGain(el, 0);
-      // 直前 / 直後のクリップは頭出ししておくと切り替わりが滑らか
-      const distance = clip.start - this.time;
-      if (distance > 0 && distance < PREROLL && Math.abs(el.currentTime - clip.in) > 0.1) {
-        try {
-          el.currentTime = clip.in;
-        } catch {
-          /* まだメタデータ待ち */
-        }
-      }
-      return;
-    }
-
-    const target = sourceTimeFor(clip, this.time);
-    const speed = Math.max(0.0625, Math.min(16, clip.speed || 1));
-    if (el.playbackRate !== speed) el.playbackRate = speed;
-
-    const dur = clipDuration(clip);
-    const env = fadeEnvelope(this.time - clip.start, dur, clip.fadeIn, clip.fadeOut);
-    audioGraph.setGain(el, clip.muted ? 0 : clip.volume * env);
-
-    if (this.playing) {
-      if (Math.abs(el.currentTime - target) > DRIFT_TOLERANCE) {
-        try {
-          el.currentTime = target;
-        } catch {
-          /* noop */
-        }
-      }
-      if (el.paused) void el.play().catch(() => undefined);
-    } else {
-      if (!el.paused) el.pause();
-      if (Math.abs(el.currentTime - target) > 0.02) {
-        try {
-          el.currentTime = target;
-        } catch {
-          /* noop */
-        }
+  /** その時刻に鳴っている / 映っているクリップ（トランジション中の前カットを含む）。 */
+  activeClips(time = this.time): ActiveClip[] {
+    const sequence = this.sequence;
+    if (!sequence) return [];
+    const out: ActiveClip[] = [];
+    for (const track of sequence.tracks) {
+      if (track.kind === 'text') continue;
+      const current = clipAtTime(sequence, track.id, time);
+      if (!current) continue;
+      out.push({ clip: current, trailing: false });
+      const transition = current.transitionIn;
+      if (
+        track.kind === 'video' &&
+        transition.type !== 'none' &&
+        transition.duration > 0 &&
+        time < current.start + transition.duration
+      ) {
+        const previous = previousAdjacent(sequence, current);
+        if (previous) out.push({ clip: previous, trailing: true });
       }
     }
+    return out;
   }
 
-  private syncMusic(project: Project) {
-    const music = project.music;
-    if (!music) return;
-    const el = mediaRegistry.mediaElement('music', music.mediaId);
-    if (!el) return;
-    const span = Math.max(0, music.out - music.in);
-    const local = this.time - music.start;
-    const inside = local >= 0 && (music.loop ? true : local < span);
-    if (!inside || this.duration <= 0) {
-      if (!el.paused) el.pause();
-      audioGraph.setGain(el, 0);
-      return;
-    }
-    const wrapped = music.loop && span > 0 ? local % span : local;
-    const target = music.in + wrapped;
-    const env = fadeEnvelope(wrapped, span, music.fadeIn, music.fadeOut);
-    audioGraph.setGain(el, music.volume * env);
-    if (this.playing) {
-      if (Math.abs(el.currentTime - target) > DRIFT_TOLERANCE) el.currentTime = target;
-      if (el.paused) void el.play().catch(() => undefined);
-    } else {
-      if (!el.paused) el.pause();
-      if (Math.abs(el.currentTime - target) > 0.02) el.currentTime = target;
-    }
+  private targetSourceTime(clip: Clip, time: number): number {
+    const asset = mediaRegistry.get(clip.mediaId);
+    const raw = sourceTimeAt(clip, time);
+    if (!clip.loop || !asset || asset.duration <= 0) return raw;
+    const span = Math.max(0.1, asset.duration - clip.sourceIn);
+    return clip.sourceIn + ((raw - clip.sourceIn) % span);
   }
 
   private sync() {
-    const project = this.project;
-    if (!project) return;
-    const active = clipAt(project, this.time);
-    for (const clip of project.clips) {
-      if (clip.kind !== 'video') continue;
-      this.syncClip(clip, active?.id === clip.id);
+    const sequence = this.sequence;
+    if (!sequence) return;
+
+    const active = new Map<string, ActiveClip>();
+    for (const entry of this.activeClips()) active.set(entry.clip.id, entry);
+
+    for (const clip of sequence.clips) {
+      if (clip.kind === 'text' || clip.kind === 'image') continue;
+      const el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
+      if (!el) continue;
+      const entry = active.get(clip.id);
+
+      if (!entry) {
+        if (!el.paused) el.pause();
+        audioGraph.setGain(el, 0);
+        const distance = clip.start - this.time;
+        if (distance > 0 && distance < PREROLL && Math.abs(el.currentTime - clip.sourceIn) > 0.1) {
+          try {
+            el.currentTime = clip.sourceIn;
+          } catch {
+            /* メタデータ待ち */
+          }
+        }
+        continue;
+      }
+
+      const track = sequence.tracks.find((t) => t.id === clip.trackId);
+      const target = this.targetSourceTime(clip, this.time);
+      const speed = Math.max(0.0625, Math.min(16, clip.speed || 1));
+      if (el.playbackRate !== speed) el.playbackRate = speed;
+
+      const env = fadeEnvelope(this.time - clip.start, clip.duration, clip.fadeIn, clip.fadeOut);
+      const silent = clip.muted || track?.muted || entry.trailing;
+      audioGraph.setGain(el, silent ? 0 : clip.volume * env);
+
+      if (this.playing) {
+        if (Math.abs(el.currentTime - target) > DRIFT_TOLERANCE) {
+          try {
+            el.currentTime = target;
+          } catch {
+            /* noop */
+          }
+        }
+        if (el.paused) void el.play().catch(() => undefined);
+      } else {
+        if (!el.paused) el.pause();
+        if (Math.abs(el.currentTime - target) > 0.02) {
+          try {
+            el.currentTime = target;
+          } catch {
+            /* noop */
+          }
+        }
+      }
     }
-    this.syncMusic(project);
   }
 
   /** renderFrame へ渡す描画ソース。 */
-  renderContext(): RenderContext {
+  renderSources(): RenderSources {
     return {
       frameFor: (clip) => {
         if (clip.kind === 'image') {
           const img = mediaRegistry.imageElement(clip.mediaId);
           return img?.complete ? img : null;
         }
+        if (clip.kind !== 'video') return null;
         const el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
-        if (el instanceof HTMLVideoElement && el.readyState >= 2) return el;
-        return null;
+        return el instanceof HTMLVideoElement && el.readyState >= 2 ? el : null;
       },
       sizeFor: (clip) => {
         const asset = mediaRegistry.get(clip.mediaId);
-        if (!asset) return null;
-        return { width: asset.width, height: asset.height };
+        return asset ? { width: asset.width, height: asset.height } : null;
       },
     };
   }
 
   // --- React 連携（useSyncExternalStore） ---
   subscribeTime = (fn: Listener) => {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
+    this.timeListeners.add(fn);
+    return () => this.timeListeners.delete(fn);
   };
 
   subscribeState = (fn: Listener) => {
@@ -253,7 +256,7 @@ export class Player {
   getPlaying = () => this.playing;
 
   private emitTime() {
-    this.listeners.forEach((fn) => fn());
+    this.timeListeners.forEach((fn) => fn());
   }
 
   private emitState() {

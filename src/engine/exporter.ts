@@ -7,14 +7,16 @@
 import { audioGraph } from './audio';
 import type { Player } from './player';
 import { withWebmDuration } from './webm';
-import type { Project } from '../types';
+import { ASPECT_PRESETS, type AspectKey, type Sequence } from '../model/types';
 
 export interface ExportSettings {
+  aspect: AspectKey;
+  /** 短辺の解像度（1080 / 720 / 480）。 */
+  quality: number;
   fps: number;
-  /** 出力解像度の倍率（1 = プロジェクト解像度）。 */
-  scale: number;
   /** Mbps */
   bitrate: number;
+  format: 'auto' | 'mp4' | 'webm';
 }
 
 export interface ExportResult {
@@ -38,9 +40,11 @@ const MIME_CANDIDATES = [
   { mime: 'video/webm', ext: 'webm' },
 ];
 
-export function pickMimeType(): { mime: string; ext: string } | null {
+export function pickMimeType(prefer: 'auto' | 'mp4' | 'webm' = 'auto'): { mime: string; ext: string } | null {
   if (typeof MediaRecorder === 'undefined') return null;
-  for (const candidate of MIME_CANDIDATES) {
+  const ordered =
+    prefer === 'auto' ? MIME_CANDIDATES : [...MIME_CANDIDATES].sort((a, b) => (a.ext === prefer ? -1 : b.ext === prefer ? 1 : 0));
+  for (const candidate of ordered) {
     if (MediaRecorder.isTypeSupported(candidate.mime)) return candidate;
   }
   return null;
@@ -48,6 +52,14 @@ export function pickMimeType(): { mime: string; ext: string } | null {
 
 export function isExportSupported(): boolean {
   return typeof MediaRecorder !== 'undefined' && pickMimeType() !== null;
+}
+
+/** 書き出し先の解像度（短辺を quality に合わせる）。 */
+export function exportSize(aspect: AspectKey, quality: number): { width: number; height: number } {
+  const preset = ASPECT_PRESETS.find((p) => p.key === aspect) ?? ASPECT_PRESETS[0];
+  const scale = quality / Math.min(preset.width, preset.height);
+  const even = (n: number) => Math.max(2, Math.round((n * scale) / 2) * 2);
+  return { width: even(preset.width), height: even(preset.height) };
 }
 
 /**
@@ -70,10 +82,12 @@ const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export class Exporter {
-  /** true の間、App の描画ループがこのキャンバスにもフレームを描く。 */
+  /** true の間、プレビューの描画ループがこのキャンバスにもフレームを描く。 */
   active = false;
   canvas: HTMLCanvasElement | null = null;
   ctx: CanvasRenderingContext2D | null = null;
+  /** 書き出し用に画角を差し替えたシーケンス。 */
+  sequence: Sequence | null = null;
   private cancelled = false;
 
   cancel() {
@@ -81,24 +95,28 @@ export class Exporter {
   }
 
   async run(
-    project: Project,
+    name: string,
+    sequence: Sequence,
     player: Player,
     settings: ExportSettings,
     onProgress: (ratio: number) => void,
   ): Promise<ExportResult> {
-    const picked = pickMimeType();
+    const picked = pickMimeType(settings.format);
     if (!picked) throw new Error('このブラウザは録画書き出しに対応していません（Chrome / Edge / Safari 17+ を推奨）');
     if (player.duration <= 0) throw new Error('書き出す映像がありません');
 
     this.cancelled = false;
-    const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
+    const size = exportSize(settings.aspect, settings.quality);
     const canvas = document.createElement('canvas');
-    canvas.width = even(project.width * settings.scale);
-    canvas.height = even(project.height * settings.scale);
+    canvas.width = size.width;
+    canvas.height = size.height;
     const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) throw new Error('キャンバスを初期化できませんでした');
+
     this.canvas = canvas;
     this.ctx = ctx;
+    // 画角を変えて書き出す場合は、その解像度でレイアウトし直す。
+    this.sequence = { ...sequence, aspect: settings.aspect, width: size.width, height: size.height };
 
     const wasLooping = player.loop;
     player.setLoop(false);
@@ -138,8 +156,7 @@ export class Exporter {
         onProgress(player.duration > 0 ? player.time / player.duration : 0);
         await nextFrame();
       }
-      // 最終フレームをキャプチャに乗せるための余白
-      await wait(250);
+      await wait(250); // 最終フレームをキャプチャに乗せるための余白
       onProgress(1);
     } finally {
       player.pause();
@@ -148,6 +165,7 @@ export class Exporter {
       this.active = false;
       this.canvas = null;
       this.ctx = null;
+      this.sequence = null;
       audioGraph.setMonitor(true);
       player.setLoop(wasLooping);
       videoStream.getTracks().forEach((t) => t.stop());
@@ -160,7 +178,7 @@ export class Exporter {
     const blob = picked.ext === 'webm' ? await withWebmDuration(recorded, player.duration) : recorded;
     return {
       blob,
-      filename: exportFilename(project.name, project.aspect, picked.ext),
+      filename: exportFilename(name, settings.aspect, picked.ext),
       mimeType: picked.mime,
       durationMs: performance.now() - startedAt,
     };

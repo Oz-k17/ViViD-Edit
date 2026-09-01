@@ -95,11 +95,3 @@ export class AudioGraph {
 }
 
 export const audioGraph = new AudioGraph();
-
-/** フェードイン / フェードアウトの音量係数（0〜1）。 */
-export function fadeEnvelope(local: number, duration: number, fadeIn: number, fadeOut: number): number {
-  let v = 1;
-  if (fadeIn > 0) v = Math.min(v, local / fadeIn);
-  if (fadeOut > 0) v = Math.min(v, (duration - local) / fadeOut);
-  return Math.max(0, Math.min(1, v));
-}
