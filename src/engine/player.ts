@@ -1,9 +1,3 @@
-/**
- * 再生エンジン（マルチトラック）。
- * 壁時計（performance.now）でタイムライン時刻を進め、各クリップの <video>/<audio> をそこへ追従させる。
- * 映像側の currentTime を基準にすると、カットをまたぐたびに時間が飛んで同期が崩れるため。
- */
-
 import { audioGraph } from './audio';
 import { mediaRegistry } from './media';
 import { fadeEnvelope, type RenderSources } from './renderer';
@@ -147,6 +141,11 @@ interface ActiveClip {
   clip: Clip;
   /** トランジションで前のカットを引き延ばして鳴らしている状態。 */
   trailing: boolean;
+  /**
+   * trailing のときのみ有効。次クリップとのトランジション進捗（0=開始, 1=完了）。
+   * 前クリップの音量をこの進捗に応じてフェードアウトさせるために使う。
+   */
+  transitionProgress?: number;
 }
 
 export class Player {
@@ -288,7 +287,15 @@ export class Player {
         time < current.start + transition.duration
       ) {
         const previous = previousAdjacent(sequence, current);
-        if (previous) out.push({ clip: previous, trailing: true });
+        if (previous) {
+          // トランジション内での経過割合。0=開始直後、1=完了直前。
+          const progress = (time - current.start) / transition.duration;
+          out.push({
+            clip: previous,
+            trailing: true,
+            transitionProgress: Math.min(1, Math.max(0, progress)),
+          });
+        }
       }
     }
     return out;
@@ -349,8 +356,15 @@ export class Player {
       const speed = Math.max(0.0625, Math.min(16, clip.speed || 1));
 
       const env = fadeEnvelope(this.time - clip.start, clip.duration, clip.fadeIn, clip.fadeOut);
-      const silent = clip.muted || track?.muted || entry.trailing;
-      audioGraph.setGain(el, silent ? 0 : clip.volume * env);
+      // ミュート判定は本来の mute 設定のみで行う。trailing（前カットの引き延ばし）は
+      // 「鳴らし続ける」ための状態であり、ここで一律に silent 扱いにすると
+      // トランジション開始の瞬間に前クリップの音量が 0 へスナップし、
+      // クリックノイズ（プツッという音切れ）の原因になる。
+      const silent = clip.muted || track?.muted;
+      // trailing のときは、トランジションの進捗に応じて音量を滑らかにフェードアウトさせる。
+      // 通常のクリップ（trailing=false）は 1 のまま、fadeOut に影響しない。
+      const trailingFade = entry.trailing ? Math.max(0, 1 - (entry.transitionProgress ?? 1)) : 1;
+      audioGraph.setGain(el, silent ? 0 : clip.volume * env * trailingFade);
 
       if (this.playing) {
         const profile: DriftProfile = silent ? 'silent' : 'audible';
