@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react';
+import { LayoutToggle } from '../components/LayoutToggle';
 import { Brand, SiteNav } from '../components/SiteNav';
 import { useMediaAssets, importFiles } from '../components/editor/MediaPanel';
 import { formatBytes, formatTime, mediaRegistry, UNSORTED } from '../engine/media';
@@ -31,6 +32,7 @@ export default function MediaLibraryPage() {
         <Brand />
         <SiteNav />
         <div className="topbar-actions">
+          <LayoutToggle />
           <button type="button" className="primary" disabled={busy} onClick={() => inputRef.current?.click()}>
             {busy ? '読込中…' : '＋ 素材を追加'}
           </button>

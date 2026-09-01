@@ -49,8 +49,11 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
   zoomOut: 'mod+Minus',
 };
 
+export type LayoutMode = 'desktop' | 'mobile';
+
 export interface Settings {
   lang: Lang;
+  layout: LayoutMode;
   exportQuality: number;
   exportAspect: AspectKey;
   exportFormat: 'auto' | 'mp4' | 'webm';
@@ -58,8 +61,14 @@ export interface Settings {
   shortcuts: Record<ShortcutAction, string>;
 }
 
+/** 初回だけ画面幅で当たりをつける。以後はユーザーが選んだものを記憶する。 */
+function guessLayout(): LayoutMode {
+  return typeof window !== 'undefined' && window.innerWidth < 820 ? 'mobile' : 'desktop';
+}
+
 export const DEFAULT_SETTINGS: Settings = {
   lang: 'ja',
+  layout: 'desktop',
   exportQuality: 1080,
   exportAspect: '9:16',
   exportFormat: 'auto',
@@ -118,7 +127,9 @@ interface AppApi {
 const AppContext = createContext<AppApi | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [settings, setSettings] = useState<Settings>(() => load(SETTINGS_KEY, DEFAULT_SETTINGS));
+  const [settings, setSettings] = useState<Settings>(() =>
+    load(SETTINGS_KEY, { ...DEFAULT_SETTINGS, layout: guessLayout() }),
+  );
   const [templates, setTemplates] = useState<Template[]>(() => {
     try {
       const raw = localStorage.getItem(TEMPLATES_KEY);
@@ -130,6 +141,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     setLang(settings.lang);
+    // 管理ページ側の CSS もここを見て切り替える
+    document.documentElement.dataset.layout = settings.layout;
     save(SETTINGS_KEY, settings);
   }, [settings]);
 

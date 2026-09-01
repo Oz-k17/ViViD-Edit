@@ -869,6 +869,8 @@ hr {
 }
 
 .tl-count {
+  flex: 0 0 auto;
+  white-space: nowrap;
   font-size: 11px;
   color: var(--accent);
 }
@@ -1308,5 +1310,261 @@ hr {
 @media (max-width: 1240px) {
   .workspace {
     grid-template-columns: 230px minmax(0, 1fr) 290px;
+  }
+}
+
+/* ---------- 表示切り替えボタン ---------- */
+
+.layout-toggle {
+  padding: 4px 8px;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+/* ---------- スマホ表示 ---------- */
+
+.mobile {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.mobile-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  padding: 8px 8px 0;
+  background: radial-gradient(circle at 50% 20%, #171c28, var(--bg) 70%);
+}
+
+.mobile-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  overflow-x: auto;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+}
+
+.mobile-actions button {
+  flex: 0 0 auto;
+  min-height: 34px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.mobile-sheet {
+  flex: 0 0 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--line);
+}
+
+.mobile-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  border-bottom: 1px solid var(--line);
+}
+
+.mobile-tabs button {
+  flex: 1;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 10px 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+  border-bottom: 2px solid transparent;
+}
+
+.mobile-tabs button.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 700;
+}
+
+.mobile-sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* シートの中ではパネルの枠は邪魔なので外す */
+.mobile-sheet-body .panel {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.mobile-sheet-body .panel-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.mobile .preview {
+  gap: 6px;
+}
+
+.mobile .transport {
+  width: 100%;
+  padding: 4px 8px;
+  gap: 2px;
+}
+
+.mobile .transport-row {
+  gap: 4px;
+}
+
+.mobile .timecode {
+  font-size: 11px;
+}
+
+.mobile .transport-buttons button {
+  min-width: 30px;
+  min-height: 32px;
+  padding: 4px 6px;
+}
+
+.mobile .transport-tools {
+  display: none; /* 分割やガイドは下のアクション列に集約 */
+}
+
+/* つまみ（ドラッグで高さ変更 / タップで開閉） */
+.mobile-grip {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  height: 16px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.mobile-grip span {
+  width: 40px;
+  height: 4px;
+  border-radius: 999px;
+  background: #3b465e;
+}
+
+/* 上部バーはスマホでは 1 段に収める（書き出しボタンまで画面内に入る幅にする） */
+.app.mobile-layout .topbar {
+  padding: 5px 6px;
+  gap: 4px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.app.mobile-layout .topbar::-webkit-scrollbar {
+  display: none;
+}
+
+.app.mobile-layout .topbar > * {
+  flex: 0 0 auto;
+}
+
+.app.mobile-layout .brand,
+.app.mobile-layout .desktop-only,
+.app.mobile-layout .btn-label {
+  display: none;
+}
+
+.app.mobile-layout .topbar button,
+.app.mobile-layout .site-nav a {
+  white-space: nowrap;
+}
+
+.app.mobile-layout .site-nav {
+  gap: 2px;
+}
+
+.app.mobile-layout .site-nav a {
+  padding: 4px 5px;
+  font-size: 11px;
+}
+
+.app.mobile-layout .topbar-actions {
+  gap: 4px;
+}
+
+.app.mobile-layout .topbar-actions button {
+  padding: 5px 8px;
+  font-size: 11px;
+}
+
+/* コンパクトなタイムライン（スマホ表示） */
+.tl.compact .tl-heads {
+  flex-basis: 56px;
+}
+
+.tl.compact .tl-head {
+  font-size: 10px;
+  padding: 0 4px;
+}
+
+.tl.compact .tl-toolbar {
+  overflow-x: auto;
+}
+
+.tl.compact .tl-toolbar button {
+  flex: 0 0 auto;
+  min-height: 32px;
+}
+
+.tl.compact .tl-clip-time {
+  display: none;
+}
+
+.tl.compact .tl-handle {
+  width: 14px;
+  opacity: 1;
+}
+
+/* ---------- 管理ページ（スマホ表示・狭い画面） ---------- */
+
+:root[data-layout='mobile'] .page-body {
+  padding: 10px;
+}
+
+:root[data-layout='mobile'] .media-table li,
+:root[data-layout='mobile'] .template-list li {
+  grid-template-columns: 48px 1fr;
+  grid-auto-rows: min-content;
+  row-gap: 6px;
+}
+
+:root[data-layout='mobile'] .media-table li > select,
+:root[data-layout='mobile'] .media-table li > button,
+:root[data-layout='mobile'] .template-list li > button,
+:root[data-layout='mobile'] .template-list li > .muted {
+  grid-column: 2;
+}
+
+:root[data-layout='mobile'] .shortcut-list li {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+:root[data-layout='mobile'] .shortcut-list button {
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  .media-table li,
+  .template-list li {
+    grid-template-columns: 48px 1fr;
+    row-gap: 6px;
+  }
+
+  .media-table li > select,
+  .media-table li > button,
+  .template-list li > button {
+    grid-column: 2;
   }
 }

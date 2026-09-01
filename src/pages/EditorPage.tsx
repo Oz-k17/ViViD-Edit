@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Inspector } from '../components/editor/Inspector';
 import { ExportDialog } from '../components/editor/ExportDialog';
 import { MediaPanel, importFiles, seedSoundEffects } from '../components/editor/MediaPanel';
+import { MobileEditor } from '../components/editor/MobileEditor';
 import { MultiTimeline } from '../components/editor/MultiTimeline';
 import { PreviewStage } from '../components/editor/PreviewStage';
 import { TopBar } from '../components/editor/TopBar';
@@ -21,6 +22,7 @@ function isTyping(target: EventTarget | null): boolean {
 export default function EditorPage() {
   const { sequence, apply, dispatch, selection, setSelection } = useEditor();
   const { settings } = useApp();
+  const mobile = settings.layout === 'mobile';
   const [pps, setPps] = useState(60);
   const [showExport, setShowExport] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -92,7 +94,7 @@ export default function EditorPage() {
 
   return (
     <div
-      className={`app${dropping ? ' dropping' : ''}`}
+      className={`app${dropping ? ' dropping' : ''}${mobile ? ' mobile-layout' : ''}`}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes('Files')) {
           e.preventDefault();
@@ -106,6 +108,10 @@ export default function EditorPage() {
     >
       <TopBar onExport={() => setShowExport(true)} onHelp={() => setShowHelp(true)} />
 
+      {mobile ? (
+        <MobileEditor pps={pps} setPps={setPps} onPickTransition={setTransitionFor} onAddText={addText} />
+      ) : (
+        <>
       <main className="workspace">
         <aside className="rail left">
           <MediaPanel />
@@ -129,6 +135,8 @@ export default function EditorPage() {
         </div>
         <MultiTimeline pps={pps} setPps={setPps} onPickTransition={setTransitionFor} />
       </footer>
+        </>
+      )}
 
       {showExport && <ExportDialog onClose={() => setShowExport(false)} />}
       {transitionFor && <TransitionPicker clipId={transitionFor} onClose={() => setTransitionFor(null)} />}

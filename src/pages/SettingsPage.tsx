@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { LayoutToggle } from '../components/LayoutToggle';
 import { Brand, SiteNav } from '../components/SiteNav';
 import { Field, Panel, Segmented, Toggle } from '../components/ui';
 import { ASPECT_PRESETS } from '../model/types';
@@ -40,7 +41,9 @@ export default function SettingsPage() {
       <header className="topbar">
         <Brand />
         <SiteNav />
-        <span />
+        <div className="topbar-actions">
+          <LayoutToggle />
+        </div>
       </header>
 
       <main className="page-body">

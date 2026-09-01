@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { t } from '../../i18n';
 import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
+import { LayoutToggle } from '../LayoutToggle';
 import { Brand, SiteNav } from '../SiteNav';
 
 export function TopBar({ onExport, onHelp }: { onExport: () => void; onHelp: () => void }) {
@@ -22,16 +23,17 @@ export function TopBar({ onExport, onHelp }: { onExport: () => void; onHelp: () 
       <Brand />
       <SiteNav />
       <div className="topbar-actions">
+        <LayoutToggle />
         <button type="button" disabled={!canUndo} onClick={() => dispatch({ type: 'undo' })} title="元に戻す">
-          ↺ {t('戻す')}
+          ↺<span className="btn-label"> {t('戻す')}</span>
         </button>
         <button type="button" disabled={!canRedo} onClick={() => dispatch({ type: 'redo' })} title="やり直す">
-          ↻ {t('進む')}
+          ↻<span className="btn-label"> {t('進む')}</span>
         </button>
-        <button type="button" onClick={saveLayout}>
+        <button type="button" className="desktop-only" onClick={saveLayout}>
           {saved ? '保存しました' : '⌂ レイアウトを保存'}
         </button>
-        <button type="button" onClick={onHelp}>
+        <button type="button" className="desktop-only" onClick={onHelp}>
           ? {t('ショートカット')}
         </button>
         <button type="button" className="primary" onClick={onExport}>

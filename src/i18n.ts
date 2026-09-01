@@ -10,6 +10,7 @@ const EN: Record<string, string> = {
   // 共通
   エディタ: 'Editor',
   素材管理: 'Media',
+  テンプレ: 'Templates',
   設定: 'Settings',
   テンプレート: 'Templates',
   テンプレート集: 'Templates',

@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router-dom';
+import { LayoutToggle } from '../components/LayoutToggle';
 import { Brand, SiteNav } from '../components/SiteNav';
 import { Panel } from '../components/ui';
 import { player } from '../engine/player';
@@ -45,7 +46,9 @@ export default function TemplatesPage() {
       <header className="topbar">
         <Brand />
         <SiteNav />
-        <span />
+        <div className="topbar-actions">
+          <LayoutToggle />
+        </div>
       </header>
 
       <main className="page-body">

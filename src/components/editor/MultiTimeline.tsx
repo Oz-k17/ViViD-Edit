@@ -23,7 +23,9 @@ const MIN_PPS = 6;
 const MAX_PPS = 400;
 const SNAP_PX = 8;
 
-export function laneHeight(track: Track): number {
+/** compact はスマホ表示用に一回り小さくしたレーンの高さ。 */
+export function laneHeight(track: Track, compact = false): number {
+  if (compact) return track.kind === 'video' ? 44 : track.kind === 'audio' ? 30 : 26;
   return track.kind === 'video' ? 56 : track.kind === 'audio' ? 40 : 34;
 }
 
@@ -56,9 +58,10 @@ interface Props {
   pps: number;
   setPps: (value: number | ((prev: number) => number)) => void;
   onPickTransition: (clipId: string) => void;
+  compact?: boolean;
 }
 
-export function MultiTimeline({ pps, setPps, onPickTransition }: Props) {
+export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }: Props) {
   const { sequence, apply, selection, setSelection } = useEditor();
   const { settings, updateSettings } = useApp();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -115,7 +118,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition }: Props) {
         let top = 0;
         const hits: string[] = [];
         for (const track of tracks) {
-          const height = laneHeight(track) + 4;
+          const height = laneHeight(track, compact) + 4;
           const overlapsRow = top < box.y + box.h && top + height > box.y;
           if (overlapsRow) {
             for (const clip of clipsOnTrack(sequence, track.id)) {
@@ -130,7 +133,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition }: Props) {
   };
 
   return (
-    <div className="tl">
+    <div className={`tl${compact ? ' compact' : ''}`}>
       <div className="tl-toolbar">
         <button type="button" onClick={() => apply((seq) => removeClips(seq, selection, false))} disabled={!selection.length}>
           削除
@@ -170,7 +173,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition }: Props) {
         <div className="tl-heads">
           <div className="tl-head-spacer" />
           {tracks.map((track) => (
-            <TrackHead key={track.id} track={track} />
+            <TrackHead key={track.id} track={track} compact={compact} />
           ))}
         </div>
 
@@ -183,6 +186,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition }: Props) {
                   key={track.id}
                   track={track}
                   pps={pps}
+                  compact={compact}
                   onEmptyPointerDown={startMarquee}
                   onPickTransition={onPickTransition}
                 />
@@ -202,13 +206,13 @@ export function MultiTimeline({ pps, setPps, onPickTransition }: Props) {
   );
 }
 
-function TrackHead({ track }: { track: Track }) {
+function TrackHead({ track, compact }: { track: Track; compact: boolean }) {
   const { apply } = useEditor();
   const patch = (changes: Partial<Track>) =>
     apply((seq) => ({ ...seq, tracks: seq.tracks.map((t) => (t.id === track.id ? { ...t, ...changes } : t)) }));
 
   return (
-    <div className={`tl-head kind-${track.kind}`} style={{ height: laneHeight(track) }}>
+    <div className={`tl-head kind-${track.kind}`} style={{ height: laneHeight(track, compact) }}>
       <strong>{track.name}</strong>
       <div className="tl-head-buttons">
         {track.kind !== 'audio' && (
@@ -261,11 +265,13 @@ function Ruler({ pps, duration, onScrub }: { pps: number; duration: number; onSc
 function Lane({
   track,
   pps,
+  compact,
   onEmptyPointerDown,
   onPickTransition,
 }: {
   track: Track;
   pps: number;
+  compact: boolean;
   onEmptyPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPickTransition: (clipId: string) => void;
 }) {
@@ -295,7 +301,7 @@ function Lane({
   return (
     <div
       className={`tl-lane kind-${track.kind}${dropping ? ' dropping' : ''}${track.locked ? ' locked' : ''}`}
-      style={{ height: laneHeight(track) }}
+      style={{ height: laneHeight(track, compact) }}
       onPointerDown={(e) => e.target === e.currentTarget && onEmptyPointerDown(e)}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes(MEDIA_DND_TYPE)) {
@@ -308,7 +314,7 @@ function Lane({
     >
       {clips.length === 0 && <span className="tl-lane-empty">{track.kind === 'text' ? 'テロップ' : '素材をドラッグ'}</span>}
       {clips.map((clip) => (
-        <ClipBlock key={clip.id} clip={clip} track={track} pps={pps} onPickTransition={onPickTransition} />
+        <ClipBlock key={clip.id} clip={clip} track={track} pps={pps} compact={compact} onPickTransition={onPickTransition} />
       ))}
     </div>
   );
@@ -318,11 +324,13 @@ function ClipBlock({
   clip,
   track,
   pps,
+  compact,
   onPickTransition,
 }: {
   clip: Clip;
   track: Track;
   pps: number;
+  compact: boolean;
   onPickTransition: (clipId: string) => void;
 }) {
   const { sequence, apply, selection, setSelection, toggleSelection, isSelected } = useEditor();
@@ -340,7 +348,7 @@ function ClipBlock({
     const additive = event.shiftKey;
     if (!selected) toggleSelection(clip.id, additive);
     const ids = selected ? selection : additive ? [...selection, clip.id] : [clip.id];
-    const rowHeight = laneHeight(track) + 4;
+    const rowHeight = laneHeight(track, compact) + 4;
     // 差分を積み上げると carve と噛み合ってズレるので、常に開始時点の状態から作り直す。
     const original = sequence;
     const candidates = snapCandidates(sequence, player.time, ids);
