@@ -17,13 +17,25 @@ import { sourceTimeAt, type Clip, type Sequence } from '../model/types';
  * さらに遅れ、また閾値を超えて再びシーク…という悪循環に入る。
  * 重い素材（4K や高ビットレート）ほど起きやすく、これがカクつきの元になる。
  * そこで小さなズレは再生速度の微調整で吸収し、シークは大きく飛んだときだけにする。
+ *
+ * ただし playbackRate の書き換えには副作用がある。ブラウザは音程を保つために
+ * 内部でリサンプラーを持っており、これを毎フレーム（最大 60 回/秒）書き換えると
+ * リサンプラーが再初期化を繰り返し、映像・音声とも同じデコードパイプラインを
+ * 使っているぶんブツブツ切れて聞こえる／見える。そこで
+ *   1) 瞬間値ではなく指数移動平均でズレをならし、単発のノイズで反応しない
+ *   2) playbackRate への書き込み自体を間引く（最大でも数回/秒）
+ * の二段構えにして、追従の速さと書き換え頻度を切り離す。
  */
 /** これ以下のズレは直さない（秒）。 */
-const DRIFT_IGNORE = 0.05;
+const DRIFT_IGNORE = 0.08;
 /** ここまでのズレは再生速度で吸収する（秒）。 */
-const DRIFT_SOFT_LIMIT = 0.5;
+const DRIFT_SOFT_LIMIT = 0.6;
 /** 速度で追いつかせるときの倍率。大きくすると音程が目立つ。 */
-const CATCH_UP_RATE = 0.03;
+const CATCH_UP_RATE = 0.02;
+/** ズレの指数移動平均の重み。小さいほどノイズに強いが反応が遅れる。 */
+const DRIFT_SMOOTHING = 0.08;
+/** playbackRate を書き換える最小間隔（ミリ秒）。書き換え頻度そのものを絞る。 */
+const RATE_ADJUST_INTERVAL_MS = 250;
 /** シークの連発を防ぐ間隔（ミリ秒）。 */
 const SEEK_COOLDOWN_MS = 700;
 /** 次のクリップを何秒前から頭出ししておくか。 */
@@ -48,6 +60,10 @@ export class Player {
   private onFrame: ((time: number) => void) | null = null;
   /** クリップごとの最後にシークした時刻（連発防止）。 */
   private lastSeekAt = new Map<string, number>();
+  /** クリップごとの最後に playbackRate を書き換えた時刻（連発防止）。 */
+  private lastRateAdjustAt = new Map<string, number>();
+  /** クリップごとのズレの指数移動平均。 */
+  private driftEma = new Map<string, number>();
 
   time = 0;
   playing = false;
@@ -204,6 +220,7 @@ export class Player {
       if (!entry) {
         if (!el.paused) el.pause();
         audioGraph.setGain(el, 0);
+        this.driftEma.delete(clip.id);
         const distance = clip.start - this.time;
         if (distance > 0 && distance < PREROLL && Math.abs(el.currentTime - clip.sourceIn) > 0.1) {
           try {
@@ -224,13 +241,17 @@ export class Player {
       audioGraph.setGain(el, silent ? 0 : clip.volume * env);
 
       if (this.playing) {
-        // 正なら進みすぎ、負なら遅れている。
-        const drift = el.currentTime - target;
+        // 正なら進みすぎ、負なら遅れている。単発のノイズで反応しないよう、
+        // 判定には瞬間値ではなく指数移動平均を使う。
+        const rawDrift = el.currentTime - target;
+        const prevEma = this.driftEma.get(clip.id) ?? rawDrift;
+        const drift = prevEma + (rawDrift - prevEma) * DRIFT_SMOOTHING;
+        this.driftEma.set(clip.id, drift);
         const distance = Math.abs(drift);
+        const now = performance.now();
 
         if (distance > DRIFT_SOFT_LIMIT) {
           // カットを跨いだ直後など、大きく飛んでいる場合だけシークする。
-          const now = performance.now();
           if (now - (this.lastSeekAt.get(clip.id) ?? -Infinity) > SEEK_COOLDOWN_MS) {
             this.lastSeekAt.set(clip.id, now);
             try {
@@ -238,14 +259,21 @@ export class Player {
             } catch {
               /* noop */
             }
+            this.driftEma.set(clip.id, 0);
           }
           if (el.playbackRate !== speed) el.playbackRate = speed;
         } else if (distance > DRIFT_IGNORE) {
           // 小さなズレはシークせず、再生速度をわずかに変えて吸収する。
           // シークと違ってデコードが途切れないので、映像が止まって見えない。
-          const adjusted = speed * (drift < 0 ? 1 + CATCH_UP_RATE : 1 - CATCH_UP_RATE);
-          if (el.playbackRate !== adjusted) el.playbackRate = adjusted;
+          // ただし書き換え自体を間引かないとリサンプラーが再初期化を繰り返し
+          // かえってカクつく（音まで切れる）ので、一定間隔でしか触らない。
+          if (now - (this.lastRateAdjustAt.get(clip.id) ?? -Infinity) > RATE_ADJUST_INTERVAL_MS) {
+            this.lastRateAdjustAt.set(clip.id, now);
+            const adjusted = speed * (drift < 0 ? 1 + CATCH_UP_RATE : 1 - CATCH_UP_RATE);
+            if (el.playbackRate !== adjusted) el.playbackRate = adjusted;
+          }
         } else if (el.playbackRate !== speed) {
+          this.lastRateAdjustAt.set(clip.id, now);
           el.playbackRate = speed;
         }
 
