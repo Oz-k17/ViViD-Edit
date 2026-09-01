@@ -10,8 +10,22 @@ import { fadeEnvelope, type RenderSources } from './renderer';
 import { clipAtTime, previousAdjacent, sequenceDuration } from '../model/ops';
 import { sourceTimeAt, type Clip, type Sequence } from '../model/types';
 
-/** これ以上ズレたらシークし直す（秒）。 */
-const DRIFT_TOLERANCE = 0.28;
+/**
+ * 映像の追従。
+ *
+ * ズレるたびにシークすると、シークがキーフレームまで戻ってデコードし直すぶん
+ * さらに遅れ、また閾値を超えて再びシーク…という悪循環に入る。
+ * 重い素材（4K や高ビットレート）ほど起きやすく、これがカクつきの元になる。
+ * そこで小さなズレは再生速度の微調整で吸収し、シークは大きく飛んだときだけにする。
+ */
+/** これ以下のズレは直さない（秒）。 */
+const DRIFT_IGNORE = 0.05;
+/** ここまでのズレは再生速度で吸収する（秒）。 */
+const DRIFT_SOFT_LIMIT = 0.5;
+/** 速度で追いつかせるときの倍率。大きくすると音程が目立つ。 */
+const CATCH_UP_RATE = 0.03;
+/** シークの連発を防ぐ間隔（ミリ秒）。 */
+const SEEK_COOLDOWN_MS = 700;
 /** 次のクリップを何秒前から頭出ししておくか。 */
 const PREROLL = 1.2;
 
@@ -32,6 +46,8 @@ export class Player {
   /** 毎フレーム呼ぶ購読。React の再描画を挟まず DOM を直接書き換える用。 */
   private frameListeners = new Set<(time: number) => void>();
   private onFrame: ((time: number) => void) | null = null;
+  /** クリップごとの最後にシークした時刻（連発防止）。 */
+  private lastSeekAt = new Map<string, number>();
 
   time = 0;
   playing = false;
@@ -202,23 +218,41 @@ export class Player {
       const track = trackById.get(clip.trackId);
       const target = this.targetSourceTime(clip, this.time);
       const speed = Math.max(0.0625, Math.min(16, clip.speed || 1));
-      if (el.playbackRate !== speed) el.playbackRate = speed;
 
       const env = fadeEnvelope(this.time - clip.start, clip.duration, clip.fadeIn, clip.fadeOut);
       const silent = clip.muted || track?.muted || entry.trailing;
       audioGraph.setGain(el, silent ? 0 : clip.volume * env);
 
       if (this.playing) {
-        if (Math.abs(el.currentTime - target) > DRIFT_TOLERANCE) {
-          try {
-            el.currentTime = target;
-          } catch {
-            /* noop */
+        // 正なら進みすぎ、負なら遅れている。
+        const drift = el.currentTime - target;
+        const distance = Math.abs(drift);
+
+        if (distance > DRIFT_SOFT_LIMIT) {
+          // カットを跨いだ直後など、大きく飛んでいる場合だけシークする。
+          const now = performance.now();
+          if (now - (this.lastSeekAt.get(clip.id) ?? -Infinity) > SEEK_COOLDOWN_MS) {
+            this.lastSeekAt.set(clip.id, now);
+            try {
+              el.currentTime = target;
+            } catch {
+              /* noop */
+            }
           }
+          if (el.playbackRate !== speed) el.playbackRate = speed;
+        } else if (distance > DRIFT_IGNORE) {
+          // 小さなズレはシークせず、再生速度をわずかに変えて吸収する。
+          // シークと違ってデコードが途切れないので、映像が止まって見えない。
+          const adjusted = speed * (drift < 0 ? 1 + CATCH_UP_RATE : 1 - CATCH_UP_RATE);
+          if (el.playbackRate !== adjusted) el.playbackRate = adjusted;
+        } else if (el.playbackRate !== speed) {
+          el.playbackRate = speed;
         }
+
         if (el.paused) void el.play().catch(() => undefined);
       } else {
         if (!el.paused) el.pause();
+        if (el.playbackRate !== speed) el.playbackRate = speed;
         if (Math.abs(el.currentTime - target) > 0.02) {
           try {
             el.currentTime = target;

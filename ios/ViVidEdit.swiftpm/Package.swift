@@ -26,8 +26,11 @@ let package = Package(
                 .pad,
                 .phone
             ],
+            // iPadOS は 4 方向すべてに対応していないと「フルスクリーンに対応していない」と扱う
+            // （Split View などマルチタスクの要件）。1 つでも欠けると起動時に警告が出る。
             supportedInterfaceOrientations: [
                 .portrait,
+                .portraitUpsideDown,
                 .landscapeRight,
                 .landscapeLeft
             ],
