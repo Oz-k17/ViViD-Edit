@@ -1,4 +1,4 @@
-# タテヨコ Studio — iOS 版（Swift Playgrounds）
+# ViViD Edit — iOS 版（Swift Playgrounds）
 
 Web 版のエディタをそのまま `WKWebView` で表示し、**書き出した動画を端末に保存する部分だけ**を
 ネイティブで受け持つ薄いガワです。ブラウザのサンドボックスでは保存が塞がれていて iPhone に
@@ -17,13 +17,13 @@ Web 版のエディタをそのまま `WKWebView` で表示し、**書き出し�
 ### iPad（いちばん簡単）
 
 1. このリポジトリを ZIP でダウンロードして展開する
-2. `ios/TateyokoStudio.swiftpm` を Swift Playgrounds で開く
+2. `ios/ViVidEdit.swiftpm` を Swift Playgrounds で開く
 3. 実行（▶）すると、その iPad にアプリとして入る
 
 ### iPhone
 
 Swift Playgrounds は iPad と Mac 向けで、iPhone 版はありません。iPhone に入れるには
-Mac の Xcode で `ios/TateyokoStudio.swiftpm` を開き、iPhone を繋いで実行してください。
+Mac の Xcode で `ios/ViVidEdit.swiftpm` を開き、iPhone を繋いで実行してください。
 無料の Apple ID でも入れられますが、その場合 7 日で期限が切れるので、切れたら同じ手順で入れ直します。
 
 ## 保存のしくみ
@@ -40,4 +40,4 @@ Mac の Xcode で `ios/TateyokoStudio.swiftpm` を開き、iPhone を繋いで�
 - 書き出しは実時間です。60 秒の動画なら約 60 秒かかります。
 - `Resources/web` は Web 版のビルド生成物です。ふつうビルド生成物はコミットしませんが、
   iPad には npm が無く、そのまま開いて動かせることを優先してリポジトリに含めています。
-  作り直すときはリポジトリのルートで `npm run build:ios` を実行してください。
+  作り直すときはリポジトリのルートで `npm run bundle` を実行してください。

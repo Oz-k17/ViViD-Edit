@@ -94,6 +94,7 @@ export interface LayoutTemplate {
 
 export type Template = TextTemplate | LayoutTemplate;
 
+// 保存キーは据え置き（変えると設定とテンプレートが失われる）。
 const SETTINGS_KEY = 'tateyoko.settings';
 const TEMPLATES_KEY = 'tateyoko.templates';
 

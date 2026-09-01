@@ -9,15 +9,15 @@ import PackageDescription
 import AppleProductTypes
 
 let package = Package(
-    name: "TateyokoStudio",
+    name: "ViVidEdit",
     platforms: [
         .iOS("16.0")
     ],
     products: [
         .iOSApplication(
-            name: "タテヨコ Studio",
+            name: "ViViD Edit",
             targets: ["AppModule"],
-            bundleIdentifier: "studio.tateyoko.editor",
+            bundleIdentifier: "app.vivid.edit",
             teamIdentifier: "",
             displayVersion: "1.0",
             bundleVersion: "1",

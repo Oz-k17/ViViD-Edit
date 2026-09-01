@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct TateyokoStudioApp: App {
+struct ViVidEditApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()

@@ -35,6 +35,7 @@ export function uid(prefix: string): string {
 
 // ---------- IndexedDB ----------
 
+// アプリ名を変えてもキーは変えない。変えると保存済みの素材が全部見えなくなるため。
 const DB_NAME = 'tateyoko-studio';
 const STORE = 'assets';
 

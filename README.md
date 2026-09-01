@@ -1,4 +1,4 @@
-# タテヨコ Studio
+# ViViD Edit
 
 ブラウザだけで完結する、**ショート動画（縦型）専用**のビデオエディタです。
 Premiere Pro 風のマルチトラックタイムラインを持ちながら、TikTok / Instagram Reels / YouTube Shorts 向けの
@@ -6,10 +6,34 @@ Premiere Pro 風のマルチトラックタイムラインを持ちながら、T
 
 素材の読み込みも編集も書き出しも、すべてブラウザの中で処理します。**動画がサーバーに送られることは一切ありません。**
 
+## 開き方
+
+### 1. ダウンロードして開く（いちばん手軽）
+
+このリポジトリを ZIP でダウンロードして展開し、**`docs/index.html`** をブラウザで開くだけで動きます。
+ビルド済みのものが入っているので、インストールも準備も要りません。
+
+### 2. URL で開けるようにする（GitHub Pages）
+
+リポジトリの **Settings → Pages** を開き、Source を **Deploy from a branch**、
+ブランチを **`main`**、フォルダを **`/docs`** にして Save すると、数分後に
+`https://oz-k17.github.io/ViViD-Edit/` で開けるようになります。
+公開したくない場合は設定しなくて構いません（上の 1. だけで使えます）。
+
+### 3. 開発用に動かす
+
 ```bash
 npm install
 npm run dev      # http://localhost:5173
 ```
+
+### 4. iPhone / iPad にアプリとして入れる
+
+`ios/ViVidEdit.swiftpm` を Swift Playgrounds（iPad）または Xcode（Mac → iPhone）で開いて実行します。
+くわしくは [`ios/ViVidEdit.swiftpm/README.md`](ios/ViVidEdit.swiftpm/README.md) を見てください。
+ブラウザ版と違い、**書き出した動画をカメラロールへ直接保存できます**。
+
+### コマンド
 
 | コマンド | 内容 |
 | --- | --- |
@@ -17,6 +41,7 @@ npm run dev      # http://localhost:5173
 | `npm run build` | 型チェック＋本番ビルド（`dist/`） |
 | `npm run preview` | ビルド結果をローカル配信 |
 | `npm run typecheck` | 型チェックのみ |
+| `npm run bundle` | ビルドして `docs/` と iOS 版へ配布物を配る |
 
 ビルド結果は静的ファイルなので、`dist/` をそのまま任意のホスティングに置けば動きます。
 ルーティングは `HashRouter` なので、書き換え設定のないホスティングでも深いリンクが壊れません。
@@ -138,6 +163,7 @@ Firefox でも編集・書き出しはできますが、出力は WebM になり
 | 書き出し | `src/engine/exporter.ts` — キャンバスを実時間で再生しながら `MediaRecorder` で収録 |
 | 尺の補正 | `src/engine/webm.ts` — `MediaRecorder` の WebM には尺が書かれないので、EBML を最小限だけ書き換えて埋める |
 | 状態 | `src/store/editor.tsx`（編集内容と履歴） / `src/store/app.tsx`（設定とテンプレート） |
+| iOS 版 | `ios/ViVidEdit.swiftpm` — WKWebView で Web 版を表示し、保存だけネイティブで受け持つ |
 
 描画座標は常に「シーケンス座標（例 1080×1920）」で計算し、プレビューと書き出しの解像度差はキャンバスのスケールだけで吸収しています。
 
@@ -147,3 +173,8 @@ Firefox でも編集・書き出しはできますが、出力は WebM になり
 - 同じトラック上でクリップを重ねることはできません（重なった部分は上書きされます）。トランジションは継ぎ目に設定する方式です。
 - 言語切り替えは主要なラベルのみ英語化しています（未訳の箇所は日本語のまま表示されます）。
 - 素材は IndexedDB、編集内容と設定は localStorage に保存されます。ブラウザのデータを消すと失われます。
+- 保存に使うキーは旧名（`tateyoko.*`）のままです。アプリ名を変えた際に合わせて変更すると、
+  すでに保存されている素材・プロジェクト・設定がすべて読めなくなるため、あえて据え置いています。
+- ビルドは ES モジュールではなく単一の古典スクリプトとして出力しています。
+  `file://` から開いた場合と iOS 版の WKWebView では、ES モジュールが CORS で読み込めず
+  画面が真っ白になるためです。

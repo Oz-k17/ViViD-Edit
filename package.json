@@ -1,5 +1,5 @@
 {
-  "name": "tateyoko-studio",
+  "name": "vivid-edit",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -9,7 +9,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
-    "build:ios": "npm run build && node scripts/sync-ios.mjs"
+    "bundle": "npm run build && node scripts/sync-bundles.mjs"
   },
   "dependencies": {
     "react": "^19.2.0",

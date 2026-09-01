@@ -48,7 +48,7 @@ struct EditorWebView: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, WKScriptMessageHandler {
-        static let bridgeName = "tateyoko"
+        static let bridgeName = "vividEdit"
         static let missingBundleHTML = """
             <html><body style="background:#15161a;color:#e7e5df;font-family:-apple-system;padding:24px">
             <h3>エディタ本体が見つかりません</h3>
@@ -91,7 +91,7 @@ struct EditorWebView: UIViewRepresentable {
             let escaped = detail
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"")
-            let js = "window.__tateyokoSaveDone && window.__tateyokoSaveDone(\(ok), \"\(escaped)\");"
+            let js = "window.__vividEditSaveDone && window.__vividEditSaveDone(\(ok), \"\(escaped)\");"
             webView?.evaluateJavaScript(js, completionHandler: nil)
         }
     }

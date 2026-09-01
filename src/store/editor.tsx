@@ -21,6 +21,7 @@ import { ASPECT_PRESETS, type AspectKey, type Project, type Sequence } from '../
 
 const HISTORY_LIMIT = 80;
 const COALESCE_MS = 700;
+// 保存キーは据え置き（変えると編集中のプロジェクトが失われる）。
 const PROJECT_KEY = 'tateyoko.project';
 
 interface State {

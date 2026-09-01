@@ -29,7 +29,7 @@ export function Brand() {
     <div className="brand">
       <span className="brand-mark">▮</span>
       <div>
-        <strong>タテヨコ Studio</strong>
+        <strong>ViViD Edit</strong>
         <small>ショート動画エディタ</small>
       </div>
     </div>

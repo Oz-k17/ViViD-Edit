@@ -221,7 +221,7 @@ interface NativeBridge {
 /** iOS 版（Swift Playgrounds のガワ）に埋め込まれて動いているか。 */
 function nativeBridge(): NativeBridge | null {
   const bridge = (window as { webkit?: { messageHandlers?: Record<string, NativeBridge | undefined> } }).webkit
-    ?.messageHandlers?.tateyoko;
+    ?.messageHandlers?.vividEdit;
   return bridge && typeof bridge.postMessage === 'function' ? bridge : null;
 }
 
@@ -246,7 +246,7 @@ function base64FromBytes(bytes: Uint8Array): string {
 async function saveViaNative(bridge: NativeBridge, blob: Blob, filename: string): Promise<void> {
   const CHUNK_BYTES = 512 * 1024;
   const done = new Promise<void>((resolve, reject) => {
-    (window as unknown as { __tateyokoSaveDone?: (ok: boolean, detail: string) => void }).__tateyokoSaveDone = (
+    (window as unknown as { __vividEditSaveDone?: (ok: boolean, detail: string) => void }).__vividEditSaveDone = (
       ok,
       detail,
     ) => {

@@ -18,7 +18,7 @@ import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
 import { usePlayerTime } from './PreviewStage';
 
-export const MEDIA_DND_TYPE = 'application/x-tateyoko-media';
+export const MEDIA_DND_TYPE = 'application/x-vivid-media';
 const MIN_PPS = 6;
 const MAX_PPS = 400;
 const SNAP_PX = 8;
