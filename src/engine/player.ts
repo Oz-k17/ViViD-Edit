@@ -1,9 +1,3 @@
-/**
- * 再生エンジン（マルチトラック）。
- * 壁時計（performance.now）でタイムライン時刻を進め、各クリップの <video>/<audio> をそこへ追従させる。
- * 映像側の currentTime を基準にすると、カットをまたぐたびに時間が飛んで同期が崩れるため。
- */
-
 import { audioGraph } from './audio';
 import { mediaRegistry } from './media';
 import { fadeEnvelope, type RenderSources } from './renderer';
@@ -11,35 +5,135 @@ import { clipAtTime, previousAdjacent, sequenceDuration } from '../model/ops';
 import { sourceTimeAt, type Clip, type Sequence } from '../model/types';
 
 /**
- * 映像の追従。
+ * 映像・音声の追従。
  *
- * ズレるたびにシークすると、シークがキーフレームまで戻ってデコードし直すぶん
- * さらに遅れ、また閾値を超えて再びシーク…という悪循環に入る。
- * 重い素材（4K や高ビットレート）ほど起きやすく、これがカクつきの元になる。
- * そこで小さなズレは再生速度の微調整で吸収し、シークは大きく飛んだときだけにする。
+ * ズレるたびに単純にシークすると、シークがキーフレームまで戻ってデコードし直すぶん
+ * さらに遅れ、また閾値を超えて再びシーク…という悪循環に入る（重い素材ほど起きやすい）。
+ * また、生の currentTime を毎フレームそのまま判定に使うと1フレームのジッターにも
+ * 反応してしまい、閾値付近でモードがバタつく。
  *
- * ただし playbackRate の書き換えには副作用がある。ブラウザは音程を保つために
- * 内部でリサンプラーを持っており、これを毎フレーム（最大 60 回/秒）書き換えると
- * リサンプラーが再初期化を繰り返し、映像・音声とも同じデコードパイプラインを
- * 使っているぶんブツブツ切れて聞こえる／見える。そこで
- *   1) 瞬間値ではなく指数移動平均でズレをならし、単発のノイズで反応しない
- *   2) playbackRate への書き込み自体を間引く（最大でも数回/秒）
- * の二段構えにして、追従の速さと書き換え頻度を切り離す。
+ * そこで DriftController が
+ *   1) ズレを平滑化(EMA)してから判定し、
+ *   2) 状態遷移にヒステリシス（入る閾値と抜ける閾値を分ける）を持たせ、
+ *   3) 音が鳴っているクリップと鳴っていないクリップでプロファイル（許容幅・補正強度）を分け、
+ *   4) 適用する playbackRate 自体も毎フレーム目標値へ少しずつ近づける（lerp）
+ * ことで、シーク連発による映像のカクつきと、playbackRate の頻繁な書き換えによる
+ * 音声のプチノイズの両方を抑える。
  */
-/** これ以下のズレは直さない（秒）。 */
-const DRIFT_IGNORE = 0.08;
-/** ここまでのズレは再生速度で吸収する（秒）。 */
-const DRIFT_SOFT_LIMIT = 0.6;
-/** 速度で追いつかせるときの倍率。大きくすると音程が目立つ。 */
-const CATCH_UP_RATE = 0.02;
-/** ズレの指数移動平均の重み。小さいほどノイズに強いが反応が遅れる。 */
-const DRIFT_SMOOTHING = 0.08;
-/** playbackRate を書き換える最小間隔（ミリ秒）。書き換え頻度そのものを絞る。 */
-const RATE_ADJUST_INTERVAL_MS = 250;
-/** シークの連発を防ぐ間隔（ミリ秒）。 */
+
+/** シーク連発を防ぐ初期クールダウン（ミリ秒）。連発するほど自動で伸びる。 */
 const SEEK_COOLDOWN_MS = 700;
+/** クールダウンの上限（ミリ秒）。 */
+const SEEK_COOLDOWN_MAX_MS = 4000;
+/** クールダウンが伸びていく倍率。 */
+const SEEK_COOLDOWN_BACKOFF = 1.6;
+/** ズレの平滑化の重み。大きいほど反応が早いがジッターも拾う。 */
+const DRIFT_SMOOTHING = 0.25;
+/** playbackRate 書き換えを間引く最小差分。 */
+const RATE_EPSILON = 0.005;
+/** currentTime 書き換えを間引く最小差分（一時停止中の頭出し用）。 */
+const SEEK_EPSILON = 0.02;
 /** 次のクリップを何秒前から頭出ししておくか。 */
 const PREROLL = 1.2;
+
+type DriftProfile = 'audible' | 'silent';
+
+interface DriftBounds {
+  /** これを超えたら補正モードに入る。 */
+  enterCorrect: number;
+  /** これを下回ったら補正モードを抜ける（enterCorrect より小さい＝ヒステリシス）。 */
+  exitCorrect: number;
+  /** これを超えたら強制シークを検討する。 */
+  enterResync: number;
+  /** これを下回ったらシークモードを抜ける。 */
+  exitResync: number;
+  /** 速度補正の最大強度（比率）。 */
+  maxRate: number;
+  /** 目標 playbackRate への毎フレームの近づき方（0-1、大きいほど速く追従）。 */
+  lerp: number;
+}
+
+const PROFILE_BOUNDS: Record<DriftProfile, DriftBounds> = {
+  // 音が鳴っているクリップ：音の破綻を最優先で避ける。ズレの許容は広め、補正は緩やか。
+  audible: {
+    enterCorrect: 0.08,
+    exitCorrect: 0.03,
+    enterResync: 0.8,
+    exitResync: 0.25,
+    maxRate: 0.06,
+    lerp: 0.08,
+  },
+  // 無音のクリップ：見た目のズレを詰めることを優先。多少強引な補正も許容。
+  silent: {
+    enterCorrect: 0.05,
+    exitCorrect: 0.02,
+    enterResync: 0.4,
+    exitResync: 0.12,
+    maxRate: 0.12,
+    lerp: 0.25,
+  },
+};
+
+/** 1クリップぶんの同期状態を保持し、毎フレームの目標 playbackRate / シーク要否を決める。 */
+class DriftController {
+  private smoothed = 0;
+  private mode: 'locked' | 'correcting' | 'resyncing' = 'locked';
+  private lastSeekAt = -Infinity;
+  private seekCooldown = SEEK_COOLDOWN_MS;
+  appliedRate = 1;
+
+  constructor(private profile: DriftProfile) {}
+
+  setProfile(profile: DriftProfile) {
+    this.profile = profile;
+  }
+
+  /**
+   * @param raw current - target（正なら進みすぎ、負なら遅れている）
+   * @param baseSpeed そのクリップの基準速度（clip.speed）
+   * @param now performance.now()
+   * @returns 適用すべき playbackRate と、必要ならシークすべきという指示
+   */
+  update(raw: number, baseSpeed: number, now: number): { rate: number; shouldSeek: boolean } {
+    const b = PROFILE_BOUNDS[this.profile];
+
+    this.smoothed += (raw - this.smoothed) * DRIFT_SMOOTHING;
+    const distance = Math.abs(this.smoothed);
+
+    if (this.mode === 'locked' && distance > b.enterCorrect) this.mode = 'correcting';
+    if (this.mode === 'correcting' && distance < b.exitCorrect) this.mode = 'locked';
+    if (distance > b.enterResync) this.mode = 'resyncing';
+    if (this.mode === 'resyncing' && distance < b.exitResync) this.mode = 'correcting';
+
+    let shouldSeek = false;
+    if (this.mode === 'resyncing' && now - this.lastSeekAt > this.seekCooldown) {
+      shouldSeek = true;
+      this.lastSeekAt = now;
+      // 立て続けにシークが必要になる = 環境がデコードに追いついていない、という判断で
+      // クールダウンを段階的に伸ばす（指数バックオフ）。安定したらリセットする。
+      this.seekCooldown = Math.min(SEEK_COOLDOWN_MAX_MS, this.seekCooldown * SEEK_COOLDOWN_BACKOFF);
+      this.smoothed = 0;
+      this.mode = 'correcting';
+    } else if (this.mode === 'locked') {
+      this.seekCooldown = SEEK_COOLDOWN_MS;
+    }
+
+    const desired =
+      this.mode === 'correcting'
+        ? baseSpeed * (1 - Math.sign(this.smoothed) * Math.min(b.maxRate, distance))
+        : baseSpeed;
+
+    // スナップさせず、目標値へ毎フレーム少しずつ近づける。
+    this.appliedRate += (desired - this.appliedRate) * b.lerp;
+    return { rate: this.appliedRate, shouldSeek };
+  }
+
+  reset(rate = 1) {
+    this.smoothed = 0;
+    this.mode = 'locked';
+    this.appliedRate = rate;
+  }
+}
 
 type Listener = () => void;
 
@@ -47,6 +141,11 @@ interface ActiveClip {
   clip: Clip;
   /** トランジションで前のカットを引き延ばして鳴らしている状態。 */
   trailing: boolean;
+  /**
+   * trailing のときのみ有効。次クリップとのトランジション進捗（0=開始, 1=完了）。
+   * 前クリップの音量をこの進捗に応じてフェードアウトさせるために使う。
+   */
+  transitionProgress?: number;
 }
 
 export class Player {
@@ -58,12 +157,8 @@ export class Player {
   /** 毎フレーム呼ぶ購読。React の再描画を挟まず DOM を直接書き換える用。 */
   private frameListeners = new Set<(time: number) => void>();
   private onFrame: ((time: number) => void) | null = null;
-  /** クリップごとの最後にシークした時刻（連発防止）。 */
-  private lastSeekAt = new Map<string, number>();
-  /** クリップごとの最後に playbackRate を書き換えた時刻（連発防止）。 */
-  private lastRateAdjustAt = new Map<string, number>();
-  /** クリップごとのズレの指数移動平均。 */
-  private driftEma = new Map<string, number>();
+  /** クリップごとのドリフト補正状態。 */
+  private drift = new Map<string, DriftController>();
 
   time = 0;
   playing = false;
@@ -120,7 +215,10 @@ export class Player {
       }
     }
     for (const key of mediaRegistry.activeKeys()) {
-      if (!live.has(key)) mediaRegistry.releaseElement(key);
+      if (!live.has(key)) {
+        mediaRegistry.releaseElement(key);
+        this.drift.delete(key);
+      }
     }
   }
 
@@ -148,6 +246,8 @@ export class Player {
 
   seek(time: number) {
     this.time = Math.max(0, Math.min(this.duration, time));
+    // 手動シーク後は、蓄積していたドリフト補正の状態を持ち越さない。
+    for (const controller of this.drift.values()) controller.reset();
     this.emitTime();
   }
 
@@ -187,7 +287,15 @@ export class Player {
         time < current.start + transition.duration
       ) {
         const previous = previousAdjacent(sequence, current);
-        if (previous) out.push({ clip: previous, trailing: true });
+        if (previous) {
+          // トランジション内での経過割合。0=開始直後、1=完了直前。
+          const progress = (time - current.start) / transition.duration;
+          out.push({
+            clip: previous,
+            trailing: true,
+            transitionProgress: Math.min(1, Math.max(0, progress)),
+          });
+        }
       }
     }
     return out;
@@ -199,6 +307,17 @@ export class Player {
     if (!clip.loop || !asset || asset.duration <= 0) return raw;
     const span = Math.max(0.1, asset.duration - clip.sourceIn);
     return clip.sourceIn + ((raw - clip.sourceIn) % span);
+  }
+
+  private controllerFor(clipId: string, profile: DriftProfile): DriftController {
+    let controller = this.drift.get(clipId);
+    if (!controller) {
+      controller = new DriftController(profile);
+      this.drift.set(clipId, controller);
+    } else {
+      controller.setProfile(profile);
+    }
+    return controller;
   }
 
   private sync() {
@@ -220,15 +339,15 @@ export class Player {
       if (!entry) {
         if (!el.paused) el.pause();
         audioGraph.setGain(el, 0);
-        this.driftEma.delete(clip.id);
         const distance = clip.start - this.time;
-        if (distance > 0 && distance < PREROLL && Math.abs(el.currentTime - clip.sourceIn) > 0.1) {
+        if (distance > 0 && distance < PREROLL && Math.abs(el.currentTime - clip.sourceIn) > SEEK_EPSILON) {
           try {
             el.currentTime = clip.sourceIn;
           } catch {
             /* メタデータ待ち */
           }
         }
+        this.drift.get(clip.id)?.reset();
         continue;
       }
 
@@ -237,57 +356,45 @@ export class Player {
       const speed = Math.max(0.0625, Math.min(16, clip.speed || 1));
 
       const env = fadeEnvelope(this.time - clip.start, clip.duration, clip.fadeIn, clip.fadeOut);
-      const silent = clip.muted || track?.muted || entry.trailing;
-      audioGraph.setGain(el, silent ? 0 : clip.volume * env);
+      // ミュート判定は本来の mute 設定のみで行う。trailing（前カットの引き延ばし）は
+      // 「鳴らし続ける」ための状態であり、ここで一律に silent 扱いにすると
+      // トランジション開始の瞬間に前クリップの音量が 0 へスナップし、
+      // クリックノイズ（プツッという音切れ）の原因になる。
+      const silent = clip.muted || track?.muted;
+      // trailing のときは、トランジションの進捗に応じて音量を滑らかにフェードアウトさせる。
+      // 通常のクリップ（trailing=false）は 1 のまま、fadeOut に影響しない。
+      const trailingFade = entry.trailing ? Math.max(0, 1 - (entry.transitionProgress ?? 1)) : 1;
+      audioGraph.setGain(el, silent ? 0 : clip.volume * env * trailingFade);
 
       if (this.playing) {
-        // 正なら進みすぎ、負なら遅れている。単発のノイズで反応しないよう、
-        // 判定には瞬間値ではなく指数移動平均を使う。
-        const rawDrift = el.currentTime - target;
-        const prevEma = this.driftEma.get(clip.id) ?? rawDrift;
-        const drift = prevEma + (rawDrift - prevEma) * DRIFT_SMOOTHING;
-        this.driftEma.set(clip.id, drift);
-        const distance = Math.abs(drift);
-        const now = performance.now();
+        const profile: DriftProfile = silent ? 'silent' : 'audible';
+        const controller = this.controllerFor(clip.id, profile);
+        const raw = el.currentTime - target;
+        const { rate, shouldSeek } = controller.update(raw, speed, performance.now());
 
-        if (distance > DRIFT_SOFT_LIMIT) {
-          // カットを跨いだ直後など、大きく飛んでいる場合だけシークする。
-          if (now - (this.lastSeekAt.get(clip.id) ?? -Infinity) > SEEK_COOLDOWN_MS) {
-            this.lastSeekAt.set(clip.id, now);
-            try {
-              el.currentTime = target;
-            } catch {
-              /* noop */
-            }
-            this.driftEma.set(clip.id, 0);
-          }
-          if (el.playbackRate !== speed) el.playbackRate = speed;
-        } else if (distance > DRIFT_IGNORE) {
-          // 小さなズレはシークせず、再生速度をわずかに変えて吸収する。
-          // シークと違ってデコードが途切れないので、映像が止まって見えない。
-          // ただし書き換え自体を間引かないとリサンプラーが再初期化を繰り返し
-          // かえってカクつく（音まで切れる）ので、一定間隔でしか触らない。
-          if (now - (this.lastRateAdjustAt.get(clip.id) ?? -Infinity) > RATE_ADJUST_INTERVAL_MS) {
-            this.lastRateAdjustAt.set(clip.id, now);
-            const adjusted = speed * (drift < 0 ? 1 + CATCH_UP_RATE : 1 - CATCH_UP_RATE);
-            if (el.playbackRate !== adjusted) el.playbackRate = adjusted;
-          }
-        } else if (el.playbackRate !== speed) {
-          this.lastRateAdjustAt.set(clip.id, now);
-          el.playbackRate = speed;
-        }
-
-        if (el.paused) void el.play().catch(() => undefined);
-      } else {
-        if (!el.paused) el.pause();
-        if (el.playbackRate !== speed) el.playbackRate = speed;
-        if (Math.abs(el.currentTime - target) > 0.02) {
+        if (shouldSeek) {
           try {
             el.currentTime = target;
           } catch {
             /* noop */
           }
         }
+        if (Math.abs(el.playbackRate - rate) > RATE_EPSILON) {
+          el.playbackRate = rate;
+        }
+
+        if (el.paused) void el.play().catch(() => undefined);
+      } else {
+        if (!el.paused) el.pause();
+        if (el.playbackRate !== speed) el.playbackRate = speed;
+        if (Math.abs(el.currentTime - target) > SEEK_EPSILON) {
+          try {
+            el.currentTime = target;
+          } catch {
+            /* noop */
+          }
+        }
+        this.drift.get(clip.id)?.reset(speed);
       }
     }
   }
