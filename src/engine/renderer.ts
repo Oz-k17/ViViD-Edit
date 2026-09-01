@@ -446,7 +446,7 @@ function drawTextClip(
 function drawGuides(ctx: CanvasRenderingContext2D, sequence: Sequence) {
   const { width: W, height: H } = sequence;
   ctx.save();
-  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.strokeStyle = 'rgba(231,229,223,0.3)';
   ctx.lineWidth = Math.max(1, W / 540);
   ctx.setLineDash([W / 60, W / 60]);
   // SNS の UI（上部ヘッダ / 下部キャプション / 右のボタン列）に隠れやすい範囲
@@ -459,7 +459,7 @@ function drawGuides(ctx: CanvasRenderingContext2D, sequence: Sequence) {
   ctx.lineTo(W * 0.82, H);
   ctx.stroke();
   ctx.setLineDash([]);
-  ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+  ctx.strokeStyle = 'rgba(231,229,223,0.14)';
   ctx.beginPath();
   ctx.moveTo(W / 2, 0);
   ctx.lineTo(W / 2, H);
@@ -522,10 +522,10 @@ export function renderFrame(
     if (clip.crop.enabled && clip.kind !== 'text') {
       const rect = cropDestRect(sequence, clip);
       bounds.set(`crop:${clip.id}`, rect);
-      outline(ctx, sequence, rect, '#fbbf24');
+      outline(ctx, sequence, rect, '#e0b184');
     } else {
       const rect = bounds.get(clip.id);
-      if (rect) outline(ctx, sequence, rect, '#7dd3fc');
+      if (rect) outline(ctx, sequence, rect, '#cfe0cb');
     }
   }
 

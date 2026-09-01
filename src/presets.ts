@@ -3,6 +3,7 @@ import type { TextProps } from './model/types';
 
 export const FONT_OPTIONS = [
   { value: '"Noto Sans JP", system-ui, sans-serif', label: 'Noto Sans JP（標準）' },
+  { value: '"Zen Kaku Gothic New", system-ui, sans-serif', label: 'Zen Kaku Gothic（やわらか）' },
   { value: '"M PLUS Rounded 1c", system-ui, sans-serif', label: 'M PLUS Rounded（まる）' },
   { value: '"Kaisei Decol", serif', label: 'Kaisei Decol（明朝）' },
   { value: '"RocknRoll One", system-ui, sans-serif', label: 'RocknRoll One（太丸）' },
