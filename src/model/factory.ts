@@ -100,6 +100,9 @@ export function createProject(name = 'ショート動画'): Project {
   return { name, sequence: createSequence() };
 }
 
+/** 尺を読み取れなかった動画 / 音声を置くときの長さ。 */
+export const FALLBACK_MEDIA_DURATION = 5;
+
 /** 素材からクリップを作る（画像は既定の表示秒数を持たせる）。 */
 export function clipFromAsset(
   asset: { id: string; kind: 'video' | 'image' | 'audio'; duration: number },
@@ -108,11 +111,13 @@ export function clipFromAsset(
   imageDuration = 3,
 ): Clip {
   const kind = asset.kind === 'image' ? 'image' : asset.kind;
+  // 尺が読めなかった素材を 0.2 秒のクリップにすると事故にしか見えないので、既定値で置く。
+  const mediaDuration = asset.duration > 0 ? asset.duration : FALLBACK_MEDIA_DURATION;
   return {
     ...baseClip(kind, trackId),
     mediaId: asset.id,
     start: Math.max(0, start),
-    duration: asset.kind === 'image' ? imageDuration : Math.max(0.2, asset.duration),
+    duration: asset.kind === 'image' ? imageDuration : mediaDuration,
   };
 }
 

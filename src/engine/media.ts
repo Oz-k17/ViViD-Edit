@@ -20,6 +20,8 @@ export interface MediaAsset {
   size: number;
   folder: string;
   createdAt: number;
+  /** 解析しきれなかった素材に付く注意書き（登録自体はする）。 */
+  warning?: string;
 }
 
 export const UNSORTED = '未分類';
@@ -99,21 +101,56 @@ function kindOf(file: File): MediaKind | null {
   return null;
 }
 
+/**
+ * 解析全体の締め切り。
+ * iOS Safari のようにメタデータの読み込みを遅らせるブラウザだと loadedmetadata が
+ * いつまでも来ないことがあり、待ち続けると「読込中…」のまま素材が増えなくなる。
+ * 分かった範囲だけで先へ進めるため、必ずどこかで決着させる。
+ */
+const PROBE_DEADLINE_MS = 12_000;
+
+function withDeadline<T>(work: Promise<T>, fallback: () => T, ms = PROBE_DEADLINE_MS): Promise<T> {
+  return new Promise<T>((resolve) => {
+    let settled = false;
+    const finish = (value: T) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = window.setTimeout(() => finish(fallback()), ms);
+    work.then(finish, () => finish(fallback()));
+  });
+}
+
+/** currentTime への代入は端末によっては例外を投げるので、必ず包む。 */
+function seekQuietly(el: HTMLMediaElement, time: number) {
+  try {
+    el.currentTime = time;
+  } catch {
+    /* まだシークできない状態。呼び出し側のフォールバックに任せる。 */
+  }
+}
+
 /** duration が Infinity になる webm/mov 対策。 */
 function resolveDuration(el: HTMLMediaElement): Promise<number> {
   if (Number.isFinite(el.duration) && el.duration > 0) return Promise.resolve(el.duration);
   return new Promise((resolve) => {
+    let settled = false;
     const done = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
       el.removeEventListener('timeupdate', onUpdate);
-      el.currentTime = 0;
-      resolve(Number.isFinite(el.duration) ? el.duration : 0);
+      seekQuietly(el, 0);
+      resolve(Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 0);
     };
     const onUpdate = () => {
       if (el.currentTime > 0) done();
     };
     el.addEventListener('timeupdate', onUpdate);
-    el.currentTime = 1e6;
-    setTimeout(done, 3000);
+    seekQuietly(el, 1e6);
+    const timer = window.setTimeout(done, 3000);
   });
 }
 
@@ -132,50 +169,90 @@ function snapshot(source: HTMLVideoElement | HTMLImageElement, width: number, he
   }
 }
 
-function probeVideo(url: string): Promise<{ duration: number; width: number; height: number; thumb: string }> {
-  return new Promise((resolve, reject) => {
-    const el = document.createElement('video');
+interface VideoProbe {
+  duration: number;
+  width: number;
+  height: number;
+  thumb: string;
+  /** 読み込めなかった場合の理由。素材自体は登録したうえで、UI で注意書きに使う。 */
+  warning?: string;
+}
+
+/**
+ * 動画のメタデータとサムネイルを取れるだけ取る。
+ * ここで失敗しても素材は登録する。サムネイルが無くても編集はできるし、
+ * 「読み込めないので追加できません」で弾くより、置いてから直せる方が扱いやすい。
+ */
+function probeVideo(url: string): Promise<VideoProbe> {
+  const el = document.createElement('video');
+  const release = () => {
+    el.removeAttribute('src');
+    try {
+      el.load();
+    } catch {
+      /* noop */
+    }
+  };
+
+  const work = new Promise<VideoProbe>((resolve, reject) => {
     el.preload = 'auto';
     el.muted = true;
     el.playsInline = true;
-    el.src = url;
-    el.addEventListener('error', () => reject(new Error('動画を読み込めませんでした')));
+    el.addEventListener('error', () => reject(new Error('decode failed')));
     el.addEventListener('loadedmetadata', async () => {
       const duration = await resolveDuration(el);
       const width = el.videoWidth || 1080;
       const height = el.videoHeight || 1920;
+      let settled = false;
       const finish = () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
         resolve({ duration, width, height, thumb: snapshot(el, width, height) });
-        el.removeAttribute('src');
-        el.load();
+        release();
       };
       el.addEventListener('seeked', finish, { once: true });
-      el.currentTime = Math.min(duration > 0 ? duration / 2 : 0, 1);
-      setTimeout(() => {
-        if (el.readyState >= 2) finish();
-      }, 2500);
+      seekQuietly(el, Math.min(duration > 0 ? duration / 2 : 0, 1));
+      // シークが返ってこなくても、その時点で描ければサムネイルを作る（描けなければ空のまま）。
+      const timer = window.setTimeout(finish, 2500);
     });
+    el.src = url;
+  });
+
+  return withDeadline<VideoProbe>(work, () => {
+    // メタデータすら取れなかった。尺は 0（=既定の長さで置かれる）にしておく。
+    const probe: VideoProbe = {
+      duration: Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 0,
+      width: el.videoWidth || 1080,
+      height: el.videoHeight || 1920,
+      thumb: '',
+      warning: 'この動画は情報を読み取れませんでした（再生できない形式の可能性があります）',
+    };
+    release();
+    return probe;
   });
 }
 
-function probeImage(url: string): Promise<{ width: number; height: number; thumb: string }> {
-  return new Promise((resolve, reject) => {
+function probeImage(url: string): Promise<{ width: number; height: number; thumb: string } | null> {
+  const work = new Promise<{ width: number; height: number; thumb: string }>((resolve, reject) => {
     const img = new Image();
     img.onload = () =>
       resolve({ width: img.naturalWidth, height: img.naturalHeight, thumb: snapshot(img, img.naturalWidth, img.naturalHeight) });
-    img.onerror = () => reject(new Error('画像を読み込めませんでした'));
+    img.onerror = () => reject(new Error('decode failed'));
     img.src = url;
   });
+  return withDeadline<{ width: number; height: number; thumb: string } | null>(work, () => null);
 }
 
 function probeAudio(url: string): Promise<number> {
-  return new Promise((resolve, reject) => {
+  const work = new Promise<number>((resolve, reject) => {
     const el = document.createElement('audio');
     el.preload = 'metadata';
-    el.src = url;
-    el.addEventListener('error', () => reject(new Error('音声を読み込めませんでした')));
+    el.addEventListener('error', () => reject(new Error('decode failed')));
     el.addEventListener('loadedmetadata', async () => resolve(await resolveDuration(el)));
+    el.src = url;
   });
+  return withDeadline<number>(work, () => 0);
 }
 
 // ---------- レジストリ ----------
@@ -235,9 +312,18 @@ class MediaRegistry {
     let asset: MediaAsset;
     if (kind === 'video') {
       const meta = await probeVideo(url);
-      asset = { ...base, url, duration: meta.duration, width: meta.width, height: meta.height, thumbnail: meta.thumb };
+      asset = {
+        ...base,
+        url,
+        duration: meta.duration,
+        width: meta.width,
+        height: meta.height,
+        thumbnail: meta.thumb,
+        warning: meta.warning,
+      };
     } else if (kind === 'image') {
       const meta = await probeImage(url);
+      if (!meta) throw new Error(`${file.name} を画像として読み込めませんでした`);
       asset = { ...base, url, duration: 0, width: meta.width, height: meta.height, thumbnail: meta.thumb };
     } else {
       asset = { ...base, url, duration: await probeAudio(url), width: 0, height: 0, thumbnail: '' };

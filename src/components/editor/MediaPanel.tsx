@@ -141,13 +141,15 @@ export function MediaPanel() {
                 e.dataTransfer.effectAllowed = 'copy';
               }}
               onDoubleClick={() => addToTimeline(asset)}
-              title={`${asset.name}\nタイムラインへドラッグ、またはダブルクリックで配置`}
+              title={asset.warning ? `${asset.name}\n${asset.warning}` : `${asset.name}\nタイムラインへドラッグ、またはダブルクリックで配置`}
             >
               <div className="asset-thumb">
                 {asset.thumbnail ? <img src={asset.thumbnail} alt="" /> : <span className="asset-icon">{asset.kind === 'audio' ? '♪' : '▦'}</span>}
               </div>
               <strong>{asset.name}</strong>
-              <span>{asset.kind === 'image' ? '画像' : formatTime(asset.duration)}</span>
+              <span>
+                {asset.warning ? '⚠ 読み取れず' : asset.kind === 'image' ? '画像' : formatTime(asset.duration)}
+              </span>
             </li>
           ))}
         </ul>

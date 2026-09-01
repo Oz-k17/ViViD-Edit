@@ -192,14 +192,101 @@ interface HostDownloads {
   save(request: { filename: string; data: Blob }): Promise<unknown>;
 }
 
+function hostUse(): ((name: string) => Promise<unknown>) | null {
+  const use = (window as { claude?: { use?: (name: string) => Promise<unknown> } }).claude?.use;
+  return typeof use === 'function' ? use : null;
+}
+
+/**
+ * claude.ai の Artifact のような埋め込みビューアで開かれているか。
+ * この環境では <a download> が無効化されており、保存は downloads ケイパビリティ経由でしか行えない
+ * （そちらには 16 MiB の上限がある）。通常のブラウザタブではこの判定は false になる。
+ */
+export function isEmbeddedHost(): boolean {
+  return hostUse() !== null;
+}
+
+/** 埋め込みビューアの downloads ケイパビリティが受け付けるファイルサイズの上限。 */
+export const EMBEDDED_SAVE_LIMIT_BYTES = 16 * 1024 * 1024;
+
+/** 書き出し設定から、おおよその出力サイズを見積もる（コンテナのオーバーヘッドは無視した概算）。 */
+export function estimateExportBytes(durationSeconds: number, videoBitsPerSecond: number, audioBitsPerSecond = 128_000): number {
+  return Math.max(0, durationSeconds) * (videoBitsPerSecond + audioBitsPerSecond) / 8;
+}
+
+interface NativeBridge {
+  postMessage(message: unknown): void;
+}
+
+/** iOS 版（Swift Playgrounds のガワ）に埋め込まれて動いているか。 */
+function nativeBridge(): NativeBridge | null {
+  const bridge = (window as { webkit?: { messageHandlers?: Record<string, NativeBridge | undefined> } }).webkit
+    ?.messageHandlers?.tateyoko;
+  return bridge && typeof bridge.postMessage === 'function' ? bridge : null;
+}
+
+export function isNativeHost(): boolean {
+  return nativeBridge() !== null;
+}
+
+function base64FromBytes(bytes: Uint8Array): string {
+  let binary = '';
+  // 一度に渡す引数が多すぎるとスタックが溢れるので、小分けにして文字列化する。
+  const step = 8192;
+  for (let i = 0; i < bytes.length; i += step) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + step));
+  }
+  return btoa(binary);
+}
+
+/**
+ * ネイティブ側（iOS アプリ）へ動画を渡して保存してもらう。
+ * 数十 MB の動画を base64 で一度に渡すとメモリを食い潰すので、分割して送る。
+ */
+async function saveViaNative(bridge: NativeBridge, blob: Blob, filename: string): Promise<void> {
+  const CHUNK_BYTES = 512 * 1024;
+  const done = new Promise<void>((resolve, reject) => {
+    (window as unknown as { __tateyokoSaveDone?: (ok: boolean, detail: string) => void }).__tateyokoSaveDone = (
+      ok,
+      detail,
+    ) => {
+      if (ok) resolve();
+      else reject(Object.assign(new Error(detail), { code: detail }));
+    };
+  });
+
+  try {
+    bridge.postMessage({ type: 'begin', filename });
+    for (let offset = 0; offset < blob.size; offset += CHUNK_BYTES) {
+      const buffer = await blob.slice(offset, offset + CHUNK_BYTES).arrayBuffer();
+      bridge.postMessage({ type: 'chunk', data: base64FromBytes(new Uint8Array(buffer)) });
+    }
+    bridge.postMessage({ type: 'end' });
+  } catch (error) {
+    bridge.postMessage({ type: 'abort', message: '受け渡しに失敗しました' });
+    throw error;
+  }
+
+  await done;
+}
+
 /**
  * 書き出したファイルを保存する。
- * 埋め込みビューア（claude.ai の Artifact など）では <a download> が無効化されているので、
- * ホストが保存 API を用意していればそちらを使い、無ければ通常のダウンロードに落とす。
+ * 保存経路は環境ごとに違うので、使えるものを順に試す。
+ *   1. iOS アプリのガワ（WKWebView）: ネイティブに渡してカメラロール / ファイルへ保存
+ *   2. claude.ai の Artifact など: downloads ケイパビリティ（16 MiB まで）
+ *   3. 通常のブラウザ: <a download>
+ * ホスト側の保存が失敗した場合は、その理由をそのまま呼び出し元に投げる。
  */
 export async function saveBlob(blob: Blob, filename: string): Promise<void> {
-  const use = (window as { claude?: { use?: (name: string) => Promise<unknown> } }).claude?.use;
-  if (typeof use === 'function') {
+  const native = nativeBridge();
+  if (native) {
+    await saveViaNative(native, blob, filename);
+    return;
+  }
+
+  const use = hostUse();
+  if (use) {
     const downloads = (await use('downloads')) as HostDownloads | null;
     if (downloads) {
       await downloads.save({ filename, data: blob });
