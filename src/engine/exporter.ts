@@ -188,7 +188,24 @@ export class Exporter {
 /** プレビューの描画ループが参照するので、アプリ内で 1 つだけ持つ。 */
 export const exporter = new Exporter();
 
-export function downloadBlob(blob: Blob, filename: string) {
+interface HostDownloads {
+  save(request: { filename: string; data: Blob }): Promise<unknown>;
+}
+
+/**
+ * 書き出したファイルを保存する。
+ * 埋め込みビューア（claude.ai の Artifact など）では <a download> が無効化されているので、
+ * ホストが保存 API を用意していればそちらを使い、無ければ通常のダウンロードに落とす。
+ */
+export async function saveBlob(blob: Blob, filename: string): Promise<void> {
+  const use = (window as { claude?: { use?: (name: string) => Promise<unknown> } }).claude?.use;
+  if (typeof use === 'function') {
+    const downloads = (await use('downloads')) as HostDownloads | null;
+    if (downloads) {
+      await downloads.save({ filename, data: blob });
+      return;
+    }
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

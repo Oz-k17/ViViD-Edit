@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { downloadBlob, exporter, exportSize, isExportSupported, pickMimeType, type ExportResult } from '../../engine/exporter';
+import { exporter, exportSize, isExportSupported, pickMimeType, saveBlob, type ExportResult } from '../../engine/exporter';
 import { formatBytes } from '../../engine/media';
 import { player } from '../../engine/player';
 import { sequenceDuration } from '../../model/ops';
@@ -31,6 +31,16 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const size = exportSize(aspect, quality);
   const running = progress !== null;
 
+  /** 保存は viewer 側で断られることがあるので、結果をそのまま伝える。 */
+  const save = async (output: ExportResult) => {
+    try {
+      await saveBlob(output.blob, output.filename);
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      setError(code === 'declined' ? '保存はキャンセルされました。' : `保存できませんでした（${code ?? 'エラー'}）`);
+    }
+  };
+
   const run = async () => {
     setError(null);
     setResult(null);
@@ -39,7 +49,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     try {
       const output = await exporter.run(project.name, sequence, player, { aspect, quality, fps: sequence.fps, bitrate, format }, setProgress);
       setResult(output);
-      downloadBlob(output.blob, output.filename);
+      await save(output);
     } catch (e) {
       setError(e instanceof Error ? e.message : '書き出しに失敗しました');
     } finally {
@@ -120,7 +130,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         {result && (
           <p className="success-note">
             {result.filename}（{formatBytes(result.blob.size)}）を保存しました。
-            <button type="button" className="link" onClick={() => downloadBlob(result.blob, result.filename)}>
+            <button type="button" className="link" onClick={() => void save(result)}>
               もう一度ダウンロード
             </button>
           </p>
