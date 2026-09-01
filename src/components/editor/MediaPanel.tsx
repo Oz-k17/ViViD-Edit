@@ -67,6 +67,8 @@ export function MediaPanel() {
     const errors = await importFiles(files, folder === 'すべて' ? UNSORTED : folder);
     setBusy(false);
     if (errors.length) setError(errors.join(' / '));
+    // 新しい素材は一覧の先頭（1 ページ目）に入るので、他のページを見ていても追加したものが見える位置に戻す。
+    setPage(0);
   };
 
   /** ダブルクリック / ボタンで、再生ヘッド位置の空いているトラックへ置く。 */
