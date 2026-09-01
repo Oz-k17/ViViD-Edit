@@ -16,9 +16,12 @@ Web 版のエディタをそのまま `WKWebView` で表示し、**書き出し�
 
 ### iPad（いちばん簡単）
 
-1. このリポジトリを ZIP でダウンロードして展開する
-2. `ios/ViVidEdit.swiftpm` を Swift Playgrounds で開く
-3. 実行（▶）すると、その iPad にアプリとして入る
+1. iPad の Safari で
+   [**ViViD-Edit-main.zip**](https://github.com/Oz-k17/ViViD-Edit/archive/refs/heads/main.zip)
+   を開く（「ファイル」アプリに保存されます）
+2. 「ファイル」アプリで保存した ZIP をタップして展開する
+3. `ios/ViVidEdit.swiftpm` をタップすると Swift Playgrounds が開く
+4. 実行（▶）すると、その iPad にアプリとして入る
 
 ### iPhone
 

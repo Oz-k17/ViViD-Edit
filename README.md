@@ -6,32 +6,56 @@ Premiere Pro 風のマルチトラックタイムラインを持ちながら、T
 
 素材の読み込みも編集も書き出しも、すべてブラウザの中で処理します。**動画がサーバーに送られることは一切ありません。**
 
+## ダウンロード
+
+### ⬇ [**ViViD-Edit-main.zip をダウンロード**](https://github.com/Oz-k17/ViViD-Edit/archive/refs/heads/main.zip)
+
+約 340 KB。ビルド済みのものが入っているので、展開すればそのまま使えます。
+iPhone / iPad の Safari でもこのリンクから「ファイル」アプリに保存でき、
+保存した ZIP をタップすると同じ場所に展開されます。
+
+展開したあとにすることは端末で違います。
+
+| 端末 | すること |
+| --- | --- |
+| パソコン | `docs/index.html` をブラウザで開く |
+| iPad | `ios/ViVidEdit.swiftpm` をタップ → Swift Playgrounds が開くので ▶ で実行 |
+| iPhone | **ZIP からは動かせません**（下記参照）。GitHub Pages の URL を使ってください |
+
+**iPhone について。** Swift Playgrounds は iPad と Mac 向けで iPhone 版が無いため、`.swiftpm` を
+その場で開くことはできません。また iPhone の Safari は「ファイル」アプリの中にある HTML を開いても
+JavaScript を実行しないので、`docs/index.html` を展開しても動きません。
+iPhone で使うには、次のどちらかになります。
+
+- **GitHub Pages の URL で開く**（下の手順で有効化。いちばん手軽）
+- **Mac の Xcode でアプリとして入れる**（カメラロールへ保存できるのはこちらだけ）
+
 ## 開き方
 
-### 1. ダウンロードして開く（いちばん手軽）
+### パソコンで開く
 
-このリポジトリを ZIP でダウンロードして展開し、**`docs/index.html`** をブラウザで開くだけで動きます。
-ビルド済みのものが入っているので、インストールも準備も要りません。
+ZIP を展開して **`docs/index.html`** をブラウザで開くだけです。インストールも準備も要りません。
 
-### 2. URL で開けるようにする（GitHub Pages）
+### URL で開けるようにする（GitHub Pages）
 
 リポジトリの **Settings → Pages** を開き、Source を **Deploy from a branch**、
 ブランチを **`main`**、フォルダを **`/docs`** にして Save すると、数分後に
 `https://oz-k17.github.io/ViViD-Edit/` で開けるようになります。
-公開したくない場合は設定しなくて構いません（上の 1. だけで使えます）。
+**iPhone から使う場合はこれがいちばん確実です。**
+公開したくない場合は設定しなくて構いません（パソコンなら上の方法だけで使えます）。
 
-### 3. 開発用に動かす
+### iPhone / iPad にアプリとして入れる
+
+`ios/ViVidEdit.swiftpm` を Swift Playgrounds（iPad）または Xcode（Mac → iPhone）で開いて実行します。
+くわしくは [`ios/ViVidEdit.swiftpm/README.md`](ios/ViVidEdit.swiftpm/README.md) を見てください。
+ブラウザ版と違い、**書き出した動画をカメラロールへ直接保存できます**。
+
+### 開発用に動かす
 
 ```bash
 npm install
 npm run dev      # http://localhost:5173
 ```
-
-### 4. iPhone / iPad にアプリとして入れる
-
-`ios/ViVidEdit.swiftpm` を Swift Playgrounds（iPad）または Xcode（Mac → iPhone）で開いて実行します。
-くわしくは [`ios/ViVidEdit.swiftpm/README.md`](ios/ViVidEdit.swiftpm/README.md) を見てください。
-ブラウザ版と違い、**書き出した動画をカメラロールへ直接保存できます**。
 
 ### コマンド
 
