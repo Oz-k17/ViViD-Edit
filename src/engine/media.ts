@@ -26,6 +26,8 @@ export interface MediaAsset {
 
 export const UNSORTED = '未分類';
 export const SFX_FOLDER = '効果音';
+/** テロップに絵文字として挿入できる画像を置いておくフォルダ。 */
+export const EMOJI_FOLDER = '絵文字';
 
 let seq = 0;
 export function uid(prefix: string): string {

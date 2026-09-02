@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { formatTime, mediaRegistry } from '../../engine/media';
+import { useRef, useState, type MutableRefObject, type SyntheticEvent } from 'react';
+import { EMOJI_FOLDER, formatTime, mediaRegistry } from '../../engine/media';
 import { player } from '../../engine/player';
 import { FONT_OPTIONS, LOOK_PRESETS, SPEED_PRESETS, TEXT_PRESETS } from '../../presets';
 import { removeClips } from '../../model/ops';
@@ -10,6 +10,8 @@ import {
   EFFECT_META,
   TEXT_ANIMATION_LABELS,
   TRANSITION_META,
+  emojiToken,
+  previewText,
   type AspectKey,
   type Clip,
   type Effect,
@@ -22,12 +24,17 @@ import {
 import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
 import { ColorInput, EmptyHint, Field, Panel, Segmented, Slider, Tabs, Toggle } from '../ui';
+import { importFiles, useMediaAssets } from './MediaPanel';
 
-type TabKey = 'props' | 'effects' | 'text';
+type TabKey = 'props' | 'effects' | 'text' | 'emoji';
+
+/** テロップのテキストエリアで最後にカーソルがあった位置（絵文字タブから挿入する先）。 */
+type CursorRef = MutableRefObject<{ clipId: string; pos: number } | null>;
 
 export function Inspector() {
   const { sequence, selection, apply } = useEditor();
   const [tab, setTab] = useState<TabKey>('props');
+  const cursorRef: CursorRef = useRef(null);
 
   const clips = sequence.clips.filter((c) => selection.includes(c.id));
 
@@ -50,7 +57,7 @@ export function Inspector() {
   const clip = clips[0];
   const tabs: { value: TabKey; label: string }[] = [
     { value: 'props', label: 'プロパティ' },
-    ...(clip.kind === 'text' ? [{ value: 'text' as TabKey, label: 'テキスト' }] : []),
+    ...(clip.kind === 'text' ? [{ value: 'text' as TabKey, label: 'テキスト' }, { value: 'emoji' as TabKey, label: '絵文字' }] : []),
     ...(clip.kind !== 'audio' ? [{ value: 'effects' as TabKey, label: 'エフェクト' }] : []),
   ];
   const active = tabs.some((t) => t.value === tab) ? tab : 'props';
@@ -72,7 +79,8 @@ export function Inspector() {
       <Tabs value={active} options={tabs} onChange={setTab} />
       {active === 'props' && <PropsTab clip={clip} />}
       {active === 'effects' && <EffectsTab clip={clip} />}
-      {active === 'text' && clip.text && <TextTab clip={clip} text={clip.text} />}
+      {active === 'text' && clip.text && <TextTab clip={clip} text={clip.text} cursorRef={cursorRef} />}
+      {active === 'emoji' && clip.text && <EmojiTab clip={clip} text={clip.text} cursorRef={cursorRef} />}
     </Panel>
   );
 }
@@ -143,7 +151,7 @@ function PropsTab({ clip }: { clip: Clip }) {
 
   return (
     <>
-      <p className="asset-name">{clip.kind === 'text' ? (clip.text?.content.split('\n')[0] || 'テロップ') : (asset?.name ?? '素材')}</p>
+      <p className="asset-name">{clip.kind === 'text' ? (previewText(clip.text?.content ?? '').split('\n')[0] || 'テロップ') : (asset?.name ?? '素材')}</p>
       <p className="muted">
         {formatTime(clip.start)} → {formatTime(clip.start + clip.duration)}（{clip.duration.toFixed(2)} 秒）
       </p>
@@ -474,10 +482,14 @@ function EffectsTab({ clip }: { clip: Clip }) {
   );
 }
 
-function TextTab({ clip, text }: { clip: Clip; text: TextProps }) {
+function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; cursorRef: CursorRef }) {
   const patch = useClipPatch(clip);
   const { addTemplate } = useApp();
   const set = (changes: Partial<TextProps>, key?: string) => patch({ text: { ...text, ...changes } }, key);
+  // 絵文字タブから挿入するとき、テキストエリアで最後に触れていた位置に入れられるよう覚えておく。
+  const trackCursor = (e: SyntheticEvent<HTMLTextAreaElement>) => {
+    cursorRef.current = { clipId: clip.id, pos: e.currentTarget.selectionStart };
+  };
 
   return (
     <>
@@ -486,7 +498,13 @@ function TextTab({ clip, text }: { clip: Clip; text: TextProps }) {
         rows={3}
         value={text.content}
         placeholder="ここに文字を入力"
-        onChange={(e) => set({ content: e.target.value }, 'content')}
+        onChange={(e) => {
+          set({ content: e.target.value }, 'content');
+          cursorRef.current = { clipId: clip.id, pos: e.target.selectionStart };
+        }}
+        onSelect={trackCursor}
+        onClick={trackCursor}
+        onKeyUp={trackCursor}
       />
 
       <Field label="スタイル">
@@ -592,12 +610,79 @@ function TextTab({ clip, text }: { clip: Clip; text: TextProps }) {
         type="button"
         className="wide ghost"
         onClick={() => {
-          const name = window.prompt('テンプレート名', text.content.split('\n')[0] || 'テロップ');
+          const name = window.prompt('テンプレート名', previewText(text.content).split('\n')[0] || 'テロップ');
           if (name) addTemplate({ kind: 'text', name, text });
         }}
       >
         このスタイルをテンプレートに保存
       </button>
+    </>
+  );
+}
+
+function EmojiTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; cursorRef: CursorRef }) {
+  const patch = useClipPatch(clip);
+  const assets = useMediaAssets();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const emojis = assets.filter((a) => a.folder === EMOJI_FOLDER && a.kind === 'image');
+
+  const handleFiles = async (files: FileList | File[]) => {
+    setBusy(true);
+    setError(null);
+    const errors = await importFiles(files, EMOJI_FOLDER);
+    setBusy(false);
+    if (errors.length) setError(errors.join(' / '));
+  };
+
+  /** 最後にカーソルがあった位置（無ければ末尾）へ、普通の文字と同じように差し込む。 */
+  const insert = (mediaId: string) => {
+    const content = text.content;
+    const remembered = cursorRef.current?.clipId === clip.id ? cursorRef.current.pos : content.length;
+    const pos = Math.max(0, Math.min(content.length, remembered));
+    const token = emojiToken(mediaId);
+    patch({ text: { ...text, content: content.slice(0, pos) + token + content.slice(pos) } }, 'content');
+    cursorRef.current = { clipId: clip.id, pos: pos + token.length };
+  };
+
+  return (
+    <>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        hidden
+        onChange={(e) => {
+          if (e.target.files?.length) void handleFiles(e.target.files);
+          e.target.value = '';
+        }}
+      />
+      <button type="button" className="wide ghost" onClick={() => inputRef.current?.click()} disabled={busy}>
+        {busy ? '読込中…' : '＋ 画像から絵文字を追加'}
+      </button>
+      {error && <p className="error-note">{error}</p>}
+
+      {emojis.length === 0 ? (
+        <EmptyHint>
+          画像をアップロードすると、ここからテロップの文字列の中へ、普通の文字と同じように挿入できます。
+        </EmptyHint>
+      ) : (
+        <ul className="emoji-grid">
+          {emojis.map((asset) => (
+            <li key={asset.id}>
+              <button type="button" className="emoji-btn" title={asset.name} onClick={() => insert(asset.id)}>
+                {asset.thumbnail ? <img src={asset.thumbnail} alt={asset.name} /> : <span className="asset-icon">▦</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="muted small">
+        タップすると、テキストタブで最後にカーソルがあった位置に挿入されます。挿入後は普通の文字と同じく選択・削除・並べ替えができます。
+      </p>
     </>
   );
 }

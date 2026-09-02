@@ -7,8 +7,12 @@
 import { clipAtTime, previousAdjacent } from '../model/ops';
 import {
   clipEnd,
+  contentAtomCount,
   sourceTimeAt,
+  splitTextContent,
+  truncateAtoms,
   type Clip,
+  type ContentSegment,
   type Effect,
   type Sequence,
   type TextProps,
@@ -25,6 +29,8 @@ export interface Rect {
 export interface RenderSources {
   frameFor(clip: Clip): CanvasImageSource | null;
   sizeFor(clip: Clip): { width: number; height: number } | null;
+  /** テロップ内の絵文字（アップロードした画像）を mediaId から解決する。 */
+  emojiFor(mediaId: string): HTMLImageElement | null;
 }
 
 export interface RenderOptions {
@@ -303,39 +309,89 @@ function renderVideoTrack(ctx: CanvasRenderingContext2D, dc: DrawContext, track:
 
 // ---------- テキスト ----------
 
-function wrapLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
-  const out: string[] = [];
-  for (const paragraph of text.split('\n')) {
-    if (paragraph === '') {
-      out.push('');
+/** 折り返し後の1行ぶん。絵文字はテキストと地続きに並ぶ1つのトークンとして扱う。 */
+type LineToken = { text: string } | { emoji: string };
+
+/** 絵文字は正方形の枠に収める分、ここでは常にこの幅として折り返し計算する。 */
+function lineWidth(ctx: CanvasRenderingContext2D, tokens: LineToken[], emojiSize: number): number {
+  let w = 0;
+  for (const t of tokens) w += 'emoji' in t ? emojiSize : ctx.measureText(t.text).width;
+  return w;
+}
+
+function wrapContent(
+  ctx: CanvasRenderingContext2D,
+  segments: ContentSegment[],
+  maxWidth: number,
+  emojiSize: number,
+): LineToken[][] {
+  const lines: LineToken[][] = [];
+  let line: LineToken[] = [];
+  let width = 0;
+
+  const breakLine = () => {
+    // 折り返した行の末尾に空白だけが残っていると、幅の計算や中央寄せがずれる。
+    while (line.length > 0) {
+      const last = line[line.length - 1];
+      if (!('text' in last) || !/^\s+$/.test(last.text)) break;
+      width -= ctx.measureText(last.text).width;
+      line.pop();
+    }
+    lines.push(line);
+    line = [];
+    width = 0;
+  };
+
+  const place = (token: LineToken, w: number) => {
+    line.push(token);
+    width += w;
+  };
+
+  const placeWord = (raw: string) => {
+    let word = raw;
+    let w = ctx.measureText(word).width;
+    if (width > 0 && width + w > maxWidth) {
+      breakLine();
+      word = word.trimStart();
+      if (word === '') return;
+      w = ctx.measureText(word).width;
+    }
+    if (width === 0 && w > maxWidth) {
+      // 単語1つで折り返し幅を超える → 文字単位で折る（日本語など単語区切りが無い場合）。
+      let chunk = '';
+      for (const ch of word) {
+        if (chunk !== '' && ctx.measureText(chunk + ch).width > maxWidth) {
+          place({ text: chunk }, ctx.measureText(chunk).width);
+          breakLine();
+          chunk = '';
+        }
+        chunk += ch;
+      }
+      if (chunk) place({ text: chunk }, ctx.measureText(chunk).width);
+      return;
+    }
+    place({ text: word }, w);
+  };
+
+  const placeEmoji = (id: string) => {
+    if (width > 0 && width + emojiSize > maxWidth) breakLine();
+    place({ emoji: id }, emojiSize);
+  };
+
+  for (const seg of segments) {
+    if ('emoji' in seg) {
+      placeEmoji(seg.emoji);
       continue;
     }
-    let line = '';
-    // 日本語は単語区切りが無いので、空白で試したうえで溢れる塊は文字単位で折る。
-    const tokens = paragraph.match(/\S+\s*|\s+/g) ?? [paragraph];
-    const push = (token: string) => {
-      if (ctx.measureText(line + token).width <= maxWidth) {
-        line += token;
-        return;
-      }
-      if (line === '') {
-        for (const ch of token) {
-          if (line !== '' && ctx.measureText(line + ch).width > maxWidth) {
-            out.push(line);
-            line = '';
-          }
-          line += ch;
-        }
-        return;
-      }
-      out.push(line.trimEnd());
-      line = '';
-      push(token.trimStart());
-    };
-    tokens.forEach(push);
-    out.push(line.trimEnd());
+    seg.text.split('\n').forEach((paragraph, i) => {
+      if (i > 0) breakLine();
+      if (paragraph === '') return;
+      const words = paragraph.match(/\S+\s*|\s+/g) ?? [paragraph];
+      words.forEach(placeWord);
+    });
   }
-  return out;
+  lines.push(line);
+  return lines;
 }
 
 interface TextAnim {
@@ -389,7 +445,8 @@ function textAnimation(text: TextProps, local: number, duration: number): TextAn
       anim.alpha = Math.min(1, tIn * 1.6, tOut * 2);
       break;
     case 'typewriter': {
-      const chars = text.content.length;
+      // 絵文字は1文字ぶんとして数える（トークン文字列の途中半端な位置で切れないように）。
+      const chars = contentAtomCount(splitTextContent(text.content));
       const speed = Math.min(duration * 0.6, chars * 0.045);
       anim.visibleChars = speed <= 0 ? chars : Math.ceil((local / speed) * chars);
       anim.alpha = Math.min(1, tOut * 2);
@@ -401,12 +458,28 @@ function textAnimation(text: TextProps, local: number, duration: number): TextAn
   return anim;
 }
 
+/** 絵文字画像を、縦横比を保ったまま size 四方の枠へ収めて描く（実際の文字の1文字ぶんの見た目に合わせる）。 */
+function drawEmojiGlyph(ctx: CanvasRenderingContext2D, img: HTMLImageElement, x: number, yMid: number, size: number) {
+  const iw = img.naturalWidth || size;
+  const ih = img.naturalHeight || size;
+  if (!iw || !ih) return;
+  const scale = Math.min(size / iw, size / ih);
+  const w = iw * scale;
+  const h = ih * scale;
+  try {
+    ctx.drawImage(img, x + (size - w) / 2, yMid - h / 2, w, h);
+  } catch {
+    /* デコード待ちなど。次のフレームで描ければよい。 */
+  }
+}
+
 function drawTextClip(
   ctx: CanvasRenderingContext2D,
   sequence: Sequence,
   clip: Clip,
   time: number,
   bounds: Map<string, Rect>,
+  sources: RenderSources,
 ) {
   const text = clip.text;
   if (!text) return;
@@ -416,18 +489,21 @@ function drawTextClip(
   const alpha = anim.alpha * clip.opacity * env;
   if (alpha <= 0.002) return;
 
-  const content = anim.visibleChars === null ? text.content : text.content.slice(0, Math.max(0, anim.visibleChars));
+  const allSegments = splitTextContent(text.content);
+  const segments = anim.visibleChars === null ? allSegments : truncateAtoms(allSegments, anim.visibleChars);
   const fontSize = text.fontSize * (clip.scale || 1);
+  // 絵文字は正方形の枠として、だいたい大文字1文字ぶんの見た目の大きさに合わせる。
+  const emojiSize = fontSize * 1.05;
 
   ctx.save();
   ctx.font = `${text.weight} ${fontSize}px ${text.fontFamily}`;
   if (supportsLetterSpacing) ctx.letterSpacing = `${text.letterSpacing}px`;
   ctx.textBaseline = 'middle';
 
-  const lines = wrapLines(ctx, content || ' ', sequence.width * text.maxWidth);
+  const lines = wrapContent(ctx, segments.length ? segments : [{ text: ' ' }], sequence.width * text.maxWidth, emojiSize);
   const lineHeight = fontSize * text.lineHeight;
   const blockHeight = lineHeight * lines.length;
-  const widths = lines.map((line) => ctx.measureText(line).width);
+  const widths = lines.map((line) => lineWidth(ctx, line, emojiSize));
   const blockWidth = Math.max(1, ...widths);
 
   const cx = (0.5 + clip.x) * sequence.width + anim.offsetX;
@@ -446,7 +522,7 @@ function drawTextClip(
     ctx.globalAlpha = alpha * text.bgOpacity;
     ctx.fillStyle = text.bgColor;
     lines.forEach((line, i) => {
-      if (!line) return;
+      if (line.length === 0) return;
       const w = widths[i] + padX * 2;
       const y = -blockHeight / 2 + i * lineHeight;
       const x =
@@ -459,25 +535,37 @@ function drawTextClip(
 
   ctx.lineJoin = 'round';
   ctx.miterLimit = 2;
-  ctx.textAlign = text.align === 'center' ? 'center' : text.align;
+  // 絵文字とテキストをトークンごとに手で並べていくため、canvas 側の揃えは使わず常に left 基準で描く。
+  ctx.textAlign = 'left';
 
   lines.forEach((line, i) => {
     const y = -blockHeight / 2 + i * lineHeight + lineHeight / 2;
-    const x = text.align === 'left' ? -blockWidth / 2 : text.align === 'right' ? blockWidth / 2 : 0;
-    if (text.shadow > 0) {
-      ctx.shadowColor = 'rgba(0,0,0,0.65)';
-      ctx.shadowBlur = text.shadow;
-      ctx.shadowOffsetY = text.shadow * 0.25;
+    const w = widths[i];
+    let x = text.align === 'left' ? -blockWidth / 2 : text.align === 'right' ? blockWidth / 2 - w : -w / 2;
+
+    for (const token of line) {
+      if ('emoji' in token) {
+        const img = sources.emojiFor(token.emoji);
+        if (img) drawEmojiGlyph(ctx, img, x, y, emojiSize);
+        x += emojiSize;
+        continue;
+      }
+      if (text.shadow > 0) {
+        ctx.shadowColor = 'rgba(0,0,0,0.65)';
+        ctx.shadowBlur = text.shadow;
+        ctx.shadowOffsetY = text.shadow * 0.25;
+      }
+      if (text.strokeWidth > 0) {
+        ctx.strokeStyle = text.strokeColor;
+        ctx.lineWidth = text.strokeWidth * 2;
+        ctx.strokeText(token.text, x, y);
+      }
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = text.color;
+      ctx.fillText(token.text, x, y);
+      x += ctx.measureText(token.text).width;
     }
-    if (text.strokeWidth > 0) {
-      ctx.strokeStyle = text.strokeColor;
-      ctx.lineWidth = text.strokeWidth * 2;
-      ctx.strokeText(line, x, y);
-    }
-    ctx.shadowColor = 'transparent';
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = text.color;
-    ctx.fillText(line, x, y);
   });
 
   ctx.restore();
@@ -559,7 +647,7 @@ export function renderFrame(
     for (const clip of sequence.clips) {
       if (clip.trackId !== track.id) continue;
       if (time < clip.start || time >= clipEnd(clip)) continue;
-      drawTextClip(ctx, sequence, clip, time, bounds);
+      drawTextClip(ctx, sequence, clip, time, bounds, sources);
     }
   }
 

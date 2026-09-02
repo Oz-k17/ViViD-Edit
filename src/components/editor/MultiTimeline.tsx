@@ -13,7 +13,7 @@ import {
   trimClip,
 } from '../../model/ops';
 import { clipFromAsset } from '../../model/factory';
-import { clipEnd, TRANSITION_META, type Clip, type Sequence, type Track } from '../../model/types';
+import { clipEnd, previewText, TRANSITION_META, type Clip, type Sequence, type Track } from '../../model/types';
 import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
 
@@ -340,7 +340,7 @@ function ClipBlock({
   const hasPrevious = track.kind === 'video' && previousAdjacent(sequence, clip) !== null;
 
   const label =
-    clip.kind === 'text' ? `T ${clip.text?.content.split('\n')[0] || '（空）'}` : (asset?.name ?? '素材');
+    clip.kind === 'text' ? `T ${previewText(clip.text?.content ?? '').split('\n')[0] || '（空）'}` : (asset?.name ?? '素材');
 
   const startMove = (event: React.PointerEvent) => {
     if (track.locked) return;

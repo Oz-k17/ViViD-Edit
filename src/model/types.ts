@@ -207,6 +207,63 @@ export const TEXT_ANIMATION_LABELS: Record<TextAnimation, string> = {
   typewriter: 'タイプライター',
 };
 
+/**
+ * テロップ本文の中で、アップロードした画像を「絵文字」として参照するときの書式。
+ * 通常の文字と地続きの1つの文字列として扱えるよう、content の中に埋め込む
+ * トークンとして表現する（挿入・削除は普通の文字入力と同じくテキストエリアで完結する）。
+ */
+const EMOJI_TOKEN_RE = /\{\{emoji:([A-Za-z0-9_-]+)\}\}/g;
+
+export function emojiToken(mediaId: string): string {
+  return `{{emoji:${mediaId}}}`;
+}
+
+export type ContentSegment = { text: string } | { emoji: string };
+
+/** content を「テキストの断片」と「絵文字参照」が交互に並ぶ列に分解する。 */
+export function splitTextContent(content: string): ContentSegment[] {
+  const out: ContentSegment[] = [];
+  let last = 0;
+  for (const m of content.matchAll(EMOJI_TOKEN_RE)) {
+    const index = m.index ?? 0;
+    if (index > last) out.push({ text: content.slice(last, index) });
+    out.push({ emoji: m[1] });
+    last = index + m[0].length;
+  }
+  if (last < content.length) out.push({ text: content.slice(last) });
+  return out;
+}
+
+/** タイプライター演出用。絵文字は1文字ぶんとして数える。 */
+export function contentAtomCount(segments: ContentSegment[]): number {
+  return segments.reduce((n, s) => n + ('emoji' in s ? 1 : s.text.length), 0);
+}
+
+/** タイプライター演出用。絵文字が欠けて見えないよう、絵文字単位でしか切らない。 */
+export function truncateAtoms(segments: ContentSegment[], count: number): ContentSegment[] {
+  let remaining = Math.max(0, count);
+  const out: ContentSegment[] = [];
+  for (const seg of segments) {
+    if (remaining <= 0) break;
+    if ('emoji' in seg) {
+      out.push(seg);
+      remaining -= 1;
+    } else if (seg.text.length <= remaining) {
+      out.push(seg);
+      remaining -= seg.text.length;
+    } else {
+      out.push({ text: seg.text.slice(0, remaining) });
+      remaining = 0;
+    }
+  }
+  return out;
+}
+
+/** 一覧のラベルなど、絵文字トークンをそのまま出したくない場所での短い表示用。 */
+export function previewText(content: string): string {
+  return content.replace(EMOJI_TOKEN_RE, '🖼');
+}
+
 export function clipEnd(clip: Clip): number {
   return clip.start + clip.duration;
 }

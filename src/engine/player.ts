@@ -464,6 +464,10 @@ export class Player {
         const asset = mediaRegistry.get(clip.mediaId);
         return asset ? { width: asset.width, height: asset.height } : null;
       },
+      emojiFor: (mediaId) => {
+        const img = mediaRegistry.imageElement(mediaId);
+        return img?.complete ? img : null;
+      },
     };
   }
 
