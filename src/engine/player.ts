@@ -33,6 +33,13 @@ const DRIFT_SMOOTHING = 0.25;
 const RATE_EPSILON = 0.005;
 /** currentTime 書き換えを間引く最小差分（一時停止中の頭出し用）。 */
 const SEEK_EPSILON = 0.02;
+/**
+ * シーク直後にミュートしておく時間（ミリ秒）。
+ * シークはデコード位置を強制的に飛ばすため、直前・直後の音声データが不連続になり、
+ * 必ず「プツッ」というクリックノイズが乗る。これはズレの補正がどれだけ賢くなっても
+ * 原理的に避けられないので、シークの瞬間だけ音量を落として聞こえなくする。
+ */
+const SEEK_DUCK_MS = 160;
 /** 次のクリップを何秒前から頭出ししておくか。 */
 const PREROLL = 1.2;
 /**
@@ -167,6 +174,8 @@ export class Player {
   private onFrame: ((time: number) => void) | null = null;
   /** クリップごとのドリフト補正状態。 */
   private drift = new Map<string, DriftController>();
+  /** クリップごとの「この時刻までミュートしておく」（シーク直後のクリックノイズ隠し用）。 */
+  private duckUntil = new Map<string, number>();
   /** 再生開始直後、実際に再生できる状態になるまで壁時計の進行を待っている間 true。 */
   private starting = false;
   private startingSince = 0;
@@ -236,6 +245,7 @@ export class Player {
       if (!live.has(key)) {
         mediaRegistry.releaseElement(key);
         this.drift.delete(key);
+        this.duckUntil.delete(key);
       }
     }
   }
@@ -379,6 +389,7 @@ export class Player {
           }
         }
         this.drift.get(clip.id)?.reset();
+        this.duckUntil.delete(clip.id);
         continue;
       }
 
@@ -395,15 +406,18 @@ export class Player {
       // trailing のときは、トランジションの進捗に応じて音量を滑らかにフェードアウトさせる。
       // 通常のクリップ（trailing=false）は 1 のまま、fadeOut に影響しない。
       const trailingFade = entry.trailing ? Math.max(0, 1 - (entry.transitionProgress ?? 1)) : 1;
-      audioGraph.setGain(el, silent ? 0 : clip.volume * env * trailingFade);
+      const baseGain = silent ? 0 : clip.volume * env * trailingFade;
 
       if (this.playing) {
         const profile: DriftProfile = silent ? 'silent' : 'audible';
         const controller = this.controllerFor(clip.id, profile);
         const raw = el.currentTime - target;
         const { rate, shouldSeek } = controller.update(raw, speed, performance.now());
+        const now = performance.now();
 
         if (shouldSeek) {
+          // シークの瞬間は必ずクリックノイズが乗るので、その前後をミュートして隠す。
+          this.duckUntil.set(clip.id, now + SEEK_DUCK_MS);
           try {
             el.currentTime = target;
           } catch {
@@ -415,7 +429,11 @@ export class Player {
         }
 
         if (el.paused) void el.play().catch(() => undefined);
+
+        const ducked = now < (this.duckUntil.get(clip.id) ?? 0);
+        audioGraph.setGain(el, ducked ? 0 : baseGain);
       } else {
+        audioGraph.setGain(el, baseGain);
         if (!el.paused) el.pause();
         if (el.playbackRate !== speed) el.playbackRate = speed;
         if (Math.abs(el.currentTime - target) > SEEK_EPSILON) {
