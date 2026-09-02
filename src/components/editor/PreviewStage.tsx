@@ -63,11 +63,13 @@ export function PreviewStage() {
         ctxOwner = canvas;
       }
       const { sequence: seq, selection: sel, guides: g } = latest.current;
-      if (ctx) {
-        boundsRef.current = renderFrame(ctx, seq, time, sources, { guides: g, selectedIds: sel });
-      }
+      // 書き出し中はエクスポート用キャンバスだけ描く。プレビューはモーダルの裏に隠れて
+      // 見えないうえ、両方描くと収録の実時間キャプチャに割ける処理時間が半分になり、
+      // 重い素材ほど書き出した動画自体がカクつく／音が途切れる原因になる。
       if (exporter.active && exporter.ctx && exporter.sequence) {
         renderFrame(exporter.ctx, exporter.sequence, time, sources, { guides: false, selectedIds: [] });
+      } else if (ctx) {
+        boundsRef.current = renderFrame(ctx, seq, time, sources, { guides: g, selectedIds: sel });
       }
     });
     return () => player.stop();
