@@ -35,6 +35,14 @@ const RATE_EPSILON = 0.005;
 const SEEK_EPSILON = 0.02;
 /** 次のクリップを何秒前から頭出ししておくか。 */
 const PREROLL = 1.2;
+/**
+ * 再生開始時にデコードの立ち上がりを待つ上限（ミリ秒）。
+ * play() を呼んだ瞬間から壁時計を進めてしまうと、<video> の再生開始（バッファ待ち含む）は
+ * 非同期でそれより遅れるため、重い素材ほど開始直後だけ大きなズレが生じて
+ * DriftController がいきなり補正モードに入り、カクつく。そこで実際に描画できる状態
+ * （readyState が十分）になるまで、この上限まで壁時計の進行を待つ。
+ */
+const STARTUP_GRACE_MS = 600;
 
 type DriftProfile = 'audible' | 'silent';
 
@@ -159,6 +167,9 @@ export class Player {
   private onFrame: ((time: number) => void) | null = null;
   /** クリップごとのドリフト補正状態。 */
   private drift = new Map<string, DriftController>();
+  /** 再生開始直後、実際に再生できる状態になるまで壁時計の進行を待っている間 true。 */
+  private starting = false;
+  private startingSince = 0;
 
   time = 0;
   playing = false;
@@ -172,7 +183,14 @@ export class Player {
     const tick = (now: number) => {
       const dt = Math.min(0.25, (now - this.lastNow) / 1000);
       this.lastNow = now;
-      if (this.playing) {
+      if (this.playing && this.starting) {
+        // まだ実際に再生できる状態になっていない間は壁時計を止める。sync() は毎フレーム
+        // 呼び続けるので、その中で el.play() の呼び出し自体は進む。
+        if (this.readyToAdvance() || now - this.startingSince > STARTUP_GRACE_MS) {
+          this.starting = false;
+          for (const controller of this.drift.values()) controller.reset();
+        }
+      } else if (this.playing) {
         let next = this.time + dt;
         if (next >= this.duration) {
           if (this.loop && this.duration > 0) {
@@ -227,6 +245,8 @@ export class Player {
     audioGraph.ensure();
     if (this.time >= this.duration - 0.01) this.time = 0;
     this.playing = true;
+    this.starting = true;
+    this.startingSince = performance.now();
     this.lastNow = performance.now();
     this.emitState();
     this.emitTime();
@@ -307,6 +327,17 @@ export class Player {
     if (!clip.loop || !asset || asset.duration <= 0) return raw;
     const span = Math.max(0.1, asset.duration - clip.sourceIn);
     return clip.sourceIn + ((raw - clip.sourceIn) % span);
+  }
+
+  /** 再生開始直後のゲート用。現在アクティブなクリップが、途切れずに再生を始められそうか。 */
+  private readyToAdvance(): boolean {
+    for (const entry of this.activeClips()) {
+      if (entry.clip.kind !== 'video' && entry.clip.kind !== 'audio') continue;
+      const el = mediaRegistry.mediaElement(entry.clip.id, entry.clip.mediaId);
+      // HAVE_FUTURE_DATA 未満は、次のフレームがまだ手元に無く止まって見える状態。
+      if (!el || el.readyState < 3) return false;
+    }
+    return true;
   }
 
   private controllerFor(clipId: string, profile: DriftProfile): DriftController {
