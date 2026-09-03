@@ -1,10 +1,20 @@
 /**
  * 書き出し。
- * ブラウザだけで完結させるため、キャンバスを実時間で再生しながら MediaRecorder で収録する。
- * （ffmpeg.wasm のような重い依存を持ち込まない代わりに、書き出し時間 ≒ 動画の長さになる）
+ *
+ * 既定は WebCodecs による「1 フレームずつ」の書き出し（offline-export.ts）。
+ * 実時間から切り離してあるので、端末が遅くても出力がコマ落ちしない。
+ *
+ * WebCodecs が使えない環境（古い Safari など）では、従来どおり
+ * キャンバスを実時間で再生しながら MediaRecorder で収録する方式に切り替える。
+ * こちらは収録中の取りこぼしがそのまま焼き付くため、あくまで保険の位置づけ。
  */
 
 import { audioGraph } from './audio';
+import {
+  FrameExportUnsupported,
+  isFrameExportSupported,
+  runFrameAccurateExport,
+} from './offline-export';
 import type { Player } from './player';
 import { withWebmDuration } from './webm';
 import { ASPECT_PRESETS, type AspectKey, type Sequence } from '../model/types';
@@ -51,7 +61,12 @@ export function pickMimeType(prefer: 'auto' | 'mp4' | 'webm' = 'auto'): { mime: 
 }
 
 export function isExportSupported(): boolean {
-  return typeof MediaRecorder !== 'undefined' && pickMimeType() !== null;
+  return isFrameExportSupported() || (typeof MediaRecorder !== 'undefined' && pickMimeType() !== null);
+}
+
+/** 1 フレームずつ書き出せるか（＝実時間の収録に頼らずに済むか）。 */
+export function isFrameAccurate(): boolean {
+  return isFrameExportSupported();
 }
 
 /** 書き出し先の解像度（短辺を quality に合わせる）。 */
@@ -101,11 +116,68 @@ export class Exporter {
     settings: ExportSettings,
     onProgress: (ratio: number) => void,
   ): Promise<ExportResult> {
+    if (player.duration <= 0) throw new Error('書き出す映像がありません');
+    this.cancelled = false;
+
+    if (isFrameExportSupported()) {
+      try {
+        return await this.runFrameAccurate(name, sequence, player, settings, onProgress);
+      } catch (error) {
+        if (this.cancelled) throw error;
+        // コーデックが見つからないなど、この端末では使えなかった場合だけ収録方式へ落ちる。
+        if (!(error instanceof FrameExportUnsupported)) throw error;
+      }
+    }
+    return this.runRealtime(name, sequence, player, settings, onProgress);
+  }
+
+  /** 1 フレームずつ書き出す（既定）。実時間に縛られないのでコマ落ちしない。 */
+  private async runFrameAccurate(
+    name: string,
+    sequence: Sequence,
+    player: Player,
+    settings: ExportSettings,
+    onProgress: (ratio: number) => void,
+  ): Promise<ExportResult> {
+    const size = exportSize(settings.aspect, settings.quality);
+    const startedAt = performance.now();
+    player.pause();
+
+    // プレビューの描画ループを止めておく（書き出しに処理時間を回す）。
+    this.active = true;
+    try {
+      const output = await runFrameAccurateExport({
+        sequence: { ...sequence, aspect: settings.aspect, width: size.width, height: size.height },
+        duration: player.duration,
+        fps: settings.fps,
+        bitrate: Math.round(settings.bitrate * 1_000_000),
+        format: settings.format,
+        onProgress,
+        isCancelled: () => this.cancelled,
+      });
+      onProgress(1);
+      return {
+        blob: output.blob,
+        filename: exportFilename(name, settings.aspect, output.ext),
+        mimeType: output.mimeType,
+        durationMs: performance.now() - startedAt,
+      };
+    } finally {
+      this.active = false;
+    }
+  }
+
+  /** 従来の実時間収録（WebCodecs が使えない環境向けの保険）。 */
+  private async runRealtime(
+    name: string,
+    sequence: Sequence,
+    player: Player,
+    settings: ExportSettings,
+    onProgress: (ratio: number) => void,
+  ): Promise<ExportResult> {
     const picked = pickMimeType(settings.format);
     if (!picked) throw new Error('このブラウザは録画書き出しに対応していません（Chrome / Edge / Safari 17+ を推奨）');
-    if (player.duration <= 0) throw new Error('書き出す映像がありません');
 
-    this.cancelled = false;
     const size = exportSize(settings.aspect, settings.quality);
     const canvas = document.createElement('canvas');
     canvas.width = size.width;

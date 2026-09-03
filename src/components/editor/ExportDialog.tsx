@@ -6,6 +6,7 @@ import {
   exportSize,
   isEmbeddedHost,
   isExportSupported,
+  isFrameAccurate,
   isNativeHost,
   pickMimeType,
   saveBlob,
@@ -73,6 +74,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
   const duration = sequenceDuration(sequence);
   const supported = isExportSupported();
+  const frameAccurate = isFrameAccurate();
   const embedded = isEmbeddedHost();
   const native = isNativeHost();
   const mime = pickMimeType(format);
@@ -212,7 +214,10 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               <span style={{ width: `${Math.round((progress ?? 0) * 100)}%` }} />
             </div>
             <p className="muted">
-              収録中… {Math.round((progress ?? 0) * 100)}%（実時間で録画するため、動画の長さと同じだけかかります）
+              {frameAccurate ? '書き出し中' : '収録中'}… {Math.round((progress ?? 0) * 100)}%
+              {frameAccurate
+                ? '（1 コマずつ書き出しています。素材が重いと動画の長さより時間がかかりますが、そのぶんコマ落ちしません）'
+                : '（実時間で録画するため、動画の長さと同じだけかかります）'}
             </p>
             <button type="button" className="wide danger" onClick={() => exporter.cancel()}>
               中止

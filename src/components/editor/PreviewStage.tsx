@@ -63,11 +63,13 @@ export function PreviewStage() {
         ctxOwner = canvas;
       }
       const { sequence: seq, selection: sel, guides: g } = latest.current;
-      // 書き出し中はエクスポート用キャンバスだけ描く。プレビューはモーダルの裏に隠れて
-      // 見えないうえ、両方描くと収録の実時間キャプチャに割ける処理時間が半分になり、
-      // 重い素材ほど書き出した動画自体がカクつく／音が途切れる原因になる。
-      if (exporter.active && exporter.ctx && exporter.sequence) {
-        renderFrame(exporter.ctx, exporter.sequence, time, sources, { guides: false, selectedIds: [] });
+      // 書き出し中はプレビューを描かない。モーダルの裏に隠れて見えないうえ、
+      // 描画に処理時間を取られると書き出しそのものが遅く・不安定になる。
+      if (exporter.active) {
+        // 実時間収録で書き出す場合のみ、収録用キャンバスへ描く。
+        if (exporter.ctx && exporter.sequence) {
+          renderFrame(exporter.ctx, exporter.sequence, time, sources, { guides: false, selectedIds: [] });
+        }
       } else if (ctx) {
         boundsRef.current = renderFrame(ctx, seq, time, sources, { guides: g, selectedIds: sel });
       }
