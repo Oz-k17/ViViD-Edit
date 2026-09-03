@@ -70,13 +70,15 @@ interface DriftBounds {
 
 const PROFILE_BOUNDS: Record<DriftProfile, DriftBounds> = {
   // 音が鳴っているクリップ：音の破綻を最優先で避ける。ズレの許容は広め、補正は緩やか。
+  // 速度補正は 1% までにしてある。数 % 動かすと速度そのものと音程の変化が聞き取れてしまい、
+  // 「ズレを直すための補正」が「周期的なカクつき」として出てしまうため。
   audible: {
-    enterCorrect: 0.08,
-    exitCorrect: 0.03,
-    enterResync: 0.8,
-    exitResync: 0.25,
-    maxRate: 0.06,
-    lerp: 0.08,
+    enterCorrect: 0.12,
+    exitCorrect: 0.05,
+    enterResync: 1,
+    exitResync: 0.3,
+    maxRate: 0.01,
+    lerp: 0.05,
   },
   // 無音のクリップ：見た目のズレを詰めることを優先。多少強引な補正も許容。
   silent: {
@@ -179,6 +181,13 @@ export class Player {
   /** 再生開始直後、実際に再生できる状態になるまで壁時計の進行を待っている間 true。 */
   private starting = false;
   private startingSince = 0;
+  /**
+   * 時刻の基準にしているクリップ（映像／音声）の id。
+   * このクリップだけは速度補正もシークもしない。基準そのものを動かしたら意味がないため。
+   */
+  private masterId: string | null = null;
+  /** 手動シークの直後だけ、全要素の位置を強制的に合わせ直す。 */
+  private needsAlign = false;
 
   time = 0;
   playing = false;
@@ -200,10 +209,14 @@ export class Player {
           for (const controller of this.drift.values()) controller.reset();
         }
       } else if (this.playing) {
-        let next = this.time + dt;
+        // 映像／音声が鳴っている間は、その要素自身の時計を基準にする（下の masterTime を参照）。
+        // 鳴っていない区間（テロップだけなど）だけ壁時計で進める。
+        let next = this.masterTime() ?? this.time + dt;
         if (next >= this.duration) {
           if (this.loop && this.duration > 0) {
             next = 0;
+            // 先頭へ戻るときは、基準クリップも含めて頭出しし直す。
+            this.needsAlign = true;
           } else {
             next = this.duration;
             this.playing = false;
@@ -256,6 +269,8 @@ export class Player {
     if (this.time >= this.duration - 0.01) this.time = 0;
     this.playing = true;
     this.starting = true;
+    // 再生開始時も、基準クリップを含めて位置を合わせてから走り出す。
+    this.needsAlign = true;
     this.startingSince = performance.now();
     this.lastNow = performance.now();
     this.emitState();
@@ -278,6 +293,9 @@ export class Player {
     this.time = Math.max(0, Math.min(this.duration, time));
     // 手動シーク後は、蓄積していたドリフト補正の状態を持ち越さない。
     for (const controller of this.drift.values()) controller.reset();
+    // 再生中のシークでは、基準クリップも含めて位置を合わせ直す必要がある
+    // （基準は普段シークしないので、指示しないと元の位置へ引き戻されてしまう）。
+    this.needsAlign = true;
     this.emitTime();
   }
 
@@ -337,6 +355,56 @@ export class Player {
     if (!clip.loop || !asset || asset.duration <= 0) return raw;
     const span = Math.max(0.1, asset.duration - clip.sourceIn);
     return clip.sourceIn + ((raw - clip.sourceIn) % span);
+  }
+
+  /**
+   * 時刻の基準にする要素を選ぶ。
+   *
+   * 壁時計を基準にして映像をそこへ追従させると、映像の時計（実際には音声ハードウェアの
+   * 時計）と壁時計は必ず少しずつズレていくため、その差を毎回 playbackRate やシークで
+   * 埋めることになる。実測では 1 秒あたり 20ms 近くズレるので、補正は止まらず、
+   * 数秒周期で速度が上下し、音程が揺れ、ときどきシークで映像と音が飛ぶ。
+   *
+   * そこで向きを逆にする。鳴っている映像／音声の時計をそのまま正とし、
+   * タイムラインの時刻をそこから逆算する。こうすると埋めるべき差が原理的に生じない。
+   */
+  private clockMaster(): { clip: Clip; el: HTMLMediaElement } | null {
+    const sequence = this.sequence;
+    if (!sequence) return null;
+    for (const kind of ['video', 'audio'] as const) {
+      for (const track of sequence.tracks) {
+        if (track.kind !== kind) continue;
+        const clip = clipAtTime(sequence, track.id, this.time);
+        if (!clip || (clip.kind !== 'video' && clip.kind !== 'audio')) continue;
+        // ループ指定のクリップは currentTime が巻き戻るので基準にできない。
+        if (clip.loop) continue;
+        const el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
+        // シーク中や停止中でも「基準はこのクリップ」という選択自体は変えない。
+        // ここで基準を手放すと、その隙にドリフト補正が基準クリップへ介入してしまい、
+        // シーク → 補正 → またシーク…という取り合いになる。
+        if (el) return { clip, el };
+      }
+    }
+    return null;
+  }
+
+  /** 基準クリップの再生位置から、タイムライン上の時刻を逆算する。 */
+  private masterTime(): number | null {
+    const master = this.clockMaster();
+    this.masterId = master?.clip.id ?? null;
+    if (!master) return null;
+    const { clip, el } = master;
+    // 基準として「選ばれてはいる」が、いま時刻を読める状態ではない場合。
+    // 壁時計へ一時的に任せる（基準の座は手放さない）。
+    if (el.paused || el.seeking || el.readyState < 2) return null;
+    const speed = Math.max(0.0625, Math.min(16, clip.speed || 1));
+    const time = clip.start + (el.currentTime - clip.sourceIn) / speed;
+    if (!Number.isFinite(time)) return null;
+    // 要素がクリップの範囲外を指しているときは、まだ頭出し中などなので使わない。
+    const end = clip.start + clip.duration;
+    if (time < clip.start - 0.25 || time > end + 0.25) return null;
+    // 時刻が戻ると見た目がガタつくので、進む方向にだけ従う。
+    return Math.max(this.time, Math.min(end, time));
   }
 
   /** 再生開始直後のゲート用。現在アクティブなクリップが、途切れずに再生を始められそうか。 */
@@ -409,23 +477,44 @@ export class Player {
       const baseGain = silent ? 0 : clip.volume * env * trailingFade;
 
       if (this.playing) {
-        const profile: DriftProfile = silent ? 'silent' : 'audible';
-        const controller = this.controllerFor(clip.id, profile);
-        const raw = el.currentTime - target;
-        const { rate, shouldSeek } = controller.update(raw, speed, performance.now());
         const now = performance.now();
 
-        if (shouldSeek) {
-          // シークの瞬間は必ずクリックノイズが乗るので、その前後をミュートして隠す。
-          this.duckUntil.set(clip.id, now + SEEK_DUCK_MS);
-          try {
-            el.currentTime = target;
-          } catch {
-            /* noop */
+        if (this.needsAlign) {
+          // 手動シークや先頭へ戻ったときだけ、基準クリップも含めて位置を合わせ直す。
+          // すでに合っているならシークしない。無駄にシークすると、その 1 回のために
+          // 音が 160ms 途切れて「再生開始のたびにカクつく」ことになる。
+          if (Math.abs(el.currentTime - target) > SEEK_EPSILON) {
+            this.duckUntil.set(clip.id, now + SEEK_DUCK_MS);
+            try {
+              el.currentTime = target;
+            } catch {
+              /* noop */
+            }
           }
-        }
-        if (Math.abs(el.playbackRate - rate) > RATE_EPSILON) {
-          el.playbackRate = rate;
+          this.drift.get(clip.id)?.reset(speed);
+          if (el.playbackRate !== speed) el.playbackRate = speed;
+        } else if (clip.id === this.masterId) {
+          // 基準にしているクリップは補正しない。ここを動かすと基準そのものが揺れる。
+          this.drift.get(clip.id)?.reset(speed);
+          if (el.playbackRate !== speed) el.playbackRate = speed;
+        } else {
+          const profile: DriftProfile = silent ? 'silent' : 'audible';
+          const controller = this.controllerFor(clip.id, profile);
+          const raw = el.currentTime - target;
+          const { rate, shouldSeek } = controller.update(raw, speed, now);
+
+          if (shouldSeek) {
+            // シークの瞬間は必ずクリックノイズが乗るので、その前後をミュートして隠す。
+            this.duckUntil.set(clip.id, now + SEEK_DUCK_MS);
+            try {
+              el.currentTime = target;
+            } catch {
+              /* noop */
+            }
+          }
+          if (Math.abs(el.playbackRate - rate) > RATE_EPSILON) {
+            el.playbackRate = rate;
+          }
         }
 
         if (el.paused) void el.play().catch(() => undefined);
@@ -446,6 +535,8 @@ export class Player {
         this.drift.get(clip.id)?.reset(speed);
       }
     }
+    // 位置合わせは 1 巡で終わり。
+    this.needsAlign = false;
   }
 
   /** renderFrame へ渡す描画ソース。 */
