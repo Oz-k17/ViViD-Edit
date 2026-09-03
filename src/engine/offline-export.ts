@@ -216,8 +216,12 @@ async function decodeAssetAudio(mediaId: string): Promise<AudioBuffer | null> {
   const blob = await assetBlob(mediaId);
   if (!blob) return null;
 
+  // デコーダは端末ごとに同時に持てる数が決まっている。使い終わったら必ず閉じること。
+  // 開きっぱなしにすると、あとから映像側のデコーダを作れなくなり
+  // 「decoder failure」で書き出し全体が落ちる。
+  let input: Input | null = null;
   try {
-    const input = new Input({ source: new BlobSource(blob), formats: VIDEO_INPUT_FORMATS });
+    input = new Input({ source: new BlobSource(blob), formats: VIDEO_INPUT_FORMATS });
     const track = await input.getPrimaryAudioTrack();
     if (track) {
       const sink = new AudioBufferSink(track);
@@ -239,7 +243,9 @@ async function decodeAssetAudio(mediaId: string): Promise<AudioBuffer | null> {
       }
     }
   } catch {
-    /* 映像コンテナではない、音声トラックが無い等。下の方法へ。 */
+    /* 映像コンテナではない、音声トラックが無い、デコードに失敗した等。下の方法へ。 */
+  } finally {
+    input?.dispose();
   }
 
   try {
@@ -398,7 +404,9 @@ export async function runFrameAccurateExport(options: FrameExportOptions): Promi
 
   // 音は先に作る。トラック構成だけでなく、
   // 「音を載せられる入れ物か」で形式を選び分けるのにも要るため。
-  const mix = await renderAudioMix(sequence, duration);
+  // 音の取り出しに失敗しても、映像だけは必ず書き出せるようにする
+  // （そのぶん下で警告を出す）。
+  const mix = await renderAudioMix(sequence, duration).catch(() => null);
   if (isCancelled()) throw new Error('書き出しを中止しました');
 
   const picked = await pickTarget(
@@ -437,6 +445,7 @@ export async function runFrameAccurateExport(options: FrameExportOptions): Promi
     frames: number[];
     times: number[];
     cursor: number;
+    opened?: boolean;
     input?: Input;
     iterator?: AsyncGenerator<WrappedCanvas | null, void, unknown>;
   }
@@ -484,20 +493,37 @@ export async function runFrameAccurateExport(options: FrameExportOptions): Promi
     },
   };
 
-  try {
-    // 素材ごとのデコーダを用意する。
-    for (const stream of streams.values()) {
-      const blob = await assetBlob(stream.clip.mediaId as string);
-      if (!blob) continue;
-      const input = new Input({ source: new BlobSource(blob), formats: VIDEO_INPUT_FORMATS });
-      const track = await input.getPrimaryVideoTrack();
-      if (!track) continue;
-      const sink = new CanvasSink(track);
-      stream.input = input;
-      stream.iterator = sink.canvasesAtTimestamps(stream.times);
-      cleanup.push(() => void stream.iterator?.return(undefined));
+  /**
+   * デコーダは端末ごとに同時に持てる数が限られている（超えると decoder failure になる）。
+   * クリップの数だけ最初に開くのではなく、必要になった時に開き、そのクリップの
+   * 最後のコマを取り出したら即座に閉じる。こうすると同時に開くのは
+   * 「その瞬間に映っているクリップ」の分だけで済む。
+   */
+  const openStream = async (stream: ClipStream) => {
+    if (stream.opened) return;
+    stream.opened = true;
+    const blob = await assetBlob(stream.clip.mediaId as string);
+    if (!blob) return;
+    const input = new Input({ source: new BlobSource(blob), formats: VIDEO_INPUT_FORMATS });
+    const track = await input.getPrimaryVideoTrack();
+    if (!track) {
+      input.dispose();
+      return;
     }
+    stream.input = input;
+    stream.iterator = new CanvasSink(track).canvasesAtTimestamps(stream.times);
+  };
 
+  const closeStream = (stream: ClipStream) => {
+    void stream.iterator?.return(undefined);
+    stream.iterator = undefined;
+    stream.input?.dispose();
+    stream.input = undefined;
+  };
+
+  cleanup.push(() => streams.forEach(closeStream));
+
+  try {
     await output.start();
 
     const mixChannels = mix?.numberOfChannels ?? 0;
@@ -525,12 +551,15 @@ export async function runFrameAccurateExport(options: FrameExportOptions): Promi
       for (const stream of streams.values()) {
         if (stream.frames[stream.cursor] !== i) continue;
         stream.cursor += 1;
+        await openStream(stream);
         if (!stream.iterator) {
           frames.set(stream.clip.id, null);
           continue;
         }
         const next = await stream.iterator.next();
         frames.set(stream.clip.id, next.done ? null : (next.value?.canvas ?? null));
+        // このクリップは使い終わったので、デコーダを次のクリップへ譲る。
+        if (stream.cursor >= stream.frames.length) closeStream(stream);
       }
 
       renderFrame(ctx, sequence, time, sources, { guides: false, selectedIds: [] });
