@@ -286,6 +286,9 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             <span className="muted small">{codecSummary(result.mimeType)}</span>
           </p>
         )}
+        {result?.warning && (
+          <p className="error-note">{result.warning}</p>
+        )}
 
         <p className="muted small">書き出し中はこのタブを開いたままにしてください。裏に回すと描画が止まることがあります。</p>
 

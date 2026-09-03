@@ -14,6 +14,7 @@
  */
 
 import {
+  AudioBufferSink,
   AudioBufferSource,
   BlobSource,
   BufferTarget,
@@ -71,6 +72,8 @@ export interface FrameExportOutput {
   blob: Blob;
   mimeType: string;
   ext: string;
+  /** 音が入れられなかったなど、書き出せてはいるが伝えるべきこと。 */
+  warning?: string;
 }
 
 export function isFrameExportSupported(): boolean {
@@ -181,6 +184,11 @@ async function pickTarget(
 
 // ---------- 音 ----------
 
+/** 音を持ちうるクリップの数。書き出し結果に音が無いときの警告判定に使う。 */
+function soundingClips(sequence: Sequence): number {
+  return sequence.clips.filter((c) => (c.kind === 'video' || c.kind === 'audio') && c.mediaId).length;
+}
+
 /** 素材の実体（Blob）を取り出す。mediaRegistry は object URL しか持っていないので取り直す。 */
 async function assetBlob(mediaId: string): Promise<Blob | null> {
   const asset = mediaRegistry.get(mediaId);
@@ -188,6 +196,55 @@ async function assetBlob(mediaId: string): Promise<Blob | null> {
   try {
     const response = await fetch(asset.url);
     return await response.blob();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 素材の音を丸ごと 1 本の AudioBuffer にする。
+ *
+ * 取り出し方を 2 通り用意してある。
+ *  1. mediabunny（WebCodecs）。映像と同じ経路なので、映像がデコードできる素材なら
+ *     音も取り出せる。
+ *  2. decodeAudioData。mp3 や wav のような、映像コンテナではない素材のため。
+ *
+ * 以前は 2 だけに頼っていたが、これは端末やファイルによっては映像が読めても失敗することが
+ * あり、しかも失敗しても例外を握りつぶして「音の無い動画」が黙って出来上がっていた。
+ */
+async function decodeAssetAudio(mediaId: string): Promise<AudioBuffer | null> {
+  const blob = await assetBlob(mediaId);
+  if (!blob) return null;
+
+  try {
+    const input = new Input({ source: new BlobSource(blob), formats: VIDEO_INPUT_FORMATS });
+    const track = await input.getPrimaryAudioTrack();
+    if (track) {
+      const sink = new AudioBufferSink(track);
+      const parts: AudioBuffer[] = [];
+      for await (const wrapped of sink.buffers()) parts.push(wrapped.buffer);
+      if (parts.length > 0) {
+        const channels = Math.max(...parts.map((p) => p.numberOfChannels));
+        const total = parts.reduce((n, p) => n + p.length, 0);
+        // 元の標本化周波数のままで良い。ミックス側へ流し込むときに WebAudio が変換する。
+        const merged = new AudioBuffer({ length: total, numberOfChannels: channels, sampleRate: parts[0].sampleRate });
+        let offset = 0;
+        for (const part of parts) {
+          for (let channel = 0; channel < channels; channel += 1) {
+            merged.copyToChannel(part.getChannelData(Math.min(channel, part.numberOfChannels - 1)), channel, offset);
+          }
+          offset += part.length;
+        }
+        return merged;
+      }
+    }
+  } catch {
+    /* 映像コンテナではない、音声トラックが無い等。下の方法へ。 */
+  }
+
+  try {
+    const ctx = new OfflineAudioContext(1, 1, SAMPLE_RATE);
+    return await ctx.decodeAudioData(await blob.arrayBuffer());
   } catch {
     return null;
   }
@@ -204,22 +261,11 @@ async function renderAudioMix(sequence: Sequence, duration: number): Promise<Aud
 
   const trackById = new Map(sequence.tracks.map((t) => [t.id, t]));
   const decoded = new Map<string, AudioBuffer | null>();
-  const decodeCtx = new OfflineAudioContext(1, 1, SAMPLE_RATE);
 
   for (const clip of sounding) {
     const mediaId = clip.mediaId as string;
     if (decoded.has(mediaId)) continue;
-    const blob = await assetBlob(mediaId);
-    if (!blob) {
-      decoded.set(mediaId, null);
-      continue;
-    }
-    try {
-      decoded.set(mediaId, await decodeCtx.decodeAudioData(await blob.arrayBuffer()));
-    } catch {
-      // 音声トラックを持たない映像など。無音として扱う。
-      decoded.set(mediaId, null);
-    }
+    decoded.set(mediaId, await decodeAssetAudio(mediaId));
   }
 
   if (![...decoded.values()].some(Boolean)) return null;
@@ -507,5 +553,11 @@ export async function runFrameAccurateExport(options: FrameExportOptions): Promi
   const buffer = (output.target as BufferTarget).buffer;
   if (!buffer) throw new Error('書き出したデータを取り出せませんでした');
   const mimeType = await output.getMimeType();
-  return { blob: new Blob([buffer], { type: mimeType }), mimeType, ext: picked.ext };
+  // 音のあるプロジェクトなのに音を載せられなかった場合は、黙って無音の動画を渡さない。
+  let warning: string | undefined;
+  if (soundingClips(sequence) > 0) {
+    if (!mix) warning = '素材から音を取り出せなかったため、音の入っていない動画になりました。';
+    else if (!picked.audioCodec) warning = `この環境では ${picked.ext.toUpperCase()} に音を入れられませんでした。`;
+  }
+  return { blob: new Blob([buffer], { type: mimeType }), mimeType, ext: picked.ext, warning };
 }

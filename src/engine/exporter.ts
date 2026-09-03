@@ -34,6 +34,8 @@ export interface ExportResult {
   filename: string;
   mimeType: string;
   durationMs: number;
+  /** 書き出せてはいるが伝えるべきこと（音が入らなかった等）。 */
+  warning?: string;
 }
 
 /**
@@ -161,6 +163,7 @@ export class Exporter {
         filename: exportFilename(name, settings.aspect, output.ext),
         mimeType: output.mimeType,
         durationMs: performance.now() - startedAt,
+        warning: output.warning,
       };
     } finally {
       this.active = false;
