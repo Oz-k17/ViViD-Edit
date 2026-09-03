@@ -28,6 +28,28 @@ const QUALITIES = [
 
 const BITRATE_FLOOR = 2;
 
+/** `video/mp4; codecs="avc1.42E01E, mp4a.40.2"` → `MP4・映像 H.264・音声 AAC` のように読める形へ。 */
+function codecSummary(mimeType: string): string {
+  const container = /mp4/.test(mimeType) ? 'MP4' : /webm/.test(mimeType) ? 'WebM' : mimeType.split(';')[0];
+  const codecs = /codecs="([^"]+)"/.exec(mimeType)?.[1] ?? '';
+  const label = (c: string) => {
+    if (c.startsWith('avc1')) return '映像 H.264';
+    if (c.startsWith('hev1') || c.startsWith('hvc1')) return '映像 H.265';
+    if (c.startsWith('vp09') || c === 'vp9') return '映像 VP9';
+    if (c.startsWith('vp8')) return '映像 VP8';
+    if (c.startsWith('av01')) return '映像 AV1';
+    if (c.startsWith('mp4a')) return '音声 AAC';
+    if (c.startsWith('opus')) return '音声 Opus';
+    return c;
+  };
+  const parts = codecs
+    .split(',')
+    .map((c) => label(c.trim()))
+    .filter(Boolean);
+  if (!parts.some((p) => p.startsWith('音声'))) parts.push('音声なし');
+  return [container, ...parts].join('・');
+}
+
 type SaveErrorCode =
   | 'rejected_extension'
   | 'extension_not_enabled'
@@ -259,6 +281,9 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             <button type="button" className="link" onClick={() => void save(result)}>
               もう一度ダウンロード
             </button>
+            {/* どのコーデックで書き出したかは、再生できない・音が出ないときの手がかりになる。 */}
+            <br />
+            <span className="muted small">{codecSummary(result.mimeType)}</span>
           </p>
         )}
 

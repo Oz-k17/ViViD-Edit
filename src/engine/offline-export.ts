@@ -131,6 +131,7 @@ async function pickTarget(
   width: number,
   height: number,
   bitrate: number,
+  needsAudio: boolean,
 ): Promise<PickedTarget | null> {
   const mp4 = {
     make: () => new Mp4OutputFormat({ fastStart: 'in-memory' as const }),
@@ -138,7 +139,10 @@ async function pickTarget(
     // MP4 を選ぶ意味は「どこでも再生できる」ことなので、H.264 / H.265 が使えないなら
     // 中途半端な MP4 を作らず WebM に回す。
     video: ['avc', 'hevc'] as VideoCodec[],
-    audio: ['aac', 'opus'] as AudioCodec[],
+    // 音も同じ理由で AAC だけに絞る。MP4 に Opus を入れたファイルは規格上は正しいが、
+    // QuickTime・iOS の写真アプリ・一部の SNS が音声トラックを再生できず、
+    // 「映像は出るのに音が入っていない」動画になってしまう。
+    audio: ['aac'] as AudioCodec[],
   };
   const webm = {
     make: () => new WebMOutputFormat(),
@@ -149,6 +153,7 @@ async function pickTarget(
   // MP4（H.264）がいちばん通りやすいので既定はそちら。
   const candidates = prefer === 'webm' ? [webm, mp4] : [mp4, webm];
 
+  let fallback: PickedTarget | null = null;
   for (const candidate of candidates) {
     const format = candidate.make();
     const supported = new Set<string>(format.getSupportedCodecs());
@@ -161,9 +166,17 @@ async function pickTarget(
       candidate.audio.filter((c) => supported.has(c)),
       { numberOfChannels: CHANNELS, sampleRate: SAMPLE_RATE },
     );
-    return { format, ext: candidate.ext, videoCodec, audioCodec };
+    const picked: PickedTarget = { format, ext: candidate.ext, videoCodec, audioCodec };
+    // 音のあるプロジェクトなのに、その入れ物では音を載せられない場合は次の候補へ。
+    // 無音の動画を黙って書き出してしまうより、形式を変えてでも音を残す方がよい。
+    if (needsAudio && !audioCodec) {
+      fallback ??= picked;
+      continue;
+    }
+    return picked;
   }
-  return null;
+  // どの入れ物でも音を載せられなかったときだけ、映像だけで書き出す。
+  return fallback;
 }
 
 // ---------- 音 ----------
@@ -331,18 +344,25 @@ export async function runFrameAccurateExport(options: FrameExportOptions): Promi
     throw new FrameExportUnsupported('この環境では WebCodecs が使えません');
   }
 
-  const picked = await pickTarget(options.format, sequence.width, sequence.height, options.bitrate);
-  if (!picked) throw new FrameExportUnsupported('この環境では書き出しに使えるコーデックが見つかりませんでした');
-
   // 文字が代替フォントのまま焼き込まれないよう、読み込みを待つ。
   await document.fonts?.ready?.catch?.(() => undefined);
 
   const totalFrames = Math.max(1, Math.round(duration * fps));
   onProgress(0);
 
-  // 音は先に作る（トラック構成を決めるのに要る）。
+  // 音は先に作る。トラック構成だけでなく、
+  // 「音を載せられる入れ物か」で形式を選び分けるのにも要るため。
   const mix = await renderAudioMix(sequence, duration);
   if (isCancelled()) throw new Error('書き出しを中止しました');
+
+  const picked = await pickTarget(
+    options.format,
+    sequence.width,
+    sequence.height,
+    options.bitrate,
+    mix !== null,
+  );
+  if (!picked) throw new FrameExportUnsupported('この環境では書き出しに使えるコーデックが見つかりませんでした');
 
   const canvas = document.createElement('canvas');
   canvas.width = sequence.width;

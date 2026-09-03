@@ -50,6 +50,12 @@ const PREROLL = 1.2;
  * （readyState が十分）になるまで、この上限まで壁時計の進行を待つ。
  */
 const STARTUP_GRACE_MS = 600;
+/**
+ * 継ぎ目で預かった時刻の差を、1 フレームごとに返す量（秒）。
+ * 60fps なら 1 秒で約 60ms 返す計算。これくらいなら見た目には分からず、
+ * 数百 ms の差でも数秒で自然に解消する。
+ */
+const MASTER_OFFSET_BLEED = 0.001;
 
 type DriftProfile = 'audible' | 'silent';
 
@@ -186,6 +192,12 @@ export class Player {
    * このクリップだけは速度補正もシークもしない。基準そのものを動かしたら意味がないため。
    */
   private masterId: string | null = null;
+  /**
+   * 基準クリップの位置とタイムライン時刻の差。
+   * カットの切り替わりでは、次のクリップが実際に鳴り始めるまでの間だけ壁時計が先に進む。
+   * その差をここに預けて時刻を連続させ、あとからゆっくり返す。
+   */
+  private masterOffset = 0;
   /** 手動シークの直後だけ、全要素の位置を強制的に合わせ直す。 */
   private needsAlign = false;
 
@@ -391,20 +403,36 @@ export class Player {
   /** 基準クリップの再生位置から、タイムライン上の時刻を逆算する。 */
   private masterTime(): number | null {
     const master = this.clockMaster();
+    const previousId = this.masterId;
     this.masterId = master?.clip.id ?? null;
     if (!master) return null;
+    // これから位置を合わせ直すところなので、いま読める位置は当てにならない。
+    // ここで差を預かってしまうと、合わせ直したあとにその差ぶん時刻が飛ぶ。
+    if (this.needsAlign) {
+      this.masterOffset = 0;
+      return null;
+    }
     const { clip, el } = master;
     // 基準として「選ばれてはいる」が、いま時刻を読める状態ではない場合。
     // 壁時計へ一時的に任せる（基準の座は手放さない）。
     if (el.paused || el.seeking || el.readyState < 2) return null;
     const speed = Math.max(0.0625, Math.min(16, clip.speed || 1));
-    const time = clip.start + (el.currentTime - clip.sourceIn) / speed;
-    if (!Number.isFinite(time)) return null;
+    const raw = clip.start + (el.currentTime - clip.sourceIn) / speed;
+    if (!Number.isFinite(raw)) return null;
     // 要素がクリップの範囲外を指しているときは、まだ頭出し中などなので使わない。
     const end = clip.start + clip.duration;
-    if (time < clip.start - 0.25 || time > end + 0.25) return null;
-    // 時刻が戻ると見た目がガタつくので、進む方向にだけ従う。
-    return Math.max(this.time, Math.min(end, time));
+    if (raw < clip.start - 0.25 || raw > end + 0.25) return null;
+
+    // カットの切り替わり直後は、次のクリップが鳴り始めるまでのぶんだけ壁時計が先行している。
+    // ここで単純に「戻さない」ようにすると、新しい基準が追いつくまで時刻が止まってしまい、
+    // 継ぎ目でカクッと固まる（重い素材ほど長く止まる）。差を預けて時刻を連続させる。
+    if (this.masterId !== previousId || raw + this.masterOffset < this.time) {
+      this.masterOffset = Math.max(0, this.time - raw);
+    }
+    // 預かった差はゆっくり返す。返しきらないと、映像より時刻が先走ったままになり、
+    // クリップの終わりが実際より早く来てしまう。
+    this.masterOffset = Math.max(0, this.masterOffset - MASTER_OFFSET_BLEED);
+    return Math.min(end, raw + this.masterOffset);
   }
 
   /** 再生開始直後のゲート用。現在アクティブなクリップが、途切れずに再生を始められそうか。 */
