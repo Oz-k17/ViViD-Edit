@@ -23,7 +23,7 @@ import {
 } from '../../model/types';
 import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
-import { ColorInput, EmptyHint, Field, Panel, Segmented, Slider, Tabs, Toggle } from '../ui';
+import { ColorInput, EmptyHint, Field, MuteIcon, Panel, Segmented, Slider, SoundIcon, Tabs, Toggle } from '../ui';
 import { importFiles, useMediaAssets } from './MediaPanel';
 
 type TabKey = 'props' | 'effects' | 'text' | 'emoji';
@@ -183,7 +183,7 @@ function PropsTab({ clip }: { clip: Clip }) {
                 onReset={() => patch({ volume: 1 })}
               />
               <button type="button" className={clip.muted ? 'toggle active' : 'toggle'} onClick={() => patch({ muted: !clip.muted })}>
-                {clip.muted ? '🔇' : '🔊'}
+                {clip.muted ? <MuteIcon /> : <SoundIcon />}
               </button>
             </div>
           </Field>

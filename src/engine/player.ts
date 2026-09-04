@@ -198,6 +198,8 @@ export class Player {
    * その差をここに預けて時刻を連続させ、あとからゆっくり返す。
    */
   private masterOffset = 0;
+  /** 基準クリップから前フレームに読めた再生位置（進んでいるかの判定用）。 */
+  private masterSource = Number.NaN;
   /** 手動シークの直後だけ、全要素の位置を強制的に合わせ直す。 */
   private needsAlign = false;
 
@@ -422,6 +424,18 @@ export class Player {
     // 要素がクリップの範囲外を指しているときは、まだ頭出し中などなので使わない。
     const end = clip.start + clip.duration;
     if (raw < clip.start - 0.25 || raw > end + 0.25) return null;
+
+    // 前フレームから currentTime が 1 ミリも動いていないときは、基準として新しい情報が無い。
+    // 理由は 2 つあり、どちらもそのまま信じてはいけない。
+    //   1. カットで別の動画に切り替わった直後。play() を呼んでもデコーダが立ち上がるまで
+    //      currentTime は頭出し位置に貼り付いたままで、素材が重いほど長い。
+    //   2. currentTime がコマ単位でしか進まないブラウザ（30fps 素材を 60Hz で描くと隔フレーム）。
+    // どちらも「止まった位置」を時刻にすると、その間タイムラインが固まり、動き出した瞬間に
+    // 溜まったぶんが飛ぶ ＝ 繋ぎ目でカクッとなる。情報が無いフレームは壁時計に任せ、
+    // 次に動いたところで（masterOffset 経由で）また基準へ吸い付かせる。
+    const advanced = this.masterId !== previousId || el.currentTime !== this.masterSource;
+    this.masterSource = el.currentTime;
+    if (!advanced) return null;
 
     // カットの切り替わり直後は、次のクリップが鳴り始めるまでのぶんだけ壁時計が先行している。
     // ここで単純に「戻さない」ようにすると、新しい基準が追いつくまで時刻が止まってしまい、

@@ -16,6 +16,7 @@ import { clipFromAsset } from '../../model/factory';
 import { clipEnd, previewText, TRANSITION_META, type Clip, type Sequence, type Track } from '../../model/types';
 import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
+import { EyeIcon, EyeOffIcon, MuteIcon, SoundIcon } from '../ui';
 
 export const MEDIA_DND_TYPE = 'application/x-vivid-media';
 const MIN_PPS = 6;
@@ -221,7 +222,7 @@ function TrackHead({ track, compact }: { track: Track; compact: boolean }) {
             title="表示 / 非表示"
             onClick={() => patch({ hidden: !track.hidden })}
           >
-            {track.hidden ? '🚫' : '👁'}
+            {track.hidden ? <EyeOffIcon /> : <EyeIcon />}
           </button>
         )}
         {track.kind !== 'text' && (
@@ -231,7 +232,7 @@ function TrackHead({ track, compact }: { track: Track; compact: boolean }) {
             title="ミュート"
             onClick={() => patch({ muted: !track.muted })}
           >
-            {track.muted ? '🔇' : '🔊'}
+            {track.muted ? <MuteIcon /> : <SoundIcon />}
           </button>
         )}
       </div>
@@ -412,7 +413,7 @@ function ClipBlock({
         </button>
       )}
       <span className="tl-clip-label">
-        {clip.muted && '🔇 '}
+        {clip.muted && <MuteIcon />}
         {clip.speed !== 1 && `${clip.speed}× `}
         {label}
       </span>

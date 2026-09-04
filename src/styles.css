@@ -513,6 +513,25 @@ hr {
   padding: 4px 8px;
 }
 
+/* 表示/非表示・ミュートなどの状態アイコン。絵文字だとOS任せで揃わないので線画にしている。 */
+.icon {
+  display: inline-block;
+  vertical-align: -0.16em;
+  flex: none;
+}
+
+.tl-head-buttons .icon {
+  display: block;
+  width: 13px;
+  height: 13px;
+}
+
+.tl-clip-label .icon {
+  width: 11px;
+  height: 11px;
+  margin-right: 3px;
+}
+
 .color-input {
   display: flex;
   align-items: center;
