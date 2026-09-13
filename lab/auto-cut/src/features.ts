@@ -154,6 +154,85 @@ export interface FeatureTrack {
    * （`music-hats` の 97% より高い）。外せば声を丸ごと失う。詳しくは JOURNAL の同日。
    */
   centroidDescent: Float32Array;
+  /** `bandLog` の 1 コマぶんの本数（= メル帯域の数）。 */
+  bandCount: number;
+  /** `bandLog` を低い側と高い側に分ける境目の帯域番号（この番号から上が高い側）。 */
+  bandSplit: number;
+  /**
+   * 帯域ごとの対数エネルギーを、コマ順に並べたもの（`frames × bandCount`、行が 1 コマ）。
+   *
+   * 重心も平坦さも、**スペクトルを 1 つの数へ潰してから**時間で見る量だった。
+   * その 2 つが同じ壊れ方をした（どちらも「倍音の上に何かあるか」しか見ていない）ので、
+   * 潰す前の形をそのまま残して、「どの帯域がどう動いたか」を見られるようにした。
+   *
+   * **音量倍率に不変。** 下限をコマ全体のエネルギーに対する比で置いてあるので
+   * （`log(E_b + MEL_FLOOR × 総和)`）、音量を a 倍すると全帯域・全コマに
+   * `log a` が同じだけ乗るだけで、コマ間の差はまったく変わらない。
+   * 絶対値の下限にすると、静かな素材でだけ下限が効いて不変性が崩れる。
+   */
+  bandLog: Float32Array;
+  /**
+   * **高い帯域だけが動いた歩みの割合**（0〜1）。0.3 秒の窓で数える。
+   *
+   * **判定には使っていない。** 2026-09-13 の 3 回目に「帯域ごとの時間の形を見る」
+   * 当てとして入れ、コマ単位の門まで作って測り、**捨てた**量。
+   * `centroidDescent` と同じく、次の回が同じ穴を掘らないために残してある。
+   *
+   * 狙いは打点と声の区別。ハイハットは高い帯域だけが立ち上がって減衰し、
+   * その下の和音は動かない。人がしゃべると音節の切れ目で帯域をまたいで一緒に動く。
+   * 向きだけを見るので、何 dB 動いたかにも音量倍率にも依らない。
+   *
+   * **最初は「高い側と低い側が同じ向きに動いた割合」で測ったが、それは駄目だった。**
+   * 鳴りっぱなしの素材では歩みが 1 つも数えられず（`bgm` は 100%、`music-chords` は
+   * 90% のコマでどちらの帯域も動かない）、出てくるのは「数えられなかったときの既定値」
+   * だけになる。実際に `bgm`・`drums`・`tremolo`・`swell` が揃って 1.000 になり、
+   * 声（0.60〜0.67）より高く出た。**分けているように見えて、中身が無い。**
+   * 数えられた歩みの中身を割ると、意味があったのは 1 種類だけだった:
+   *
+   * | 素材 | 低だけ動 | 高だけ動 | 両方動 | どちらも動かず |
+   * | --- | --- | --- | --- | --- |
+   * | **`music-hats`** | 2% | **38%** | 26% | 35% |
+   * | `drums` | 0% | 1% | 99% | 0% |
+   * | `bgm` | 0% | 0% | 0% | 100% |
+   * | 声のある素材（素） | 2〜9% | 2〜5% | 27〜80% | 4〜70% |
+   *
+   * 打点の素材でだけ「高だけ動」が突出する。そこで**それだけ**を数えている。
+   *
+   * **当ては当たった。前の 7 つより、はっきり当たった。**（0.5 超えのコマの割合）
+   *
+   * | 素材 | 0.5 超え |
+   * | --- | --- |
+   * | **`music-hats`**（和音＋ハイハット・声なし） | **72%** |
+   * | ※ `speech-hats` の声のコマ（同じハイハットの上でしゃべる） | **1%** |
+   * | ※ `speech-sparse-hats` の**声**のコマ | **0%** |
+   * | ※ `speech-sparse-hats` の**それ以外**のコマ | **64%** |
+   * | 声のある素材（ハイハット無し）の声のコマ | 0〜1% |
+   * | ほかの音楽 8 本 | 0〜21% |
+   *
+   * 4 行目が効いている。`centroidDescent` は同じ素材で**全体の 99%** が超えてしまい、
+   * 外せば声を丸ごと失った。この量は**素材の中で**声とそれ以外が割れる。
+   *
+   * **それでも入れなかった。破り方が 1 つ残っていて、そこが塞げなかったから。**
+   * この量が見ているのは「低い帯域が動かないまま、高い帯域だけが動いたか」なので、
+   * **低い帯域が動かない声**——伸ばした母音——を打点と区別できない:
+   *
+   * | 素材 | 声のコマの中央値 | 0.5 超え |
+   * | --- | --- | --- |
+   * | **`music-hats`**（声なし） | 0.571 | **72%** |
+   * | ※ **`speech-sustained-hats`**（ハイハットの上で母音を伸ばす声） | **0.571** | **61%** |
+   *
+   * 中央値まで同じになる。この素材は**この量を潰すために同日に足した**もので、
+   * `speech-sustained.wav` とハイハットの有無しか違わない（声は 1 ビットも同じ）。
+   * 門を 0.5 に置くと `music-hats` の削減 0% → 35% と引き換えに、
+   * この素材の**声を残せた率が 100% → 73%** に落ちる。
+   * 緩めても駄目で、0.7 では `music-hats` の削減が 0% に戻るのに残せた率は 83% までしか戻らない
+   * （**効きのほうが先に消える**）。包絡の門と同じ 0.5 秒の保持を足すと残せた率は 100% に戻るが、
+   * そのとき `speech-sparse-hats` の削減が 13% → 0% になり、得たものが残らない。
+   *
+   * つまり `centroidDescent`（子音の無い声で破れる）と `envelopeChange`
+   * （伸ばした母音で止まる）の**両方の穴を、同時に踏んでいる**。
+   */
+  highBandAlone: Float32Array;
   /**
    * 声らしさ。揺れの速さ（modulation）と音色の尖り具合（tone）の積。
    *
@@ -303,6 +382,32 @@ const DESCENT_WINDOW = 0.3;
  * 「打点だ」と読ませない（silence.ts が渡されない列を「動いていない」と読まないのと同じ考え）。
  */
 const DESCENT_MIN_STEPS = 4;
+/**
+ * 高い帯域と低い帯域を分ける境目（Hz）。
+ *
+ * ハイハットの雑音がほぼこの上にしかなく、和音の基音と第 2 倍音までがこの下に入る所を採った。
+ * 声はここをまたいで一緒に動く（音節の切れ目で全部が立ち上がる）ので、
+ * 境目そのものの置き場所には鈍いはず。実際に振って確かめること。
+ */
+const HIGH_ALONE_SPLIT_HZ = 2000;
+/** 歩みを数える窓の長さ（秒）。打点 1 つぶんが入るように `DESCENT_WINDOW` と揃えた。 */
+const HIGH_ALONE_WINDOW = 0.3;
+/**
+ * 「動いた」とみなす最小の変化（対数エネルギー）。0.1 は約 0.43dB。
+ *
+ * ここが要るのは、**鳴りっぱなしの和音を「揃っている」と数えないため**。
+ * 窓掛けと位相のせいで、まったく変化していない正弦波でも 1 コマごとに小さく揺れる。
+ * その揺れの向きを数えると、動いていないものが半々（0.5）に見えてしまう。
+ * 対数の差なので、この下限は音量倍率に依らない（そこが絶対値の下限と違う）。
+ */
+const HIGH_ALONE_DEAD_ZONE = 0.1;
+/**
+ * 割合を出すのに最低いくつの歩みが要るか。
+ *
+ * 足りないときは **0（＝打点だけが動いてはいない）** を返す。`centroidDescent` と同じで、
+ * 「判断できない」を「声ではない」と読ませない。迷ったら声の側に倒す。
+ */
+const HIGH_ALONE_MIN_STEPS = 4;
 
 /** 窓の中の平均。均一に均すので、山も谷も同じだけ動く。 */
 function smoothMean(values: Float32Array, halfWidth: number): Float32Array {
@@ -361,6 +466,73 @@ export function centroidDescentRatio(
       down += step[j];
     }
     out[i] = counted >= DESCENT_MIN_STEPS ? down / counted : 0;
+  }
+  return out;
+}
+
+/**
+ * 高い帯域だけが動いた歩みの割合を、窓ごとに数える。
+ *
+ * 重心（`centroidDescent`）はスペクトルを 1 つの数へ潰してから向きを見る量だったので、
+ * いちばん高い所にある弱い音に引きずられて壊れた。ここは潰さずに、
+ * 低い側の束と高い側の束を別々に見て、**高い側だけが動いた歩み**を数える。
+ * ハイハットは下の和音を動かさずに高い帯域だけを叩くので、そこが出るはず、という当て。
+ *
+ * **「同じ向きに動いた割合」で数えてはいけない。** 鳴りっぱなしの素材は
+ * どちらの帯域も動かないので歩みが 1 つも数えられず、既定値が並ぶだけになる
+ * （実測では `bgm`・`drums`・`tremolo`・`swell` が揃って満点になり、声より高く出た）。
+ * 「動かなかった」を「揃った」と数えない、が要点。
+ *
+ * 音が出ていないコマを挟んだ歩みを数えないのは `centroidDescentRatio` と同じ理由
+ * （無音の帯域は雑音なので、鳴り始めの 1 歩が巨大な向きとして混ざる）。
+ */
+export function highBandAloneRatio(
+  bandLog: Float32Array,
+  bandCount: number,
+  splitBand: number,
+  level: Float32Array,
+  hop: number,
+  windowSeconds = HIGH_ALONE_WINDOW,
+  deadZone = HIGH_ALONE_DEAD_ZONE,
+): Float32Array {
+  const frames = level.length;
+  const out = new Float32Array(frames);
+  // 帯域の列が足りなければ、何も言わずに 0（＝打点ではない）を並べる。
+  // 中途半端に読むと配列の外が NaN になって、黙って「何も動いていない」に化ける。
+  if (frames === 0 || bandLog.length < frames * bandCount) return out;
+  // 歩みごとの結果。1 = 高い側だけが動いた、0 = そうではない、-1 = 数えない。
+  const step = new Int8Array(frames);
+  step[0] = -1;
+  for (let i = 1; i < frames; i += 1) {
+    if (!(level[i] > SILENCE_DB && level[i - 1] > SILENCE_DB) || splitBand <= 0 || splitBand >= bandCount) {
+      step[i] = -1;
+      continue;
+    }
+    let low = 0;
+    for (let b = 0; b < splitBand; b += 1) low += bandLog[i * bandCount + b] - bandLog[(i - 1) * bandCount + b];
+    low /= splitBand;
+    let high = 0;
+    for (let b = splitBand; b < bandCount; b += 1) high += bandLog[i * bandCount + b] - bandLog[(i - 1) * bandCount + b];
+    high /= bandCount - splitBand;
+    const lowMoved = Math.abs(low) >= deadZone;
+    const highMoved = Math.abs(high) >= deadZone;
+    // どちらも動かなかった歩みは「何も起きていない」ので分母にも入れない。
+    // 分母に入れると、鳴りっぱなしの素材ほど値が 0 に押し下げられて、
+    // 「打点が無い」と「そもそも何も起きていない」が同じ顔になる。
+    if (!lowMoved && !highMoved) step[i] = -1;
+    else step[i] = highMoved && !lowMoved ? 1 : 0;
+  }
+  const half = Math.max(1, Math.round(windowSeconds / 2 / hop));
+  for (let i = 0; i < frames; i += 1) {
+    let alone = 0;
+    let counted = 0;
+    for (let k = -half; k <= half; k += 1) {
+      const j = i + k;
+      if (j < 0 || j >= frames || step[j] < 0) continue;
+      counted += 1;
+      alone += step[j];
+    }
+    out[i] = counted >= HIGH_ALONE_MIN_STEPS ? alone / counted : 0;
   }
   return out;
 }
@@ -504,7 +676,7 @@ function melBank(bins: number, binHz: number): MelBank {
  *
  * 帯域が 26 本しかないので、DCT は素直な二重ループで足す（FFT を使うほどの量ではない）。
  */
-function cepstrum(mag: Float64Array, bank: MelBank, energies: Float64Array, out: Float64Array) {
+function cepstrum(mag: Float64Array, bank: MelBank, energies: Float64Array, out: Float64Array): number {
   let total = 0;
   for (let b = 1; b < mag.length; b += 1) total += mag[b] * mag[b];
   const scale = total > 0 ? 1 / total : 0;
@@ -527,6 +699,8 @@ function cepstrum(mag: Float64Array, bank: MelBank, energies: Float64Array, out:
     }
     out[k - 1] = (sum * 2) / MEL_BANDS;
   }
+  // 帯域ごとの生の対数エネルギーを組み立て直せるように、割った量を返す。
+  return total;
 }
 
 export interface FeatureOptions {
@@ -561,6 +735,8 @@ export function analyzeFeatures(
   const voiceBand = new Float32Array(frames);
   const zcr = new Float32Array(frames);
   const harmonicity = new Float32Array(frames);
+  // 帯域ごとの対数エネルギー（frames × MEL_BANDS、行が 1 コマ）。
+  const bandLog = new Float32Array(frames * MEL_BANDS);
 
   // 1ch にまとめる（左右で結論が変わる場面は想定していない）。
   const channels: Float32Array[] = [];
@@ -641,7 +817,16 @@ export function analyzeFeatures(
 
     // 包絡（フォルマントの居場所）の動き。倍音の櫛と音量を落としてから比べる。
     if (sum > 0) {
-      cepstrum(mag, bank, melEnergies, ceps);
+      const total = cepstrum(mag, bank, melEnergies, ceps);
+      // 帯域ごとの対数エネルギーは、ケプストラムが割ったぶんを掛け戻して残す。
+      // `melEnergies` は log(E_b / 総和 + MEL_FLOOR) なので、log(総和) を足せば
+      // log(E_b + MEL_FLOOR × 総和) に戻る。下限が総和に対する比のままなので、
+      // 音量を何倍にしても全帯域に同じ定数が乗るだけで、コマ間の差は変わらない。
+      // 鳴っていないコマ（sum === 0）はここへ来ないので、その行は 0 のまま残る。
+      // 全帯域が同じ値なので、隣のコマとの差は低い側でも高い側でも同じだけ立つ。
+      // つまり「高い側だけが動いた」にはならない ＝ 声の側に倒れる。
+      const logTotal = total > 0 ? Math.log(total) : 0;
+      for (let m = 0; m < MEL_BANDS; m += 1) bandLog[i * MEL_BANDS + m] = melEnergies[m] + logTotal;
       if (hasPreviousCeps) {
         let d = 0;
         for (let k = 0; k < CEPS_KEEP; k += 1) {
@@ -678,6 +863,16 @@ export function analyzeFeatures(
   const shapeChange = smoothMean(shapeFlux, Math.round(opts.shapeSmoothSeconds / track.hop));
   const envelopeChange = smoothMean(envelopeFlux, Math.round(ENVELOPE_SMOOTH / track.hop));
   const centroidDescent = centroidDescentRatio(centroid, track.db, track.hop);
+  // 高い側と低い側の境目は、帯域の中心（三角形の頂点）が HIGH_ALONE_SPLIT_HZ を越える所。
+  // メル帯域の並びは標本化周波数に依らないが、勘で番号を書かずに毎回引き直す。
+  let splitBand = MEL_BANDS;
+  for (let m = 0; m < MEL_BANDS; m += 1) {
+    if (bank.edges[m + 1] * binHz >= HIGH_ALONE_SPLIT_HZ) {
+      splitBand = m;
+      break;
+    }
+  }
+  const highBandAlone = highBandAloneRatio(bandLog, MEL_BANDS, splitBand, track.db, track.hop);
 
   return {
     hop: track.hop,
@@ -697,6 +892,10 @@ export function analyzeFeatures(
     shapeChange,
     envelopeChange,
     centroidDescent,
+    bandCount: MEL_BANDS,
+    bandSplit: splitBand,
+    bandLog,
+    highBandAlone,
     speechScore,
   };
 }

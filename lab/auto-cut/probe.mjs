@@ -52,6 +52,8 @@ function auc(positive, negative) {
 
 /** 重心の下降率で門を置くとしたらどこか（下の段で使う。勘で置かず表を見て決め直せるように定数にしておく）。 */
 const DESCENT_GATE = 0.65;
+/** 「高い帯域だけが動いた割合」で門を置くとしたらどこか。同じく表を見て決め直せるように。 */
+const HIGH_ALONE_GATE = 0.5;
 
 const pad = (s, n) => String(s).padEnd(n, ' ');
 const num = (v, n) => (v === null ? pad('—', n) : String(v.toFixed(3)).padStart(n, ' '));
@@ -382,6 +384,84 @@ console.log(`${pad('  平均', 22)}${average}`);
   console.log('「高い帯域が何かで覆われているか」を見ている。');
 }
 
+
+// --- 帯域ごとの時間の形（高い帯域だけが動いていないか） ---
+// 2026-09-13 の 2 回目に「重心・平坦さ系は打ち止め」と決めた。どちらも
+// **スペクトルを 1 つの数へ潰してから**時間で見る量で、倍音の上に何かあるかしか見ていない。
+// 残っていた方向が「潰さずに、どの帯域がどう動いたかを見る」。3 回目にそれを測った。
+//
+// ハイハットは下の和音を動かさずに高い帯域だけを叩いて減衰する。
+// 人がしゃべると音節の切れ目で帯域をまたいで一緒に動く。そこを直に数える。
+{
+  console.log('\n高い帯域だけが動いた歩みの割合（0.3 秒の窓。打点なら高い）\n');
+  console.log(
+    `${pad('素材', 26)}${pad('区分', 6)}${pad('中央', 8)}${pad('上位10%', 10)}` +
+      `${pad(`${HIGH_ALONE_GATE} 超えのコマ`, 16)}${pad('歩みを数えた率', 16)}`,
+  );
+  console.log('-'.repeat(82));
+  const quantile = (values, p) => {
+    if (values.length === 0) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p))];
+  };
+  for (const fixture of SHORT_FIXTURES) {
+    const file = path.join(out, fixture.name);
+    if (!fs.existsSync(file)) continue;
+    const buffer = readWav(file);
+    const track = analyzeLoudness(buffer, 0.02);
+    const features = analyzeFeatures(buffer, track);
+    const threshold = autoThresholdDb(track, 0.25);
+    const groups = { 声: [], 他: [] };
+    // 「どちらの帯域も動かなかった」歩みは分母に入れていないので、
+    // 値が 0 でも「打点が無い」とは限らない（そもそも何も起きていないだけかもしれない）。
+    // その 2 つを取り違えないように、歩みを数えられた割合も並べる。
+    // 判定と同じ式なので、features.ts の中身を変えたらここも合わなくなる。
+    const bands = features.bandCount;
+    const split = features.bandSplit;
+    let counted = 0;
+    let steps = 0;
+    for (let i = 1; i < track.db.length; i += 1) {
+      if (track.db[i] <= threshold || track.db[i - 1] <= threshold) continue;
+      steps += 1;
+      let low = 0;
+      for (let b = 0; b < split; b += 1) low += features.bandLog[i * bands + b] - features.bandLog[(i - 1) * bands + b];
+      let high = 0;
+      for (let b = split; b < bands; b += 1) high += features.bandLog[i * bands + b] - features.bandLog[(i - 1) * bands + b];
+      if (Math.abs(low / split) >= 0.1 || Math.abs(high / (bands - split)) >= 0.1) counted += 1;
+    }
+    for (let i = 0; i < track.db.length; i += 1) {
+      if (track.db[i] <= threshold) continue;
+      const t = i * track.hop;
+      if (isSpeechAt(fixture, t - 0.15) !== isSpeechAt(fixture, t + 0.15)) continue;
+      groups[isSpeechAt(fixture, t) ? '声' : '他'].push(features.highBandAlone[i]);
+    }
+    for (const [label, values] of Object.entries(groups)) {
+      if (values.length < 5) continue;
+      const over = values.filter((v) => v >= HIGH_ALONE_GATE).length / values.length;
+      console.log(
+        `${pad((fixture.hard ? '※ ' : '  ') + fixture.name, 26)}${pad(label, 6)}` +
+          `${pad(num(quantile(values, 0.5), 6), 8)}${pad(num(quantile(values, 0.9), 6), 10)}` +
+          `${pad(`${(over * 100).toFixed(0)}%`, 16)}${pad(`${((counted / Math.max(1, steps)) * 100).toFixed(0)}%`, 16)}`,
+      );
+    }
+  }
+  console.log('\n**当ては当たった。** music-hats は 72% のコマが門を超えるのに、');
+  console.log('同じハイハットの上で子音のある声がしゃべる speech-hats は声のコマの 1% しか超えない。');
+  console.log('しかも speech-sparse-hats は素材の**中で** 声 0% 対 他 64% と割れる。');
+  console.log('素材単位でしか使えなかった centroidDescent（同じ素材で全体の 99% が超える）とはそこが違う。');
+  console.log('\n**それでも判定には入れなかった**（2026-09-13・3 回目に測って捨てた）。');
+  console.log('入れると失うものが 1 本あり、その 1 本を守る置き方だと効きが丸ごと消えるため:');
+  console.log('  ※ speech-sustained-hats（ハイハットの上で母音を伸ばす声。この日に足した）');
+  console.log('    伸ばした母音は低い帯域を動かさないので、声のコマが打点と同じ顔になる');
+  console.log('    （中央 0.571 / 61% 超え。music-hats の 0.571 / 72% とほぼ並ぶ）。');
+  console.log('  門を 0.5 に置くと music-hats の削減 0% → 35% と引き換えに、この素材の');
+  console.log('  声を残せた率が 100% → 73% に落ちる。0.7 まで緩めると効きだけが先に消える');
+  console.log('  （music-hats の削減は 0% に戻り、残せた率は 83% までしか戻らない）。');
+  console.log('  包絡の門と同じ 0.5 秒の保持を足すと残せた率は 100% に戻るが、');
+  console.log('  そのとき speech-sparse-hats の削減が 13% → 0% になり、得たものが残らない。');
+  console.log('\n「歩みを数えた率」が低い素材（鳴りっぱなしの音楽）は、値が 0 でも');
+  console.log('「打点が無い」ではなく「そもそも何も動いていない」だけ。取り違えないこと。');
+}
 
 console.log('\n※ は意地悪な素材（BGM が大きい / 刻む打楽器 / 震える楽器 / 母音を伸ばす声 など）。');
 console.log('声の無い素材（bgm・drums・music-tremolo）は「声のコマ」が無いので AUC では測れない（—）。');

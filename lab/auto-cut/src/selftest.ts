@@ -8,7 +8,7 @@ import { autoThresholdDb, DEFAULT_JET_CUT, planJetCut } from './silence.ts';
 import { gainAt, planDucking } from './ducking.ts';
 import { toClipEdits } from './edits.ts';
 import { buildPeaks } from './peaks.ts';
-import { analyzeFeatures, centroidDescentRatio, modulationRatio } from './features.ts';
+import { analyzeFeatures, centroidDescentRatio, highBandAloneRatio, modulationRatio } from './features.ts';
 import { fftScratch, magnitudes } from './fft.ts';
 
 export interface TestResult {
@@ -186,6 +186,62 @@ function addHats(base: AudioLike, hitsPerSecond: number, rms: number): AudioLike
     const env = Math.exp(-(i % period) / (0.035 * sr));
     data[i] = source[i] + ((seed / 0x7fffffff) * 2 - 1) * amp * env;
   }
+  return { sampleRate: sr, numberOfChannels: 1, length: source.length, getChannelData: () => data };
+}
+
+/** 一次のハイパス。ハイハットを「高い帯域だけの音」にするために使う。 */
+function highpassed(source: Float32Array, sampleRate: number, cutoffHz: number): Float32Array {
+  const rc = 1 / (2 * Math.PI * cutoffHz);
+  const a = rc / (rc + 1 / sampleRate);
+  const out = new Float32Array(source.length);
+  let previousIn = 0;
+  let previousOut = 0;
+  for (let i = 0; i < source.length; i += 1) {
+    previousOut = a * (previousOut + source[i] - previousIn);
+    previousIn = source[i];
+    out[i] = previousOut;
+  }
+  return out;
+}
+
+/**
+ * 既にある音へ、**高い帯域だけの**ハイハットを重ねる。
+ *
+ * `addHats` の雑音は広帯域なので、打点が低い帯域も一緒に動かす。
+ * 本物のハイハット（試し用の素材でも 6kHz より上）は下の和音を動かさないので、
+ * 「高い側だけが動いたか」を確かめるにはこちらが要る。
+ */
+function addHighHats(base: AudioLike, hitsPerSecond: number, rms: number, cutoffHz = 6000): AudioLike {
+  const source = base.getChannelData(0);
+  const sr = base.sampleRate;
+  const period = sr / hitsPerSecond;
+  const amp = rms * Math.sqrt(3);
+  let seed = 20260913;
+  const raw = new Float32Array(source.length);
+  for (let i = 0; i < source.length; i += 1) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    raw[i] = ((seed / 0x7fffffff) * 2 - 1) * amp * Math.exp(-(i % period) / (0.035 * sr));
+  }
+  const shaped = highpassed(raw, sr, cutoffHz);
+  const data = new Float32Array(source.length);
+  for (let i = 0; i < source.length; i += 1) data[i] = source[i] + shaped[i];
+  return { sampleRate: sr, numberOfChannels: 1, length: source.length, getChannelData: () => data };
+}
+
+/** 高い帯域だけに、鳴りっぱなしの雑音を敷く（打点を「覆う」役）。 */
+function addHighNoise(base: AudioLike, rms: number, seed0: number, cutoffHz = 6000): AudioLike {
+  const source = base.getChannelData(0);
+  const sr = base.sampleRate;
+  const amp = rms * Math.sqrt(3);
+  let seed = seed0;
+  const raw = new Float32Array(source.length);
+  for (let i = 0; i < source.length; i += 1) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    raw[i] = ((seed / 0x7fffffff) * 2 - 1) * amp;
+  }
+  const shaped = highpassed(raw, sr, cutoffHz);
+  const data = new Float32Array(source.length);
+  for (let i = 0; i < source.length; i += 1) data[i] = source[i] + shaped[i];
   return { sampleRate: sr, numberOfChannels: 1, length: source.length, getChannelData: () => data };
 }
 
@@ -561,6 +617,113 @@ export function runSelfTest(): TestResult[] {
         '音量倍率を変えても下降率は変わらない',
         near(descentOf(halved), hatsDescent, 0.02),
         `×0.5 ${descentOf(halved).toFixed(3)} / ×1 ${hatsDescent.toFixed(3)}`,
+      );
+    }
+
+    // --- 打点は「高い帯域だけ」が動く。声は帯域をまたいで一緒に動く ---
+    // 上の重心は、スペクトルを 1 つの数へ潰してから向きを見る量だったので、
+    // いちばん高い所にある弱い音に引きずられて壊れた（-34dB のハイハットで飽和する）。
+    // 潰さずに、低い側の束と高い側の束を別々に見て、**高い側だけが動いた歩み**を数える。
+    // 2026-09-13 の 3 回目にコマ単位の門として入れようとして、**測って捨てた**量。
+    // 計算そのものは残してあるので、ここでは計算が合っていることと、
+    // **どこで破れるか**（高い帯域が覆われると打点が見えなくなる）を固定する。
+    {
+      const hop = 0.02;
+      const frames = 100;
+      const bands = 26;
+      const split = 14;
+      const level = new Float32Array(frames).fill(-20);
+      // 帯域の列を手で作る。`log(エネルギー)` のつもりなので、足し算が音量倍率にあたる。
+      const build = (at: (frame: number, band: number) => number) => {
+        const out = new Float32Array(frames * bands);
+        for (let i = 0; i < frames; i += 1) for (let b = 0; b < bands; b += 1) out[i * bands + b] = at(i, b);
+        return out;
+      };
+
+      // ① 音節の切れ目。全帯域が一緒に上下する。「高い側だけ」ではないので 0。
+      const together = build((i) => (i % 2 === 0 ? 0 : 1));
+      check(
+        '帯域が一緒に動くときは「高い側だけ」にならない',
+        highBandAloneRatio(together, bands, split, level, hop)[50] === 0,
+        '0.000',
+      );
+
+      // ② 打点。高い側だけが跳ねて減衰し、低い側（和音）は動かない。
+      const hatsOnly = build((i, b) => (b < split ? 0 : 2 - 0.4 * (i % 6)));
+      const hatsRatio = highBandAloneRatio(hatsOnly, bands, split, level, hop)[50];
+      check('高い側だけが動くときは 1 になる', hatsRatio === 1, hatsRatio.toFixed(3));
+
+      // ③ 鳴りっぱなし。どちらも動かない歩みは**数えない**（分母にも入れない）。
+      //    ここを「揃っている」と数えると、動いていないものが分けられているように見える。
+      const still = build(() => 0);
+      check('どの帯域も動かなければ 0（迷ったら声の側）', highBandAloneRatio(still, bands, split, level, hop)[50] === 0, '0.000');
+
+      // ④ 音量倍率に不変。対数の列なので、音量 a 倍は全帯域・全コマに log a を足すのと同じ。
+      const louder = build((i, b) => hatsOnly[i * bands + b] + 3.5);
+      check(
+        '音量を変えても「高い側だけ」の割合は変わらない',
+        highBandAloneRatio(louder, bands, split, level, hop)[50] === hatsRatio,
+        `+log a ${highBandAloneRatio(louder, bands, split, level, hop)[50].toFixed(3)} / 元 ${hatsRatio.toFixed(3)}`,
+      );
+
+      // ⑤ 境目が帯域の外に出たら（標本化周波数が低すぎて高い帯域が無いとき）門を置かない。
+      //    渡されていない列を「打点だった」と読まないのと同じで、迷ったら声の側へ倒す。
+      check(
+        '境目が範囲外なら 0（門を置かない側に倒す）',
+        highBandAloneRatio(hatsOnly, bands, bands, level, hop)[50] === 0,
+        '0.000',
+      );
+
+      // ⑥ 帯域の列が足りないときは 0（配列の外を読んで NaN に化けさせない）。
+      check(
+        '帯域の列が足りなければ 0（黙って NaN にしない）',
+        highBandAloneRatio(hatsOnly.slice(0, 10 * bands), bands, split, level, hop)[50] === 0,
+        '0.000',
+      );
+
+      // ⑦ 無音を挟んだ歩みは数えない（重心の下降率と同じ理由）。
+      const gapLevel = new Float32Array(frames).fill(-20);
+      for (let i = 40; i < 60; i += 1) gapLevel[i] = -100;
+      check(
+        '無音のあいだは歩みを数えない（足りなければ 0）',
+        highBandAloneRatio(hatsOnly, bands, split, gapLevel, hop)[50] === 0,
+        '0.000',
+      );
+
+      // ここから音を通して確かめる。和音 → 和音＋ハイハット → 高い帯域を雑音で覆う。
+      const median = (a: Float32Array) => {
+        const from = Math.floor(a.length * 0.25);
+        const values = Array.from(a.slice(from, Math.ceil(a.length * 0.75))).sort((x, y) => x - y);
+        return values.length ? values[Math.floor(values.length / 2)] : 0;
+      };
+      const aloneOf = (buffer: AudioLike) =>
+        median(analyzeFeatures(buffer, analyzeLoudness(buffer, 0.02)).highBandAlone);
+      const chord = makeTone(2, sr, [{ from: 0, to: 2 }]);
+      // ここだけ `addHats`（広帯域）ではなく高い帯域だけの打点を使う。
+      // 広帯域の打点は低い帯域も一緒に動かすので、この量では「高い側だけ」にならない
+      // （実測 0.300）。本物のハイハットは 6kHz より上に寄っているので、そちらを模す。
+      const hats = addHighHats(chord, 4.2, 0.2);
+      // 門にするなら 0.5（数えた歩みの半分より多い）だった、というだけの値。
+      // **判定には入れていない**ので、silence.ts の既定値から取らずにここへ書く。
+      const gate = 0.5;
+      const plainAlone = aloneOf(chord);
+      const hatsAlone = aloneOf(hats);
+      check('和音だけでは「高い側だけ」は立たない', plainAlone < gate, plainAlone.toFixed(3));
+      check(
+        '減衰する打点を足すと「高い側だけ」が立つ',
+        hatsAlone >= gate,
+        `打点有 ${hatsAlone.toFixed(3)} / 無 ${plainAlone.toFixed(3)}`,
+      );
+      // **この量の限界をここに固定する。** 高い帯域を何かが覆えば、打点は「高い側だけ」に
+      // 見えなくなる。声である必要は無い（雑音でよい）ので、この門は
+      // 「口が動いたか」ではなく「高い帯域が覆われているか」も一緒に見ている。
+      // ハミングのように高い帯域へ何も出さない声は覆えないので、その上の打点は残る。
+      const covered = addHighNoise(hats, 0.2, 913);
+      const coveredAlone = aloneOf(covered);
+      check(
+        '高い帯域を雑音が覆うと打点は見えなくなる（この門の限界）',
+        coveredAlone < hatsAlone,
+        `雑音入り ${coveredAlone.toFixed(3)} / 打点だけ ${hatsAlone.toFixed(3)}`,
       );
     }
 
