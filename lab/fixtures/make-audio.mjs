@@ -512,6 +512,117 @@ function drums(data, from, to, level, hitsPerSecond, random) {
   }
 }
 
+/**
+ * シンバル／ハイハット。高い雑音を、声の音節と同じ速さで短く刻む。
+ *
+ * これは **わざと意地悪な素材** を作るためのもの。ただし狙いは
+ * いま動いている判定ではなく、**これから考える手がかりのほう**にある。
+ *
+ * 2026-09-12（2 回目）に「雑音の粒と音程の粒が短い間に混じるか」という手がかりを測った。
+ * 声のある素材は 7.8〜9.9 秒でよく分かれたのに、入れなかった。`drums.wav` が 13.00 秒で
+ * 完全に破ったからで、記録には**この量が分けていたのは「声があるか」ではなく
+ * 「その素材が正弦波だけで作られているか」だった**と書いてある。
+ * 手元の音楽 6 本のうち 5 本が正弦波の和で、雑音を持つのは `drums` ひとつしか無い。
+ * **雑音を持つ音楽が 1 本しか無いのに、雑音を手がかりにしてよいかは決められない。**
+ *
+ * ハイハットは `drums` とは別の壊し方をする。`drums` の雑音は白色で、90Hz の胴鳴りが
+ * 付いているだけ（音程の粒はそこから出ている）。ハイハットは **6kHz より上に寄った雑音**で、
+ * しかも**和音と同時に鳴る**。音程は雑音と同じ源からではなく、和音から来る。
+ * つまり「雑音の粒」と「音程の粒」が、現実の曲とまったく同じ形で共存する。
+ *
+ * 4 つに 1 つを長く伸ばす（オープンハイハット）。全部を同じ長さで刻むと、
+ * 減衰の形まで等間隔になって、「規則正しすぎるものは楽器」の側へ勝手に落ちてしまう。
+ */
+const HAT_CUTOFF = 6000;
+function hats(data, from, to, level, hitsPerSecond, random) {
+  const period = 1 / hitsPerSecond;
+  const filter = highpassState(HAT_CUTOFF);
+  const gain = highpassGain(HAT_CUTOFF);
+  for (let i = Math.round(from * SR); i < Math.min(data.length, Math.round(to * SR)); i += 1) {
+    const t = i / SR;
+    const index = Math.floor(t / period);
+    const inside = t - index * period;
+    const decay = index % 4 === 2 ? 0.16 : 0.035;
+    // フィルタは鳴っていない間も回し続ける（掛けるのは包絡だけ）。
+    // 打点ごとに作り直すと、立ち上がりが毎回フィルタの過渡になって、
+    // そこが広帯域のクリックになる。いま測ろうとしている量そのものを持ち上げてしまう。
+    const shaped = highpass(filter, (random() - 0.5) * 2) / gain;
+    data[i] += level * Math.exp(-inside / decay) * shaped;
+  }
+}
+
+/** 管楽器の息の雑音（音の実効値に対する比）と、寄せる高さ（Hz）。 */
+const FLUTE_BREATH_LEVEL = 0.32;
+const FLUTE_BREATH_CUTOFF = 2000;
+
+/**
+ * 息の雑音を持つ楽器（フルート・弓の擦り音のつもり）。
+ *
+ * これも **わざと意地悪な素材**。狙いは `tone`（音色の尖り具合 = 1 - 平坦さ）と、
+ * その周りの「雑音があるか」系の手がかり全部。
+ *
+ * 手元の音楽は `drums` を除いて全部が正弦波の和なので、**平坦さがどれも 0 に貼り付いている**
+ * （鳴っているコマの上位 10% で `bgm` 0.074・`music-chords` 0.040・`music-wah` 0.075 に対し、
+ * 声は 0.774〜0.823）。この開きは「声だから」ではなく「音楽の側が正弦波だから」出ている。
+ * 現実の管楽器も弓の擦り音も、音程と**同時に**広い帯域の雑音を出す。
+ * その音楽が手元に無いまま平坦さを手がかりに使うと、お手盛りになる。
+ *
+ * 声と違うのは **共鳴（フォルマント）が動かない**こと。管の長さは音程と一緒に変わるので、
+ * 包絡は音程に付いてくるだけで、口のように独立しては動かない。
+ * つまり「包絡が動くか」で分けられる**はず**で、ここは分かれてほしい側の素材になる。
+ *
+ * 音の切れ目には息継ぎ（0.09 秒）を置く。音量に幅が無いと、しきい値が
+ * 「全編が鳴っている」に落ちて何も起きず、判定が破れていても被害が見えない。
+ */
+function breathyTone(data, from, to, level, random) {
+  // ソ・ラ・シ・レ・ミ（ペンタトニック）。音程が近すぎると、音が変わっても
+  // 包絡がほとんど動かず、「音程だけが動く楽器」という狙いが立たない。
+  const scale = [392, 440, 493.88, 587.33, 659.25];
+  const span = to - from;
+  const notes = [];
+  for (let at = 0, previous = -1; at < span; ) {
+    const length = 0.55 + random() * 0.4;
+    let step = Math.floor(random() * scale.length);
+    if (step === previous) step = (step + 1) % scale.length;
+    previous = step;
+    notes.push({ at, length: Math.min(length, span - at), hz: scale[step] });
+    at += length;
+  }
+
+  const filter = highpassState(FLUTE_BREATH_CUTOFF);
+  const gain = highpassGain(FLUTE_BREATH_CUTOFF);
+  let phase = 0;
+  let index = 0;
+  for (let i = Math.round(from * SR); i < Math.min(data.length, Math.round(to * SR)); i += 1) {
+    const t = i / SR;
+    const local = t - from;
+    while (index + 1 < notes.length && local >= notes[index + 1].at) index += 1;
+    const note = notes[index];
+    const inside = local - note.at;
+    const body = note.length - 0.09;
+    const env = Math.max(0, Math.min(1, inside / 0.05, (body - inside) / 0.06));
+    if (env <= 0) continue;
+
+    // ビブラート。息継ぎと合わせて、音量も音程も止まらないようにする。
+    const f = note.hz * (1 + 0.012 * Math.sin(2 * Math.PI * 5 * t));
+    phase += (2 * Math.PI * f) / SR;
+    let v = 0;
+    let power = 0;
+    // 管楽器は倍音が少ない（声より速く落ちる）。h^1.8 は測って決めたのではなく、
+    // 「声の 1/h より急」であればよいので素直な形にした。
+    for (let h = 1; h * note.hz < 8000 && h * note.hz < SR / 2; h += 1) {
+      const a = 1 / Math.pow(h, 1.8);
+      v += a * Math.sin(h * phase);
+      power += a * a;
+    }
+    const norm = power > 0 ? Math.sqrt(power / 2) : 1;
+    // 息は鳴っている間ずっと重なる。声の息（BREATH_LEVEL 0.05）よりずっと濃い。
+    // フルートの息の音は、離れて聞いても分かるくらいはっきり鳴っている。
+    const breath = highpass(filter, (random() - 0.5) * 2) / gain;
+    data[i] += level * env * (v / norm + FLUTE_BREATH_LEVEL * breath);
+  }
+}
+
 function makeShort(
   name,
   {
@@ -532,6 +643,17 @@ function makeShort(
     chordLevel = 0.25,
     beat = 0,
     beatLevel = 0.25,
+    /** シンバル／ハイハットを刻む速さ（Hz）。0 で鳴らさない。 */
+    hat = 0,
+    hatLevel = 0.1,
+    /** 息の雑音を持つ管楽器を鳴らすか。 */
+    flute = false,
+    /**
+     * 既定値は**ほかの素材と同じ音量に揃うように測って決めた**（実効値 -23.7dBFS）。
+     * 素材ごとに音量が違うと自動しきい値もずれて、
+     * 「作りを変えたから数字が動いたのか、音量が動いたからか」が切り分けられなくなる。
+     */
+    fluteLevel = 0.07,
     noiseLevel = 0.002,
     speechLevel = 0.5,
     /** 2026-09-11 以前の平板な声で鳴らす（過去の数字を測り直すため）。 */
@@ -552,6 +674,12 @@ function makeShort(
   if (wah) wahChord(data, 0, SHORT_LENGTH, wahLevel, wah);
   if (chordEvery) chordProgression(data, 0, SHORT_LENGTH, chordLevel, chordEvery);
   if (beat) drums(data, 0, SHORT_LENGTH, beatLevel, beat, random);
+  // ハイハットと管楽器は打楽器のうしろに置く。こうしておくと、`hat` を足すだけの素材は
+  // **和音の側が 1 ビットも変わらない**（chordProgression は乱数を引かないので、
+  // ここまでの乱数の消費数が同じなら同じ音が出る）。ほかを変えずに 1 つだけ変えた 2 本を
+  // 並べられないと、「判定が本当は何を見ていたのか」が出ない。
+  if (hat) hats(data, 0, SHORT_LENGTH, hatLevel, hat, random);
+  if (flute) breathyTone(data, 0, SHORT_LENGTH, fluteLevel, random);
   if (speech) {
     for (const [from, to] of sparse ? SPARSE_UTTERANCES : UTTERANCES)
       speak(data, from, to, speechLevel, random, { flat, sustain, steady, vowelsOnly });

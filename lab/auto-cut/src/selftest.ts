@@ -4,7 +4,7 @@
  */
 
 import { analyzeLoudness, toDb, type AudioLike, type LoudnessTrack } from './loudness.ts';
-import { autoThresholdDb, planJetCut } from './silence.ts';
+import { autoThresholdDb, DEFAULT_JET_CUT, planJetCut } from './silence.ts';
 import { gainAt, planDucking } from './ducking.ts';
 import { toClipEdits } from './edits.ts';
 import { buildPeaks } from './peaks.ts';
@@ -143,6 +143,50 @@ function makeNoise(seconds: number, sampleRate: number, amp = 0.3): AudioLike {
     data[i] = ((seed / 0x7fffffff) * 2 - 1) * amp;
   }
   return { sampleRate, numberOfChannels: 1, length, getChannelData: () => data };
+}
+
+/**
+ * 既にある音へ、指定した実効値の白色雑音を混ぜる。
+ *
+ * 「雑音があるかどうか」ではなく「**どれくらい小さな雑音で結論が変わるか**」を
+ * 測るために要る。手元の音楽が正弦波の和ばかりだと、平坦さの表は
+ * 「声 0.8 / 音楽 0.04」のようにきれいに開くが、その開きは
+ * 声があるからではなく音楽が正弦波だから出ている。
+ */
+function mixNoise(base: AudioLike, rms: number, seed0: number): AudioLike {
+  const source = base.getChannelData(0);
+  const data = new Float32Array(source.length);
+  let seed = seed0;
+  // 一様乱数（-1〜1）の実効値は 1/√3 なので、指定の実効値になるように割り戻す。
+  const amp = rms * Math.sqrt(3);
+  for (let i = 0; i < source.length; i += 1) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    data[i] = source[i] + ((seed / 0x7fffffff) * 2 - 1) * amp;
+  }
+  return { sampleRate: base.sampleRate, numberOfChannels: 1, length: source.length, getChannelData: () => data };
+}
+
+/**
+ * 既にある音へ、ハイハットのつもりの打点を重ねる。
+ *
+ * 打点は**減衰する広帯域の雑音**で、高い成分から先に消えるわけではないが、
+ * 減衰そのものがスペクトルの重心を動かす（打点の直後は雑音が支配的で、
+ * 減衰すると下の和音が表に出てくる）。包絡はそれを「形が動いた」と読む。
+ * 口の動きを測っているつもりの量が、実は**打楽器の減衰でも同じだけ動く**ことを示すために置いた。
+ */
+function addHats(base: AudioLike, hitsPerSecond: number, rms: number): AudioLike {
+  const source = base.getChannelData(0);
+  const data = new Float32Array(source.length);
+  const sr = base.sampleRate;
+  const period = sr / hitsPerSecond;
+  const amp = rms * Math.sqrt(3);
+  let seed = 20260913;
+  for (let i = 0; i < source.length; i += 1) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    const env = Math.exp(-(i % period) / (0.035 * sr));
+    data[i] = source[i] + ((seed / 0x7fffffff) * 2 - 1) * amp * env;
+  }
+  return { sampleRate: sr, numberOfChannels: 1, length: source.length, getChannelData: () => data };
 }
 
 /** 指定した区間だけサイン波が鳴る、1ch の合成音を作る。 */
@@ -361,6 +405,64 @@ export function runSelfTest(): TestResult[] {
     const noiseFeatures = analyzeFeatures(noiseBuffer, analyzeLoudness(noiseBuffer, 0.02));
     check('音程のある音は尖っている', mid(toneFeatures.tone) > 0.9, mid(toneFeatures.tone).toFixed(3));
     check('雑音は平坦', mid(noiseFeatures.tone) < mid(toneFeatures.tone) - 0.1, mid(noiseFeatures.tone).toFixed(3));
+
+    // --- `tone` が測っているのは「雑音の量」ではなく「純粋な正弦波かどうか」 ---
+    // 2026-09-13 に素材の側で分かったことを、ここに固定しておく。
+    // 音程のある音に**耳では聞こえないほど小さな**広帯域の雑音を混ぜるだけで、
+    // 平坦さは一気に上がる（= `tone` が落ちる）。平坦さは帯域ごとの**幾何平均 ÷ 算術平均**なので、
+    // 谷が 0 に近いほど幾何平均が潰れる。正弦波の和は倍音と倍音の間がほぼ 0 で、
+    // そこへ小さな雑音を敷くと**底上げのほうが効く**。雑音の量には比例しない。
+    //
+    // だから「平坦さが高い＝雑音がある＝声」という読み方は成り立たない。
+    // 声のほうが平坦に見えていたのは、比べる相手（手元の音楽）が正弦波だけで作られていたから。
+    // 実際、雑音を持つ音楽を足したら平坦さの上位 10% は music-hats 0.685 / music-flute 0.663 まで上がり、
+    // 本物の声 4 本（0.301〜0.585）を追い越した。
+    {
+      const dirty = mixNoise(makeModulated(2, sr, 4), 0.5 * 0.032, 4242);
+      const dirtyTone = mid(analyzeFeatures(dirty, analyzeLoudness(dirty, 0.02)).tone);
+      check(
+        '-30dB の雑音を混ぜるだけで音色の尖りは崩れる',
+        dirtyTone < mid(toneFeatures.tone) - 0.3,
+        `雑音入り ${dirtyTone.toFixed(3)} / 無し ${mid(toneFeatures.tone).toFixed(3)}`,
+      );
+    }
+
+    // --- 減衰する雑音の打点は、音色が移り変わらなくても包絡を動かす ---
+    // ハイハットは打点のあとに**高い成分から先に減衰する**ので、鳴っている間ずっと
+    // スペクトルの重心が下がり続ける。包絡（ケプストラム）はそれを「形が動いた」と読む。
+    // 口の動きとは何の関係も無いのに、コマ単位の門をここで開けてしまう。
+    //
+    // 素材の側では `music-hats.wav`（和音＋ハイハット）が、ハイハットを足しただけで
+    // 包絡の動いた秒数 1.44 → 12.98 秒（13 秒中）になった。その仕組みをここに固定する。
+    {
+      // 鳴り始めの過渡を避けるため、真ん中だけを見て中央値を取る。
+      const median = (a: Float32Array) => {
+        const from = Math.floor(a.length * 0.25);
+        const values = Array.from(a.slice(from, Math.ceil(a.length * 0.75))).sort((x, y) => x - y);
+        return values.length ? values[Math.floor(values.length / 2)] : 0;
+      };
+      const chord = makeTone(2, sr, [{ from: 0, to: 2 }]);
+      // 打点の実効値は和音に対する比で置く（和音の実効値は 0.5/√2 = 0.354）。
+      // 0.2 は -5dB で、素材の `music-hats.wav`（-5.3dB）とほぼ同じ。
+      const loudHats = addHats(chord, 4.2, 0.2);
+      // 0.05 は -17dB。**混ぜていると分かる程度でしかない量**でも、形の判定はもう破れる。
+      const faintHats = addHats(chord, 4.2, 0.05);
+      const plainFeatures = analyzeFeatures(chord, analyzeLoudness(chord, 0.02));
+      const plain = median(plainFeatures.envelopeChange);
+      const ticked = median(analyzeFeatures(loudHats, analyzeLoudness(loudHats, 0.02)).envelopeChange);
+      const faintShape = median(analyzeFeatures(faintHats, analyzeLoudness(faintHats, 0.02)).shapeChange);
+      check('和音だけでは包絡は動かない', plain < DEFAULT_JET_CUT.minEnvelopeChange, plain.toFixed(4));
+      check(
+        '減衰する雑音の打点を足すと、口が動かなくても門が開く',
+        ticked >= DEFAULT_JET_CUT.minEnvelopeChange,
+        `打点有 ${ticked.toFixed(4)} / 無 ${plain.toFixed(4)}`,
+      );
+      check(
+        '-17dB の打点でも形の判定は破れる',
+        faintShape >= 0.09 && median(plainFeatures.shapeChange) < 0.09,
+        `薄い打点 ${faintShape.toFixed(4)} / 無 ${median(plainFeatures.shapeChange).toFixed(4)}`,
+      );
+    }
 
     // 形の変化は行ったり来たりする量なので、1 コマだけで比べると
     // たまたま折り返し点（変化がいちばん小さい所）を掴んで結論が変わる。
