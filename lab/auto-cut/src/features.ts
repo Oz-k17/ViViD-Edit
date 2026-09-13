@@ -110,6 +110,51 @@ export interface FeatureTrack {
   /** `envelopeFlux` を 0.15 秒で均したもの。1 コマの跳ねで決めないため。 */
   envelopeChange: Float32Array;
   /**
+   * 重心が**下がり続けている割合**（0〜1）。0.3 秒の窓の中で
+   * 「重心が 1 コマ前より下がった」歩みが何割あったかを数える。
+   * 向きだけを見るので、重心が何 Hz 動いたかにも音量倍率にも依らない。
+   *
+   * **判定には使っていない。** 2026-09-13 の 2 回目に「打点の減衰と口の動きを分ける」
+   * 当てとして入れ、測って捨てた量。残してあるのは `lab:probe` で測り続けるためで、
+   * 次の回が同じ穴を掘らないための記録でもある。
+   *
+   * 狙いは `envelopeChange`（包絡の動き）が拾えなかった区別だった。包絡は「口が動いたか」の
+   * 代理にしていたが、同日の 1 回目に**減衰する打点でも同じだけ動く**ことが分かった
+   * （`music-hats` で 1.44 → 12.98 秒）。打点は立ち上がりで重心が一気に上がり、
+   * 減衰のあいだ単調に下がり続ける。口の動きは向きがばらばらなので半々になる。
+   * 筋は通っていて、最初の 2 段では実際にきれいに分かれた:
+   *
+   * | 素材 | 中央値 | 0.65 超えのコマ |
+   * | --- | --- | --- |
+   * | **`music-hats`（和音＋ハイハット・声なし）** | **0.824** | **97%** |
+   * | ※ `speech-hats`（同じハイハットの上でしゃべる） | 0.588 | 29% |
+   * | 声のある 12 本の声のコマ | 0.412〜0.588 | 0〜25% |
+   * | ほかの音楽 8 本 | 0.417〜0.583 | 1〜34% |
+   *
+   * 2 行目が効いている。声を乗せると 97% → 29% まで落ちるので、
+   * 「ハイハットがあるか」を見ているだけではない。**そこまでは正しかった。**
+   *
+   * **破れたのは「声が高い帯域を覆っているか」を見ていたから。**
+   * 重心はいちばん高い所にある弱い音に引きずられる（和音に -34dB のハイハットを足すだけで
+   * 素材の下降率が 0.493 → 0.749 に動く）。だから声が高い帯域に何も出していなければ、
+   * 重心を動かすのは打点の減衰だけになる:
+   *
+   * | 素材 | 声のコマの中央値 | 0.65 超え |
+   * | --- | --- | --- |
+   * | ※ `speech-hats`（子音と息のある声） | 0.588 | 29% |
+   * | ※ `speech-vowels-hats`（**子音も息も無い声**） | **0.765** | **83%** |
+   * | ※ `speech-sustained` ＋ ハイハット（母音を伸ばす声） | 0.706 | 69% |
+   *
+   * ハミングや伸ばした母音を伴奏の上でやると、**声のコマの 7〜8 割が打点の側に落ちる**。
+   * 検算にも固定してある（声でなくても、高い帯域に雑音を敷けば下降率は落ちる）。
+   * つまりこの量は「口が動いたか」ではなく「**高い帯域が何かで覆われているか**」を見ている。
+   *
+   * 素材単位でも使えない。※ `speech-sparse-hats`（ハイハットの刻む音楽の上で
+   * 13 秒中 2.6 秒だけしゃべる）は、声が入っているのに素材全体の 99% が 0.65 を超える
+   * （`music-hats` の 97% より高い）。外せば声を丸ごと失う。詳しくは JOURNAL の同日。
+   */
+  centroidDescent: Float32Array;
+  /**
    * 声らしさ。揺れの速さ（modulation）と音色の尖り具合（tone）の積。
    *
    * 片方だけでは足りないことが probe.mjs で分かったので掛け合わせている。
@@ -239,6 +284,25 @@ const SCORE_SMOOTH = 0.1;
 const SHAPE_SMOOTH = 0.15;
 /** 包絡の動きを均す窓の長さ（秒）。`shapeChange` と揃えてある（比べるため）。 */
 const ENVELOPE_SMOOTH = 0.15;
+/**
+ * 重心の下降率を数える窓の長さ（秒）。
+ *
+ * **打点 1 つぶんが丸ごと入る長さが要る。** 窓が打点の間隔より短いと、
+ * 立ち上がり（上がる 1 歩）を含む窓と含まない窓に分かれて、値が窓の置き場所で跳ねる。
+ * 声の音節と同じ速さで刻む打楽器（4.2Hz = 0.238 秒ごと）を想定しているので、
+ * それより少し長い 0.3 秒を採った。`shapeChange` の 0.15 秒と揃えていないのはこの理由。
+ *
+ * 逆に長くしすぎると、声と打楽器が入れ替わる境目がぼやける。
+ */
+const DESCENT_WINDOW = 0.3;
+/**
+ * 下降率を出すのに最低いくつの歩みが要るか。
+ *
+ * 足りないときは **0（＝打点の減衰ではない）** を返す。迷ったら声の側に倒す。
+ * 声を切ってしまうのは取り返しがつかないので、「判断できない」を
+ * 「打点だ」と読ませない（silence.ts が渡されない列を「動いていない」と読まないのと同じ考え）。
+ */
+const DESCENT_MIN_STEPS = 4;
 
 /** 窓の中の平均。均一に均すので、山も谷も同じだけ動く。 */
 function smoothMean(values: Float32Array, halfWidth: number): Float32Array {
@@ -254,6 +318,49 @@ function smoothMean(values: Float32Array, halfWidth: number): Float32Array {
       count += 1;
     }
     out[i] = count > 0 ? sum / count : 0;
+  }
+  return out;
+}
+
+/**
+ * 重心が下がり続けている割合を、窓ごとに数える。
+ *
+ * 向き（下がったか）だけを見るので、対数を取る必要は無い
+ * （log は単調なので `log a < log b` と `a < b` は同じこと）。
+ * 重心が何 Hz 動いたかにも、音量倍率にも依らないのはそのため。
+ *
+ * 音が出ていないコマを挟んだ歩みは数えない。無音の重心はほぼ雑音の重心なので、
+ * そこを繋げて数えると「鳴り始めの 1 歩」が巨大な向きになって混ざる
+ * （`shapeFlux` が無音を挟んだときに前のコマを忘れるのと同じ理由）。
+ */
+export function centroidDescentRatio(
+  centroid: Float32Array,
+  level: Float32Array,
+  hop: number,
+  windowSeconds = DESCENT_WINDOW,
+): Float32Array {
+  const frames = centroid.length;
+  const out = new Float32Array(frames);
+  if (frames === 0) return out;
+  // 歩みごとの向き。1 = 下がった、0 = 下がらなかった、-1 = 数えられない。
+  // いちばん最初のコマには「1 つ前」が無いので、歩みとしては数えられない。
+  const step = new Int8Array(frames);
+  step[0] = -1;
+  for (let i = 1; i < frames; i += 1) {
+    const ok = level[i] > SILENCE_DB && level[i - 1] > SILENCE_DB && centroid[i] > 0 && centroid[i - 1] > 0;
+    step[i] = ok ? (centroid[i] < centroid[i - 1] ? 1 : 0) : -1;
+  }
+  const half = Math.max(1, Math.round(windowSeconds / 2 / hop));
+  for (let i = 0; i < frames; i += 1) {
+    let down = 0;
+    let counted = 0;
+    for (let k = -half; k <= half; k += 1) {
+      const j = i + k;
+      if (j < 0 || j >= frames || step[j] < 0) continue;
+      counted += 1;
+      down += step[j];
+    }
+    out[i] = counted >= DESCENT_MIN_STEPS ? down / counted : 0;
   }
   return out;
 }
@@ -570,6 +677,7 @@ export function analyzeFeatures(
   const speechScore = smooth(raw, Math.round(opts.smoothSeconds / track.hop));
   const shapeChange = smoothMean(shapeFlux, Math.round(opts.shapeSmoothSeconds / track.hop));
   const envelopeChange = smoothMean(envelopeFlux, Math.round(ENVELOPE_SMOOTH / track.hop));
+  const centroidDescent = centroidDescentRatio(centroid, track.db, track.hop);
 
   return {
     hop: track.hop,
@@ -588,6 +696,7 @@ export function analyzeFeatures(
     tone,
     shapeChange,
     envelopeChange,
+    centroidDescent,
     speechScore,
   };
 }

@@ -8,7 +8,7 @@ import { autoThresholdDb, DEFAULT_JET_CUT, planJetCut } from './silence.ts';
 import { gainAt, planDucking } from './ducking.ts';
 import { toClipEdits } from './edits.ts';
 import { buildPeaks } from './peaks.ts';
-import { analyzeFeatures, modulationRatio } from './features.ts';
+import { analyzeFeatures, centroidDescentRatio, modulationRatio } from './features.ts';
 import { fftScratch, magnitudes } from './fft.ts';
 
 export interface TestResult {
@@ -461,6 +461,106 @@ export function runSelfTest(): TestResult[] {
         '-17dB の打点でも形の判定は破れる',
         faintShape >= 0.09 && median(plainFeatures.shapeChange) < 0.09,
         `薄い打点 ${faintShape.toFixed(4)} / 無 ${median(plainFeatures.shapeChange).toFixed(4)}`,
+      );
+    }
+
+    // --- 打点の減衰と口の動きは、重心の「向き」で分かれる ---
+    // 上の段で「減衰する打点は包絡を動かす」ことを固定した。その続きで、
+    // **包絡が拾えなかった区別**をここに固定する（2026-09-13・2 回目に測った）。
+    //
+    // 打点は立ち上がりで重心が一気に上がり、そのあと減衰のあいだ単調に下がり続ける。
+    // 口の動きは向きがばらばらなので、下がった歩みと上がった歩みがほぼ半々になる。
+    // 素材の側では music-hats.wav（ハイハット単体）0.824 に対し、
+    // **同じハイハットの上でしゃべる speech-hats.wav は 0.588**（声は 1 ビットも同じ）。
+    {
+      // まず計算そのものを、作った重心の列で確かめる（音を通さない）。
+      const hop = 0.02;
+      const frames = 100;
+      const level = new Float32Array(frames).fill(-20);
+
+      // ① 打点の形。1 歩で跳ね上がり、11 歩かけて下がる（4.2Hz の打点に近い周期）。
+      const sawtooth = new Float32Array(frames);
+      for (let i = 0; i < frames; i += 1) sawtooth[i] = 3000 - 200 * (i % 12);
+      const sawRatio = centroidDescentRatio(sawtooth, level, hop)[50];
+      check('跳ねて下がり続ける重心は下降率が高い', sawRatio > 0.8, sawRatio.toFixed(3));
+
+      // ② 口の動きの形。1 歩ごとに向きが変わる。
+      const zigzag = new Float32Array(frames);
+      for (let i = 0; i < frames; i += 1) zigzag[i] = 1500 + (i % 2 === 0 ? 200 : -200);
+      const zigRatio = centroidDescentRatio(zigzag, level, hop)[50];
+      check('向きが入れ替わる重心は半々になる', near(zigRatio, 0.5, 0.1), zigRatio.toFixed(3));
+
+      // ③ 動かない重心は「下がっていない」。迷ったら声の側（0）に倒す設計。
+      const flat = new Float32Array(frames).fill(1500);
+      check('動かない重心の下降率は 0', centroidDescentRatio(flat, level, hop)[50] === 0, '0.000');
+
+      // ④ 音が出ていないコマを挟んだ歩みは数えない。
+      //    ここを数えると、鳴り始めの 1 歩が巨大な向きとして混ざる。
+      const gapLevel = new Float32Array(frames).fill(-20);
+      for (let i = 40; i < 60; i += 1) gapLevel[i] = -100;
+      const atGap = centroidDescentRatio(sawtooth, gapLevel, hop)[50];
+      check('無音のあいだは歩みを数えない（足りなければ 0）', atGap === 0, atGap.toFixed(3));
+
+      // ここから音を通して確かめる。和音 → 和音＋ハイハット → さらに声を重ねる。
+      const median = (a: Float32Array) => {
+        const from = Math.floor(a.length * 0.25);
+        const values = Array.from(a.slice(from, Math.ceil(a.length * 0.75))).sort((x, y) => x - y);
+        return values.length ? values[Math.floor(values.length / 2)] : 0;
+      };
+      const descentOf = (buffer: AudioLike) =>
+        median(analyzeFeatures(buffer, analyzeLoudness(buffer, 0.02)).centroidDescent);
+      const chord = makeTone(2, sr, [{ from: 0, to: 2 }]);
+      const hats = addHats(chord, 4.2, 0.2);
+      // 声を重ねる。`makeSpeechLike` は音色が移り変わるので、重心が両向きに振れる。
+      const withSpeech = ((): AudioLike => {
+        const a = hats.getChannelData(0);
+        const b = makeSpeechLike(2, sr, 4).getChannelData(0);
+        const data = new Float32Array(a.length);
+        for (let i = 0; i < a.length; i += 1) data[i] = a[i] + b[i];
+        return { sampleRate: sr, numberOfChannels: 1, length: a.length, getChannelData: () => data };
+      })();
+      const plainDescent = descentOf(chord);
+      const hatsDescent = descentOf(hats);
+      const speechDescent = descentOf(withSpeech);
+      check('和音だけでは重心が下がり続けない', plainDescent < 0.65, plainDescent.toFixed(3));
+      check(
+        '減衰する打点を足すと重心が下がり続ける',
+        hatsDescent >= 0.65,
+        `打点有 ${hatsDescent.toFixed(3)} / 無 ${plainDescent.toFixed(3)}`,
+      );
+      // **ここが、この量を判定に入れなかった理由**（2026-09-13・2 回目）。
+      // `makeSpeechLike` は 200Hz の倍音 6 本しか持たないので、1.2kHz より上に何も出さない。
+      // そういう声を重ねても下降率は 1 ポイントも落ちない。
+      // 重心はいちばん高い所にある音に引きずられるので、**声が高い帯域を覆っていなければ
+      // 重心を動かしているのは打点の減衰だけ**になる。
+      // 素材の側でも同じで、子音も息もある声を乗せた `speech-hats.wav` は声のコマの 29% しか
+      // 打点の側に落ちないのに、子音の無い `speech-vowels-hats.wav` は **83%** が落ちる。
+      check(
+        '高い帯域に何も出さない声を重ねても下降率は落ちない（子音に頼っている）',
+        near(speechDescent, hatsDescent, 0.05),
+        `声入り ${speechDescent.toFixed(3)} / 打点だけ ${hatsDescent.toFixed(3)}`,
+      );
+      // 裏返すと、**声でなくてもよい**。高い帯域に雑音を敷くだけで下降率は落ちる。
+      // つまりこの量が見ているのは「口が動いたか」ではなく「高い帯域が覆われているか」。
+      const covered = mixNoise(hats, 0.2, 913);
+      const coveredDescent = descentOf(covered);
+      check(
+        '声でなくても、高い帯域に雑音を敷けば下降率は落ちる',
+        coveredDescent < 0.65,
+        `雑音入り ${coveredDescent.toFixed(3)} / 打点だけ ${hatsDescent.toFixed(3)}`,
+      );
+
+      // ⑤ 向きしか見ていないので、音量を何倍にしても値は変わらない。
+      const halved = ((): AudioLike => {
+        const src = hats.getChannelData(0);
+        const data = new Float32Array(src.length);
+        for (let i = 0; i < src.length; i += 1) data[i] = src[i] * 0.5;
+        return { sampleRate: sr, numberOfChannels: 1, length: src.length, getChannelData: () => data };
+      })();
+      check(
+        '音量倍率を変えても下降率は変わらない',
+        near(descentOf(halved), hatsDescent, 0.02),
+        `×0.5 ${descentOf(halved).toFixed(3)} / ×1 ${hatsDescent.toFixed(3)}`,
       );
     }
 

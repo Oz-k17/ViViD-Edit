@@ -674,16 +674,24 @@ function makeShort(
   if (wah) wahChord(data, 0, SHORT_LENGTH, wahLevel, wah);
   if (chordEvery) chordProgression(data, 0, SHORT_LENGTH, chordLevel, chordEvery);
   if (beat) drums(data, 0, SHORT_LENGTH, beatLevel, beat, random);
-  // ハイハットと管楽器は打楽器のうしろに置く。こうしておくと、`hat` を足すだけの素材は
-  // **和音の側が 1 ビットも変わらない**（chordProgression は乱数を引かないので、
-  // ここまでの乱数の消費数が同じなら同じ音が出る）。ほかを変えずに 1 つだけ変えた 2 本を
-  // 並べられないと、「判定が本当は何を見ていたのか」が出ない。
-  if (hat) hats(data, 0, SHORT_LENGTH, hatLevel, hat, random);
   if (flute) breathyTone(data, 0, SHORT_LENGTH, fluteLevel, random);
   if (speech) {
     for (const [from, to] of sparse ? SPARSE_UTTERANCES : UTTERANCES)
       speak(data, from, to, speechLevel, random, { flat, sustain, steady, vowelsOnly });
   }
+  // ハイハットは**いちばん最後**に置く。こうしておくと、`hat` を足すだけの素材は
+  // **ほかの音が 1 ビットも変わらない**（ここまでの乱数の消費数が同じなら同じ音が出る）。
+  // ほかを変えずに 1 つだけ変えた 2 本を並べられないと、
+  // 「判定が本当は何を見ていたのか」が出ない。
+  //
+  // **2026-09-13 の 2 回目に、打楽器のうしろから声のうしろへ移した。** 以前の場所でも
+  // `music-hats` 対 `music-chords`（声の無い 2 本）は和音が一致していたが、
+  // **声のある素材にハイハットを足すと声のほうが変わってしまう**（`hats` が乱数を引くので、
+  // そのあとの `speak` が別の音節を選ぶ）。`speech-hats` を足すのに、
+  // 「声も違う 2 本」では何が効いたのか言えない。
+  // 声の無い素材は `speak` を呼ばないので、移しても音は 1 ビットも変わらない
+  // （`music-hats.wav` の md5 が一致することを確認した）。
+  if (hat) hats(data, 0, SHORT_LENGTH, hatLevel, hat, random);
   return writeWav(name, data);
 }
 

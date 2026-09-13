@@ -50,6 +50,9 @@ function auc(positive, negative) {
   return (rankSum - (n1 * (n1 + 1)) / 2) / (n1 * n0);
 }
 
+/** 重心の下降率で門を置くとしたらどこか（下の段で使う。勘で置かず表を見て決め直せるように定数にしておく）。 */
+const DESCENT_GATE = 0.65;
+
 const pad = (s, n) => String(s).padEnd(n, ' ');
 const num = (v, n) => (v === null ? pad('—', n) : String(v.toFixed(3)).padStart(n, ' '));
 
@@ -322,6 +325,63 @@ console.log(`${pad('  平均', 22)}${average}`);
   }
   console.log(`\n判定に使ったしきい値: 平坦さ >= ${NOISY_FLATNESS} / 倍音らしさ >= ${TONAL_HARMONICITY}`);
 }
+
+// --- 打点の減衰と、口の動きを分ける ---
+// 2026-09-13 の 1 回目に、`envelopeChange`（包絡の動き）が「口が動いたか」ではなく
+// **打点の減衰にも同じだけ反応する**ことが分かった（`music-hats` で 1.44 → 12.98 秒）。
+// そのとき記録に書いた見立てが「違いは動き方の**向き**にあるはず」。
+// 打点は立ち上がりで重心が一気に上がり、減衰のあいだ単調に下がり続ける。
+// 口の動きは向きがばらばらなので、下がった歩みと上がった歩みがほぼ半々になる。
+//
+// 0.3 秒の窓で「重心が下がった歩み」の割合を数えて、そこを直に見る。
+// **見るのは中央値だけでは足りない。** 門にするなら「声のコマが何割ひっかかるか」が要る。
+{
+  console.log('\n重心が下がり続けている割合（0.3 秒の窓。打点の減衰なら高い）\n');
+  console.log(
+    `${pad('素材', 24)}${pad('区分', 6)}${pad('中央', 8)}${pad('下位10%', 10)}${pad('上位10%', 10)}` +
+      `${pad(`${DESCENT_GATE} 超えのコマ`, 16)}`,
+  );
+  console.log('-'.repeat(74));
+  const quantile = (values, p) => {
+    if (values.length === 0) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p))];
+  };
+  for (const fixture of SHORT_FIXTURES) {
+    const file = path.join(out, fixture.name);
+    if (!fs.existsSync(file)) continue;
+    const buffer = readWav(file);
+    const track = analyzeLoudness(buffer, 0.02);
+    const features = analyzeFeatures(buffer, track);
+    const threshold = autoThresholdDb(track, 0.25);
+    const groups = { 声: [], 他: [] };
+    for (let i = 0; i < track.db.length; i += 1) {
+      if (track.db[i] <= threshold) continue;
+      const t = i * track.hop;
+      if (isSpeechAt(fixture, t - 0.15) !== isSpeechAt(fixture, t + 0.15)) continue;
+      groups[isSpeechAt(fixture, t) ? '声' : '他'].push(features.centroidDescent[i]);
+    }
+    for (const [label, values] of Object.entries(groups)) {
+      if (values.length < 5) continue;
+      const over = values.filter((v) => v >= DESCENT_GATE).length / values.length;
+      console.log(
+        `${pad((fixture.hard ? '※ ' : '  ') + fixture.name, 24)}${pad(label, 6)}` +
+          `${pad(num(quantile(values, 0.5), 6), 8)}${pad(num(quantile(values, 0.1), 6), 10)}` +
+          `${pad(num(quantile(values, 0.9), 6), 10)}${pad(`${(over * 100).toFixed(0)}%`, 16)}`,
+      );
+    }
+  }
+  console.log(`\n門にするなら ${DESCENT_GATE} のあたり（music-hats の下位 10% と、素の声の上位 10% の間）。`);
+  console.log('**それでも判定には入れなかった**（2026-09-13・2 回目に測って捨てた）。');
+  console.log('music-hats 97% に対し、同じハイハットの上でしゃべる speech-hats は 29% まで落ちるので、');
+  console.log('「ハイハットがあるか」を見ているだけではない。ところが下の 2 本で破れる:');
+  console.log('  ※ speech-vowels-hats（子音も息も無い声＋ハイハット）… 声のコマの 83% が超える');
+  console.log('  ※ speech-sparse-hats（音楽の上でまばらにしゃべる）… 素材全体の 99% が超える');
+  console.log('重心はいちばん高い所にある弱い音に引きずられるので、声が高い帯域を覆っていないと');
+  console.log('打点の減衰だけが残る。つまりこの量は「口が動いたか」ではなく');
+  console.log('「高い帯域が何かで覆われているか」を見ている。');
+}
+
 
 console.log('\n※ は意地悪な素材（BGM が大きい / 刻む打楽器 / 震える楽器 / 母音を伸ばす声 など）。');
 console.log('声の無い素材（bgm・drums・music-tremolo）は「声のコマ」が無いので AUC では測れない（—）。');
