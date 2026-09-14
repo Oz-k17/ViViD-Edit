@@ -1,0 +1,68 @@
+# 「NAS に触れない場所から、貼るだけで立ち上げる」版。
+#
+# UGOS Pro の Docker → プロジェクト → 作成 に、この中身をそのまま貼るだけ。
+# アプリのファイルを NAS へアップロードする必要はありません（GitHub から取ってきます）。
+# UGREENlink で管理画面に入れさえすれば、社外からでも全部済みます。
+#
+# 起動したら vivid-edit-tunnel のログを見てください。
+#   https://<ランダム>.trycloudflare.com
+# という行が出ます。それが配る URL です。
+#
+# 書き換えるのは ③ の 1 行（共有素材フォルダ）だけ。素材を共有しないなら消しても動きます。
+#
+# ---- どこまで確かめてあるか ----
+# 本物の docker compose で組み立て・展開・配信まで通してあります（一覧 / Range / キャッシュ /
+# SPA フォールバック、そこへブラウザを当てた 24 項目）。app-fetch が失敗したら nginx が
+# 起動しないこと（空っぽを配り始めないこと）も確認済みです。
+# ただし次の 2 つは、こちらの環境の制約で**未確認**です。実機で最初に見てください:
+#   - コンテナの中から GitHub を clone できるか（手元では素で成功。NAS の外向き通信に依存）
+#   - cloudflared がトンネルを張れるか（こちらからは外へ出られないため）
+# どちらも失敗すればログにはっきり出ます。詰まったらログを見てください。
+
+services:
+  # ① アプリを GitHub から取ってきて、置き場に展開する。
+  #    毎回まっさらにしてから入れ直すので、コンテナを再起動すれば最新版になる。
+  #    （更新のたびにファイルを上げ直す作業が要らない）
+  app-fetch:
+    image: alpine/git
+    container_name: vivid-edit-fetch
+    restart: "no"
+    entrypoint: >
+      sh -c "rm -rf /tmp/src && rm -rf /srv/app/* /srv/conf/* &&
+             git clone --depth 1 -b main https://github.com/Oz-k17/ViViD-Edit /tmp/src &&
+             cp -r /tmp/src/docs/. /srv/app/ &&
+             cp /tmp/src/deploy/nas/nginx.conf /srv/conf/default.conf &&
+             echo 'アプリと設定を展開しました'"
+    volumes:
+      - app:/srv/app
+      - nginxconf:/srv/conf
+
+  # ② nginx。アプリと素材を同じ口から配る（別の口だと CORS で素材が読めない）。
+  vivid-edit:
+    image: nginx:alpine
+    container_name: vivid-edit
+    restart: unless-stopped
+    depends_on:
+      app-fetch:
+        condition: service_completed_successfully
+    volumes:
+      - app:/srv/app:ro
+      - nginxconf:/etc/nginx/conf.d:ro
+      # ③ 共有素材フォルダ。実際のパスに書き換える（共有フォルダ名が video なら /volume1/video）。
+      #    素材を共有しないなら、この行ごと消してよい。
+      - /volume1/video/shared:/srv/media:ro
+
+  # ③ 外へ出す口。ポート開放も固定 IP も要らない（NAS から外向きに繋ぐ）。
+  #    HTTPS が付くので、書き出しが 1 コマずつの方式のまま使える。
+  #    お試しトンネルなので URL は再起動のたびに変わる。固定したいならドメインが要る。
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: vivid-edit-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://vivid-edit:80
+    depends_on:
+      - vivid-edit
+
+volumes:
+  app:
+  nginxconf:
