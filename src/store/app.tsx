@@ -8,6 +8,21 @@ import { setLang, type Lang } from '../i18n';
 import { uid } from '../model/factory';
 import type { AspectKey, Sequence, TextProps } from '../model/types';
 import { migrateStorageKey } from './storage';
+import {
+  currentProfile,
+  listProfiles,
+  newProfileId,
+  saveProfiles,
+  scopedKey,
+  setCurrentProfileId,
+  type Profile,
+} from './profile';
+import {
+  loadMediaRoots,
+  personalBaseFor,
+  saveMediaRoots,
+  type MediaRoots,
+} from './mediaRoots';
 
 export type ShortcutAction =
   | 'playPause'
@@ -258,8 +273,9 @@ export interface LayoutTemplate {
 
 export type Template = TextTemplate | LayoutTemplate;
 
-const SETTINGS_KEY = 'vivid.settings';
-const TEMPLATES_KEY = 'vivid.templates';
+// 使う人ごとに分ける。既定の人は昔のキーのまま（`profile.ts` を見よ）。
+const SETTINGS_KEY = scopedKey('vivid.settings');
+const TEMPLATES_KEY = scopedKey('vivid.templates');
 
 // 旧名で保存されていた分を引き継ぐ（アプリ名変更にともなう一度きりの処理）。
 migrateStorageKey('tateyoko.settings', SETTINGS_KEY);
@@ -284,6 +300,19 @@ function save(key: string, value: unknown) {
 
 interface AppApi {
   settings: Settings;
+  /** いま使っている人。 */
+  profile: Profile;
+  profiles: Profile[];
+  /** 使う人を切り替える。保存先ごと切り替わるので、読み込み直す。 */
+  switchProfile: (id: string) => void;
+  addProfile: (name: string) => Profile;
+  updateProfile: (id: string, patch: Partial<Omit<Profile, 'id'>>) => void;
+  removeProfile: (id: string) => void;
+  /** 素材の置き場所（端末で 1 つ。人ごとには分けない）。 */
+  mediaRoots: MediaRoots;
+  updateMediaRoots: (patch: Partial<MediaRoots>) => void;
+  /** いまの人の個人素材フォルダ。設定が足りなければ null。 */
+  personalBase: string | null;
   updateSettings: (patch: Partial<Settings>) => void;
   resetShortcuts: () => void;
   /** 編集画面のパネル配置を更新する（保存まで面倒をみる）。 */
@@ -297,11 +326,29 @@ interface AppApi {
 
 const AppContext = createContext<AppApi | null>(null);
 
+/**
+ * 素材の置き場所を初めて作るときの種。
+ * 「共有」と「個人」に分ける前は `settings.mediaBase` 1 本だったので、そこから引き継ぐ。
+ */
+function legacySharedBase(): string | undefined {
+  try {
+    const raw = localStorage.getItem('vivid.settings');
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw) as Partial<Settings>;
+    return typeof parsed.mediaBase === 'string' ? parsed.mediaBase : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function AppProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<Settings>(() => {
     const loaded = load(SETTINGS_KEY, { ...DEFAULT_SETTINGS, layout: guessLayout() });
     return { ...loaded, panels: sanitizePanels(loaded.panels) };
   });
+  const [profiles, setProfiles] = useState<Profile[]>(() => listProfiles());
+  const [profile, setProfile] = useState<Profile>(() => currentProfile());
+  const [mediaRoots, setMediaRoots] = useState<MediaRoots>(() => loadMediaRoots(legacySharedBase()));
   const [templates, setTemplates] = useState<Template[]>(() => {
     try {
       const raw = localStorage.getItem(TEMPLATES_KEY);
@@ -322,8 +369,59 @@ export function AppProvider({ children }: { children: ReactNode }) {
     save(TEMPLATES_KEY, templates);
   }, [templates]);
 
+  useEffect(() => {
+    saveMediaRoots(mediaRoots);
+  }, [mediaRoots]);
+
   const updateSettings = useCallback((patch: Partial<Settings>) => {
     setSettings((prev) => ({ ...prev, ...patch }));
+  }, []);
+
+  const updateMediaRoots = useCallback((patch: Partial<MediaRoots>) => {
+    setMediaRoots((prev) => ({ ...prev, ...patch }));
+  }, []);
+
+  /**
+   * 使う人を切り替える。
+   * 設定も下書きも素材ライブラリも保存キーごと変わるので、読み込み直すのが確実。
+   * 途中の編集を巻き込まないよう、保存が終わってから動かす。
+   */
+  const switchProfile = useCallback((id: string) => {
+    setCurrentProfileId(id);
+    if (typeof window !== 'undefined') window.location.reload();
+  }, []);
+
+  const addProfile = useCallback((name: string) => {
+    const trimmed = name.trim() || '名無し';
+    const created: Profile = { id: newProfileId(), name: trimmed, folder: trimmed };
+    setProfiles((prev) => {
+      const next = [...prev, created];
+      saveProfiles(next);
+      return next;
+    });
+    return created;
+  }, []);
+
+  const updateProfile = useCallback((id: string, patch: Partial<Omit<Profile, 'id'>>) => {
+    setProfiles((prev) => {
+      const next = prev.map((p) => (p.id === id ? { ...p, ...patch } : p));
+      saveProfiles(next);
+      return next;
+    });
+    setProfile((prev) => (prev.id === id ? { ...prev, ...patch } : prev));
+  }, []);
+
+  /**
+   * プロフィールを一覧から外す。
+   * 保存された下書きや素材はそのまま残す（消すと取り返せないため）。
+   * 同じ名前で作り直しても中身は戻らない（id が変わるため）ことは画面側で断る。
+   */
+  const removeProfile = useCallback((id: string) => {
+    setProfiles((prev) => {
+      const next = prev.filter((p) => p.id !== id);
+      saveProfiles(next);
+      return next;
+    });
   }, []);
 
   const resetShortcuts = useCallback(() => {
@@ -353,6 +451,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setTemplates((prev) => prev.map((t) => (t.id === id ? { ...t, name } : t)));
   }, []);
 
+  const personalBase = useMemo(() => personalBaseFor(mediaRoots, profile.folder), [mediaRoots, profile.folder]);
+
   const value = useMemo<AppApi>(
     () => ({
       settings,
@@ -364,8 +464,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addTemplate,
       removeTemplate,
       renameTemplate,
+      profile,
+      profiles,
+      switchProfile,
+      addProfile,
+      updateProfile,
+      removeProfile,
+      mediaRoots,
+      updateMediaRoots,
+      personalBase,
     }),
-    [settings, updateSettings, resetShortcuts, updatePanels, resetPanels, templates, addTemplate, removeTemplate, renameTemplate],
+    [
+      settings,
+      updateSettings,
+      resetShortcuts,
+      updatePanels,
+      resetPanels,
+      templates,
+      addTemplate,
+      removeTemplate,
+      renameTemplate,
+      profile,
+      profiles,
+      switchProfile,
+      addProfile,
+      updateProfile,
+      removeProfile,
+      mediaRoots,
+      updateMediaRoots,
+      personalBase,
+    ],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

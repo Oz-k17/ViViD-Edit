@@ -22,7 +22,22 @@ import { useEditor } from '../store/editor';
 const SLOT_LABELS: Record<PanelSlot, string> = { left: '左', right: '右', bottom: '下段' };
 
 export default function SettingsPage() {
-  const { settings, updateSettings, resetShortcuts, resetPanels } = useApp();
+  const {
+    settings,
+    updateSettings,
+    resetShortcuts,
+    resetPanels,
+    profile,
+    profiles,
+    switchProfile,
+    addProfile,
+    updateProfile,
+    removeProfile,
+    mediaRoots,
+    updateMediaRoots,
+    personalBase,
+  } = useApp();
+  const [newName, setNewName] = useState('');
   const { project, dispatch } = useEditor();
   const [recording, setRecording] = useState<ShortcutAction | null>(null);
   const projectInput = useRef<HTMLInputElement>(null);
@@ -189,21 +204,110 @@ export default function SettingsPage() {
           {handoff && <p className={handoff.kind === 'warn' ? 'warn small' : 'muted small'}>{handoff.text}</p>}
         </Panel>
 
-        <Panel title="共有素材フォルダ">
+        <Panel title="使う人">
           <p className="muted small">
-            NAS などに置いた共有フォルダの場所です。編集画面の「共有」から素材を選ぶときに使います。
-            <strong>アプリと同じ場所（同じホスト・同じ口）から配られている必要があります</strong>。
-            別の場所を指すとブラウザに止められます。
+            一台の端末を複数人で使うときに切り替えます。設定・下書き・取り込んだ素材は
+            <strong>人ごとに別々に保存</strong>されるので、混ざりません。
+            ただしこれは<strong>仕切りであって鍵ではありません</strong>。
+            同じブラウザを開けば誰にでも切り替えられ、中身も見えます。
           </p>
-          <Field label="素材フォルダ" hint="ページからの相対パス。既定は media/">
+          <Field label="いま使っている人">
+            <select value={profile.id} onChange={(e) => switchProfile(e.target.value)}>
+              {profiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="あなたの個人素材フォルダ名" hint="個人素材の親フォルダの下にあるフォルダ名">
             <input
               type="text"
-              value={settings.mediaBase}
+              value={profile.folder}
               spellCheck={false}
-              placeholder="media/"
-              onChange={(e) => updateSettings({ mediaBase: e.target.value })}
+              placeholder="例: sato"
+              onChange={(e) => updateProfile(profile.id, { folder: e.target.value })}
             />
           </Field>
+          <Field label="表示名">
+            <input
+              type="text"
+              value={profile.name}
+              spellCheck={false}
+              onChange={(e) => updateProfile(profile.id, { name: e.target.value })}
+            />
+          </Field>
+          <Field label="人を増やす" hint="増やしたあと、その人に切り替えてください">
+            <div className="base-row">
+              <input
+                type="text"
+                value={newName}
+                spellCheck={false}
+                placeholder="名前"
+                onChange={(e) => setNewName(e.target.value)}
+              />
+              <button
+                type="button"
+                disabled={!newName.trim()}
+                onClick={() => {
+                  addProfile(newName);
+                  setNewName('');
+                }}
+              >
+                追加
+              </button>
+            </div>
+          </Field>
+          {profiles.length > 1 && profile.id !== 'default' && (
+            <button
+              type="button"
+              className="danger"
+              onClick={() => {
+                // 保存された中身は消さない（消すと取り返せないため）。一覧から外すだけ。
+                if (!confirm(`「${profile.name}」を一覧から外しますか？\n保存された下書きや素材は消えませんが、同じ名前で作り直しても戻りません。`)) return;
+                removeProfile(profile.id);
+                switchProfile('default');
+              }}
+            >
+              この人を一覧から外す
+            </button>
+          )}
+        </Panel>
+
+        <Panel title="素材の置き場所">
+          <p className="muted small">
+            NAS などに置いた素材フォルダの場所です。編集画面の「NAS から追加」で使います。
+            <strong>アプリと同じ場所（同じホスト・同じ口）から配られている必要があります</strong>。
+            別の場所を指すとブラウザに止められます。ここは<strong>端末で 1 つ</strong>の設定で、
+            人を切り替えても変わりません。
+          </p>
+          <Field label="共有素材フォルダ" hint="皆で使う素材。既定は media/">
+            <input
+              type="text"
+              value={mediaRoots.shared}
+              spellCheck={false}
+              placeholder="media/"
+              onChange={(e) => updateMediaRoots({ shared: e.target.value })}
+            />
+          </Field>
+          <Field label="個人素材の親フォルダ" hint="この下に人ごとのフォルダが並びます。既定は media-personal/">
+            <input
+              type="text"
+              value={mediaRoots.personal}
+              spellCheck={false}
+              placeholder="media-personal/"
+              onChange={(e) => updateMediaRoots({ personal: e.target.value })}
+            />
+          </Field>
+          <p className="muted small">
+            {personalBase
+              ? `いまの「${profile.name}」が見に行くのは ${personalBase} です。`
+              : '個人素材フォルダ名が未設定のため、個人素材は使えません（上の「使う人」で設定してください）。'}
+          </p>
+          <p className="warn small">
+            個人フォルダは<strong>他の人からも見えます</strong>。誰がどれを使うかの仕分けであって、
+            アクセス制限ではありません。
+          </p>
         </Panel>
 
         <Panel title="書き出しの既定値">

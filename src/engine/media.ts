@@ -16,6 +16,7 @@
 
 import { BlobSource, Input, UrlSource } from 'mediabunny';
 import { VIDEO_INPUT_FORMATS } from './formats';
+import { scopedDbName } from '../store/profile';
 
 export type MediaKind = 'video' | 'image' | 'audio';
 
@@ -57,7 +58,7 @@ export function uid(prefix: string): string {
 
 // ---------- IndexedDB ----------
 
-const DB_NAME = 'vivid-edit';
+const DB_NAME = scopedDbName('vivid-edit');
 /** アプリ名を変える前に使っていた DB。中身があれば引き継いでから捨てる。 */
 const LEGACY_DB_NAME = 'tateyoko-studio';
 const STORE = 'assets';

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { asFolder, listFolder, LibraryError, type LibraryEntry } from '../../engine/library';
 import { mediaRegistry, UNSORTED } from '../../engine/media';
 import { useApp } from '../../store/app';
+import { Segmented } from '../ui';
 
 /**
  * 共有素材フォルダ（NAS）から素材を選ぶ窓。
@@ -9,9 +10,13 @@ import { useApp } from '../../store/app';
  * 選んでも実体は取り込まず、URL の参照として登録する（`media.ts` を見よ）。
  * 同じフォルダが見える人なら、プロジェクトを渡すだけで同じ素材が開ける。
  */
+/** 見ている置き場所。共有は皆で同じもの、個人はその人のフォルダ。 */
+type Where = 'shared' | 'personal';
+
 export function NasBrowser({ onClose }: { onClose: () => void }) {
-  const { settings, updateSettings } = useApp();
-  const [base, setBase] = useState(settings.mediaBase);
+  const { mediaRoots, updateMediaRoots, personalBase, profile } = useApp();
+  const [where, setWhere] = useState<Where>('shared');
+  const [base, setBase] = useState(mediaRoots.shared);
   const [path, setPath] = useState('');
   const [entries, setEntries] = useState<LibraryEntry[]>([]);
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -36,6 +41,12 @@ export function NasBrowser({ onClose }: { onClose: () => void }) {
     },
     [base],
   );
+
+  // 共有 / 個人 を切り替えたら、そちらの入口から見直す。
+  useEffect(() => {
+    const next = where === 'shared' ? mediaRoots.shared : (personalBase ?? '');
+    setBase(next);
+  }, [where, mediaRoots.shared, personalBase]);
 
   useEffect(() => {
     void load('');
@@ -75,15 +86,31 @@ export function NasBrowser({ onClose }: { onClose: () => void }) {
   return (
     <div className="modal-backdrop" onClick={() => !adding && onClose()}>
       <div className="modal wide-modal" onClick={(e) => e.stopPropagation()}>
-        <h2>共有フォルダから追加</h2>
+        <h2>NAS から追加</h2>
         <p className="muted small">
           選んだ素材は<strong>コピーせずに参照</strong>します。同じフォルダが見える人なら、
           プロジェクトを渡すだけで同じ素材を開けます。
         </p>
 
+        <Segmented<Where>
+          value={where}
+          onChange={setWhere}
+          options={[
+            { value: 'shared', label: '共有' },
+            { value: 'personal', label: `個人（${profile.name}）` },
+          ]}
+        />
+
+        {where === 'personal' && !personalBase && (
+          <p className="warn small">
+            個人素材フォルダが未設定です。設定画面の「素材の置き場所」で、
+            個人素材の親フォルダと、あなたのフォルダ名を入れてください。
+          </p>
+        )}
+
         <label className="field">
           <span className="field-label">
-            素材フォルダ
+            {where === 'shared' ? '共有素材フォルダ' : '個人素材フォルダ'}
             <span className="field-hint">アプリと同じ場所から配られている必要があります</span>
           </span>
           <div className="base-row">
@@ -97,7 +124,9 @@ export function NasBrowser({ onClose }: { onClose: () => void }) {
             <button
               type="button"
               onClick={() => {
-                updateSettings({ mediaBase: base });
+                // 共有側はここで直せる（皆に効く）。個人側はその人のフォルダ名で決まるので、
+                // ここでの変更はこの場限り（設定画面で直す）。
+                if (where === 'shared') updateMediaRoots({ shared: base });
                 void load('');
               }}
               disabled={busy}

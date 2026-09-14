@@ -1,0 +1,69 @@
+# ViViD Edit — UGREENlink で外から使う版（トンネル無し）
+#
+# UGOS Pro の「Docker → プロジェクト → 作成」にこれを貼るだけ。
+# NAS にファイルを上げる作業はありません（GitHub から取ってきます）。
+#
+# 立ち上がったらデスクトップにこのコンテナのショートカットを作ってください。
+# UGREENlink ID でログインしていれば、そのショートカットから外出先でも開けます。
+#
+# ---- 書き換えるのはマウント 2 行だけ ----
+#   ① 共有素材   /volume1/... を、皆で使う素材フォルダに
+#   ② 個人素材   /volume1/... を、人ごとのフォルダが並ぶ親フォルダに
+# どちらも使わないなら、その行ごと消して構いません（アプリは動きます）。
+#
+# ---- 個人フォルダは「鍵」ではありません ----
+# このアプリには誰が見ているかを知る手段がありません。個人素材フォルダは
+# 誰がどれを使うかの仕分けであって、他の人から見えなくする機能ではありません。
+# 人に見られて困るものは置かないでください。
+#
+# ---- どこまで確かめてあるか ----
+# 本物の docker compose で、組み立て・展開・配信（共有と個人の両方の一覧、
+# Range、キャッシュ指示、SPA フォールバック）と、そこへブラウザを当てた通しを
+# 確認済みです。2 人ぶんのプロフィールで作業が混ざらないことも確認しました。
+# ただし次の 2 つは、こちらの環境の制約で**未確認**です。実機で最初に見てください:
+#   - コンテナの中から GitHub を clone できるか（NAS の外向き通信に依存）
+#   - UGREENlink のショートカット経由で開けるか、動画のシークができるか
+#     （中継が Range リクエストを素通しするかどうか。ここがいちばん怪しい）
+# どちらも失敗すればログにはっきり出ます。
+
+services:
+  # アプリ本体と nginx 設定を GitHub から取ってきて、共有の置き場に広げる。
+  # NAS 側に置くファイルを無くすためにこうしている。
+  # 更新したくなったら、このコンテナを再実行するだけでよい。
+  app-fetch:
+    image: alpine/git
+    container_name: vivid-edit-fetch
+    restart: "no"
+    entrypoint: >
+      sh -c "rm -rf /srv/app/* /srv/conf/* &&
+             git clone --depth 1 --branch claude/short-form-video-editor-o8oabn
+                 https://github.com/Oz-k17/discord-calendar-bot /tmp/src &&
+             cp -r /tmp/src/docs/. /srv/app/ &&
+             cp /tmp/src/deploy/nas/nginx.conf /srv/conf/default.conf &&
+             echo 'アプリと設定を展開しました'"
+    volumes:
+      - app:/srv/app
+      - nginxconf:/srv/conf
+
+  vivid-edit:
+    image: nginx:alpine
+    container_name: vivid-edit
+    restart: unless-stopped
+    # 取得に失敗したときに、空の置き場を配り始めないようにする。
+    depends_on:
+      app-fetch:
+        condition: service_completed_successfully
+    ports:
+      # 左が NAS 側の口。既に使われていたら変えてよい。
+      - "4193:80"
+    volumes:
+      - app:/srv/app:ro
+      - nginxconf:/etc/nginx/conf.d:ro
+      # ① 皆で使う素材
+      - /volume1/共有フォルダ名/素材:/srv/media:ro
+      # ② 個人素材の親（この下に sato/ suzuki/ のように並べる）
+      - /volume1/共有フォルダ名/個人素材:/srv/media-personal:ro
+
+volumes:
+  app:
+  nginxconf:

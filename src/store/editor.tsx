@@ -19,10 +19,12 @@ import {
 import { createProject } from '../model/factory';
 import { ASPECT_PRESETS, type AspectKey, type Project, type Sequence } from '../model/types';
 import { migrateStorageKey } from './storage';
+import { scopedKey } from './profile';
 
 const HISTORY_LIMIT = 80;
 const COALESCE_MS = 700;
-const PROJECT_KEY = 'vivid.project';
+// 使う人ごとに分ける（`profile.ts` を見よ）。既定の人は昔のキーのまま。
+const PROJECT_KEY = scopedKey('vivid.project');
 
 // 旧名で保存されていた分を引き継ぐ（アプリ名変更にともなう一度きりの処理）。
 migrateStorageKey('tateyoko.project', PROJECT_KEY);

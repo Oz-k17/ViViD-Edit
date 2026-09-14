@@ -94,11 +94,11 @@ export function MediaPanel() {
           <button
             type="button"
             className="ghost"
-            title="NAS などの共有フォルダから、コピーせずに参照する"
+            title="NAS の共有／個人フォルダから、コピーせずに参照する"
             onClick={() => setBrowsing(true)}
             disabled={busy}
           >
-            共有
+            NAS
           </button>
           <button type="button" className="ghost" onClick={() => inputRef.current?.click()} disabled={busy}>
             {busy ? '読込中…' : '＋ 追加'}
