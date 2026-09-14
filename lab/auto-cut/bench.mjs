@@ -4,6 +4,11 @@
  *   npm run lab:fixtures   # 先に素材を作る
  *   npm run lab:bench
  *   npm run lab:bench -- lab/fixtures/out/speech-long.wav   # ファイルを指定してもよい
+ *   LAB_NO_RUN=1 npm run lab:bench   # 「動きが続いたか」を見ない（2026-09-14 以前の振る舞い）
+ *
+ * `LAB_NO_RUN` は A/B を並べるためのもの。判定に手を入れたら、
+ * **入れる前と入れたあとを同じコマンドで出せる**ようにしておかないと、
+ * 「良くなった」が測れない（前の数字は記録から拾い直すことになる）。
  *
  * セルフテスト（合成波形での検算）は「壊れていないか」を見るもので、
  * こちらは「実際どれくらい効くか」を見るもの。数字を記録に残しておけば、
@@ -86,7 +91,14 @@ for (const file of files) {
 
   const t1 = performance.now();
   const features = analyzeFeatures(buffer, track);
-  const speech = planJetCut(track, { mode: 'speech' }, features.speechScore, features.shapeChange, features.envelopeChange);
+  const speech = planJetCut(
+    track,
+    { mode: 'speech', ...(process.env.LAB_NO_RUN ? { minEnvelopeRun: 0 } : {}) },
+    features.speechScore,
+    features.shapeChange,
+    features.envelopeChange,
+    features.envelopeFlux,
+  );
   const speechMs = performance.now() - t1;
 
   const cut = (plan) => (plan.originalDuration > 0 ? Math.round((1 - plan.resultDuration / plan.originalDuration) * 100) : 0);

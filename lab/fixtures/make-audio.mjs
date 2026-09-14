@@ -623,6 +623,108 @@ function breathyTone(data, from, to, level, random) {
   }
 }
 
+/**
+ * ビブラートの深さ（音程の比）と速さ（Hz）。
+ * **`speak()` の `accent`（1 ± 0.04 の 1.7Hz）と同じ値**にしてある。
+ * 「楽器らしいビブラート」（浅く速い 5〜7Hz）にすると、声の抑揚とは別物になってしまい、
+ * 「音程の動きで声を見分ける」手を潰す素材にならない。狙いは声と**同じ動き方**をさせること。
+ */
+const VIBRATO_DEPTH = 0.04;
+const VIBRATO_RATE = 1.7;
+/**
+ * 音と音の間を渡る時間（秒）。
+ *
+ * ここが 0 だと音程が階段状に跳ぶので、「滑らかに動いたか」で弾けてしまう。
+ * 弦も管も声も、隣の音へは必ず有限の時間をかけて渡る。
+ * `speak()` の母音の渡り（0.06 秒）より少し長くしてあるのは、
+ * 声より緩やかに渡る楽器（弦のポルタメント）のつもり。
+ */
+const PORTAMENTO = 0.09;
+/**
+ * 音程が動く楽器（声は無い）。**わざと意地悪な素材。**
+ *
+ * 狙いは「音程が滑らかに動いているか」で声を見分ける手、およびその周辺
+ * （包絡の動き `envelopeChange`）。
+ *
+ * 手元の音楽は、音程が**完全に固定**か（`bgm`・`music-tremolo`・`music-wah`）、
+ * **階段状に跳ぶ**か（`music-chords*`）、**音程が無い**か（`drums`・`hats`）のどれかしかない。
+ * `music-flute` にビブラートは入っているが ±1.2%・5Hz と浅く速く、声の抑揚とは別の動きになる。
+ * **音程が固定の音楽しか手元に無い状態で「音程が動けば声」を測れば、必ず良い数字が出る。**
+ * それは判定の出来ではなく、素材の偏りを測っているだけになる
+ * （`music-flute` を足した理由とまったく同じ構図）。
+ *
+ * 現実の楽器は音程を動かす。弦のビブラートもポルタメントも、管のしゃくり上げも、
+ * 歌の無い器楽曲にいくらでもある。
+ *
+ * 声と違うのは **共鳴（フォルマント）が固定**であること。口は動かないので、
+ * 倍音の重みが変わるのは「倍音が固定の共鳴の中を滑って通る」ぶんだけ。
+ * つまり「口が動いたか」を本当に測れている手なら、この素材は弾けるはず。
+ * 逆に音程の動きに引きずられる手は、ここで破れる
+ * （`envelopeChange` は音程の動きに共鳴の 4〜8 割の大きさで反応すると測れているので、
+ * 破れるはず——という予想が features.ts に書いたまま 3 日置いてあった。その答え合わせでもある）。
+ *
+ * 音の切れ目には休符（0.1 秒）を置く。音量に幅が無いと、しきい値が
+ * 「全編が鳴っている」に落ちて何も起きず、判定が破れていても被害が見えない。
+ */
+function vibratoTone(data, from, to, level, random) {
+  // ソ・ラ・シ・レ・ミ（ペンタトニック）。`breathyTone` と同じ並びの 1 オクターブ下で、
+  // **声の基本周波数（120〜160Hz）と同じ帯**に置いた。高い所で鳴らすと、
+  // メル帯域の下半分に何も無い素材になってしまい、「低い帯域で何が起きているか」を
+  // 比べる相手にならない。
+  const scale = [196, 220, 246.94, 293.66, 329.63].map((hz) => hz / 2);
+  const span = to - from;
+  const notes = [];
+  for (let at = 0, previous = -1; at < span; ) {
+    // 長さは振る。揃えると音量の揺れが正弦波と変わらなくなり、
+    // 「規則正しさ」だけで弾けてしまう（それは音程の話ではない）。
+    const length = 0.5 + random() * 0.45;
+    let step = Math.floor(random() * scale.length);
+    if (step === previous) step = (step + 1) % scale.length;
+    previous = step;
+    notes.push({ at, length: Math.min(length, span - at), hz: scale[step] });
+    at += length;
+  }
+
+  // 口の形は動かない。母音「お」の共鳴に固定する（どれでもよいが、
+  // 低い F1・F2 のほうが、この音域の倍音が共鳴の山に乗る）。
+  const formants = VOWELS[4];
+  let phase = 0;
+  let index = 0;
+  for (let i = Math.round(from * SR); i < Math.min(data.length, Math.round(to * SR)); i += 1) {
+    const t = i / SR;
+    const local = t - from;
+    while (index + 1 < notes.length && local >= notes[index + 1].at) index += 1;
+    const note = notes[index];
+    const inside = local - note.at;
+    const body = note.length - 0.1;
+    const env = Math.max(0, Math.min(1, inside / 0.04, (body - inside) / 0.05));
+    if (env <= 0) continue;
+
+    // 隣の音からポルタメントで渡る。対数で補間する（`speak()` の母音の渡りと同じ理由）。
+    const before = notes[Math.max(0, index - 1)];
+    const blend = PORTAMENTO > 0 ? Math.min(1, inside / PORTAMENTO) : 1;
+    const glided = Math.exp(Math.log(before.hz) * (1 - blend) + Math.log(note.hz) * blend);
+    // ビブラート（声の抑揚と同じ）に、音の中で 1 割下がる傾きを重ねる。
+    // 傾きは `speak()` の declination のつもりで、**動きを発話らしく**しておくためのもの。
+    const decline = 1.05 - 0.1 * Math.min(1, inside / Math.max(1e-6, body));
+    const f = glided * decline * (1 + VIBRATO_DEPTH * Math.sin(2 * Math.PI * VIBRATO_RATE * t));
+    // 音程が動くので位相は積み上げる（周波数を時刻に掛けると、そこで波が跳ぶ）。
+    phase += (2 * Math.PI * f) / SR;
+
+    let v = 0;
+    let power = 0;
+    for (let h = 1; h * f < 5000 && h * f < SR / 2; h += 1) {
+      // 倍音の落ち方も共鳴の形も声と同じにする。**違うのは共鳴が動かないことだけ**、
+      // という素材にしておかないと、破れたときに何が効いたのか言えない。
+      const a = formantGain(h * f, formants) / h;
+      v += a * Math.sin(h * phase);
+      power += a * a;
+    }
+    const norm = power > 0 ? Math.sqrt(power / 2) : 1;
+    data[i] += (level * env * v) / norm;
+  }
+}
+
 function makeShort(
   name,
   {
@@ -648,6 +750,13 @@ function makeShort(
     hatLevel = 0.1,
     /** 息の雑音を持つ管楽器を鳴らすか。 */
     flute = false,
+    /** 音程が声と同じように動く楽器を鳴らすか。「音程の動き」に賭ける手を潰しにいく素材。 */
+    vibrato = false,
+    /**
+     * 既定値は**ほかの素材と同じ音量に揃うように測って決めた**（実効値 -23.7dBFS）。
+     * `fluteLevel` と同じ理由（素材ごとに音量が違うと自動しきい値もずれる）。
+     */
+    vibratoLevel = 0.075,
     /**
      * 既定値は**ほかの素材と同じ音量に揃うように測って決めた**（実効値 -23.7dBFS）。
      * 素材ごとに音量が違うと自動しきい値もずれて、
@@ -675,6 +784,7 @@ function makeShort(
   if (chordEvery) chordProgression(data, 0, SHORT_LENGTH, chordLevel, chordEvery);
   if (beat) drums(data, 0, SHORT_LENGTH, beatLevel, beat, random);
   if (flute) breathyTone(data, 0, SHORT_LENGTH, fluteLevel, random);
+  if (vibrato) vibratoTone(data, 0, SHORT_LENGTH, vibratoLevel, random);
   if (speech) {
     for (const [from, to] of sparse ? SPARSE_UTTERANCES : UTTERANCES)
       speak(data, from, to, speechLevel, random, { flat, sustain, steady, vowelsOnly });

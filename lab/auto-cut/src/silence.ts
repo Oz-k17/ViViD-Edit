@@ -173,8 +173,74 @@ export interface JetCutOptions {
    * まさにそれで、声だと判断されるコマの割合が 保持 0 秒で 23% → 0.5 秒で 51% まで伸びる。
    * ただし**保持を 0 にしても 23% で、たまにしゃべる声（24%）と並ぶ**ので、
    * これは保持のせいではなく門そのものの限界。保持を短くしても解決しない。
+   *
+   * **2026-09-14 に、この弱点の実害だけは別の場所で塞いだ**（下の `minEnvelopeRun`）。
+   * 門はいまも開けっぱなしになるが、素材単位の判定がその素材を止めるので、
+   * 声の無い素材が切り刻まれることはなくなった。**門そのものの限界は残っている。**
    */
   envelopeHold: number;
+  /**
+   * 「この素材に声があるか」を数えるとき、包絡の動きが**何秒続いている**ことを要求するか（秒）。
+   * 0 にすると「1 コマでも動けば数える」＝ 2026-09-14 以前の振る舞いに戻る。
+   *
+   * **コマ単位の門（上の `minEnvelopeChange` ＋ `envelopeHold`）には効かせていない。**
+   * そこが要点なので、先にその理由を書く。
+   *
+   * 生の `FeatureTrack.envelopeFlux` の上で数える。均したほう（`envelopeChange`）では
+   * 数えられない——**均しは 1 コマの棘を 15 コマに広げてしまう**ので、
+   * 「一瞬だけ動いた」と「動き続けた」が同じ形になる。
+   *
+   * 置いた理由は、保持の弱点（保持より短い間隔で動きが来ると門が閉まらない）が
+   * **保持の長さの問題ではなく、開ける条件の問題**だったと測れたため（2026-09-14）。
+   * 音楽が門を開けるのは音の変わり目だけで、そこは必ず一瞬で終わる。
+   * 声は口が動き続けるので、動きも続く。生の動きが 0.09 を超えたコマの
+   * 「続いた長さ」をコマ数で数えると、そこがきれいに割れた:
+   *
+   * | 素材 | 1 コマ | 2 | 3 | 4 以上 |
+   * | --- | --- | --- | --- | --- |
+   * | ※ `music-vibrato`（音程が動く楽器・声なし） | **24** | 8 | 2 | **1** |
+   * | ※ `music-chords-faster`（0.2 秒ごとに和音） | 2 | 5 | **59** | **0** |
+   * | ※ `music-chords-fast`（0.4 秒ごとに和音） | 2 | 2 | **30** | **0** |
+   * | `bgm` / ※ `music-tremolo` / ※ `music-swell` | 2 | 0 | 0 | **0** |
+   * | `speech` の声の区間 | 3 | 0 | 4 | **27** |
+   * | ※ `speech-vowels-only`（ハミング。いちばん苦しい声） | 7 | 1 | 2 | **24** |
+   * | ※ `speech-sustained`（母音を伸ばす声） | 0 | 0 | 4 | **10** |
+   *
+   * **和音の素材は 3 コマで必ず終わる**（音の変わり目そのものの長さ）。
+   * 声はいちばん苦しい `speech-vowels-only` でも 4 コマ以上が 24 本ある。
+   * そこで 4 コマ（**0.08 秒**）を採った。
+   *
+   * **コマ単位の門に入れるのは、測って捨てた。** 割れているのだから門にも使えるはずだと
+   * 思って先に入れ、声を切った（`lab:bench` の「声を残せた率」）:
+   *
+   * | 素材 | いまの門 | 続きの終わりで開ける | 続きの**頭まで遡って**開ける |
+   * | --- | --- | --- | --- |
+   * | ※ `speech-sustained` | 75% | **42%** | **64%** |
+   * | ※ `speech-vowels-only` | 100% | 87% | 91% |
+   * | `speech` | 98% | 90% | 94% |
+   * | `speech-noisy` | 100% | 90% | 96% |
+   *
+   * 2 列目がひどいのは、続いたと分かるのが最後のコマなので**動き始めの 3 コマが毎回落ちる**ため。
+   * 遡って開ければそこは戻るが（3 列目）、それでも戻りきらない。
+   * 残る差は**声にも 1〜3 コマで終わる動きが 2〜3 割ある**ことで、
+   * そこを落とすぶんはどう並べ替えても戻らない。**門に入れるかぎり交換になる。**
+   *
+   * **同じ量でも、要求を厳しくしてよい場所とそうでない場所がある。**
+   * コマ単位の門は 1 コマ落とせばそこで声が切れる（取り返しがつかない）。
+   * 素材単位の判定は 13 秒のうち 5%（`minSpeechRatio`）残っていればよいので、
+   * 2〜3 割取りこぼしても結論は変わらない。**厳しい条件はこちらにだけ置く。**
+   * そうしたら、声のある 15 本は削減も残せた率も精度も**1 ポイントも動かないまま**、
+   * `music-chords-faster` の削減 18% → 0%、`music-vibrato` の 4% → 0% になった。
+   *
+   * **この条件が閉められるのは「変わり目だけの音楽」に限る。**
+   * 減衰する打点（`drums` は 9 コマ、`music-hats` は 6 コマ）や、
+   * 鳴っている間ずっと息が揺れる `music-flute`（11 コマ以上が 18 本）は、これでは弾けない。
+   *
+   * **余裕は広くない。** `music-vibrato` の割合は 4% で、5% の線のすぐ下にいる
+   * （声のある素材でいちばん低いのは `speech-sparse-bgm` の 26%）。
+   * 音の間隔がもう少し詰まれば通る。ここは数字を見ながら扱うこと。
+   */
+  minEnvelopeRun: number;
 }
 
 /**
@@ -210,6 +276,7 @@ export const DEFAULT_JET_CUT: JetCutOptions = {
   minShapeSeconds: 0.5,
   minEnvelopeChange: 0.09,
   envelopeHold: 0.5,
+  minEnvelopeRun: 0.08,
 };
 
 export interface JetCutPlan {
@@ -306,6 +373,53 @@ function complement(keep: Range[], duration: number): Range[] {
 }
 
 /**
+ * 「動きが続いたコマ」を、コマごとの開閉として先に組み立てる。
+ *
+ * いまの使い道は**素材単位の判定（`speechRatio`）だけ**で、
+ * コマ単位の門には使っていない（理由は `minEnvelopeRun` の注に測った表がある）。
+ *
+ * **1 コマずつ前から決められないので、別の工程に分けてある。** 開ける条件が
+ * 「動きが `minRun` コマ続いたこと」なので、続いたと分かるのは最後のコマまで来たとき。
+ * そこで開けると、**動き始めの数コマが毎回落ちる**（声の語頭がそこに当たる）。
+ * 動きは続きの先頭から始まっているのだから、**遡って開ける**のが正しい。
+ * 門に入れる案を測ったときは、ここを直すだけで取りこぼしが 3 分の 1 に減った。
+ *
+ * @param flux 均す前の包絡の動き。均したものでは「続いたか」を数えられない
+ *   （均しは 1 コマの棘を 15 コマに広げるので、一瞬の動きが長く続いたように見える）。
+ * @param sounding そのコマが鳴っているか。無音を挟んだら続きも保持も切る
+ *   （別々の一瞬の動きが、無音をまたいで「続いた」ことにならないように）。
+ */
+export function envelopeGateFrames(
+  flux: Float32Array,
+  sounding: (i: number) => boolean,
+  minChange: number,
+  minRunFrames: number,
+  holdFrames: number,
+): Uint8Array {
+  const open = new Uint8Array(flux.length);
+  const run = Math.max(1, minRunFrames);
+  let length = 0;
+  let openUntil = -1;
+  for (let i = 0; i < flux.length; i += 1) {
+    if (!sounding(i)) {
+      // 無音で、続きも保持も切る。またいで数えると、別々の一瞬の動きが「続いた」ことになる。
+      length = 0;
+      openUntil = -1;
+      continue;
+    }
+    length = flux[i] >= minChange ? length + 1 : 0;
+    // **遡るのは、続きがちょうど条件を満たした 1 回だけ。** 毎コマ頭まで戻ると、
+    // 動き続ける素材で計算量が尺の 2 乗になる（10 分の素材で刺さる）。
+    // ここを過ぎたあとは、保持が前へ伸びるだけなので遡る必要が無い。
+    // 遡る範囲のコマは、続きを数えている間ずっと鳴っていたので、鳴っているか確かめ直さなくてよい。
+    if (length === run) for (let k = i - run + 1; k < i; k += 1) open[k] = 1;
+    if (length >= run) openUntil = i + holdFrames;
+    if (i <= openUntil) open[i] = 1;
+  }
+  return open;
+}
+
+/**
  * @param speechScore コマごとの声らしさ（0〜1）。`mode: 'speech'` のときだけ使う。
  *   音そのものを見ないと出せない値なので、features.ts で作って渡してもらう。
  * @param shapeChange コマごとのスペクトルの形の変化。渡さなければ形での判断はしない
@@ -313,6 +427,9 @@ function complement(keep: Range[], duration: number): Range[] {
  * @param envelopeChange コマごとの包絡の動き。渡さなければ包絡の門は置かない。
  *   `shapeChange` と同じ理由で、**渡されないものを「動いていない」と読まない**
  *   （読んでしまうと、列を渡し忘れただけで声が 1 コマも残らなくなる）。
+ * @param envelopeFlux 均す前の包絡の動き。渡さなければ「動きが続いたか」は見ない
+ *   （＝ `minEnvelopeRun` を 0 として扱う）。ここも**渡されないものを
+ *   「続かなかった」と読まない**。読むと、列を渡し忘れただけで門が開かなくなる。
  */
 export function planJetCut(
   track: LoudnessTrack,
@@ -320,6 +437,7 @@ export function planJetCut(
   speechScore?: Float32Array,
   shapeChange?: Float32Array,
   envelopeChange?: Float32Array,
+  envelopeFlux?: Float32Array,
 ): JetCutPlan {
   const opts = { ...DEFAULT_JET_CUT, ...options };
   const thresholdDb = opts.thresholdDb ?? autoThresholdDb(track, opts.sensitivity);
@@ -332,11 +450,26 @@ export function planJetCut(
   let inSpeech = false;
   let soundingFrames = 0;
   let speechFrames = 0;
+  // 「この素材に声があるか」を決めるほうの数。門の厳しい条件はこちらにだけ効かせる。
+  let strictSpeechFrames = 0;
   const useShape = !!shapeChange && shapeChange.length === track.db.length;
   let shapeFrames = 0;
   // 包絡の門。開いたコマの番号を覚えておき、そこから holdFrames コマ先までは開けたままにする。
   const useEnvelope = !!envelopeChange && envelopeChange.length === track.db.length && opts.minEnvelopeChange > 0;
   const holdFrames = Math.max(0, Math.round(opts.envelopeHold / track.hop));
+  // 「動きが続いたか」は均す前の列でしか数えられない（均しは棘を広げてしまう）。
+  // 渡されなければ 1 コマで開く＝2026-09-14 以前の振る舞い。
+  const useRun = !!envelopeFlux && envelopeFlux.length === track.db.length && opts.minEnvelopeRun > 0;
+  const sounding = (i: number) => track.db[i] > thresholdDb && track.db[i] > SILENCE_DB;
+  const runGate = useRun
+    ? envelopeGateFrames(
+        envelopeFlux as Float32Array,
+        sounding,
+        opts.minEnvelopeChange,
+        Math.max(1, Math.round(opts.minEnvelopeRun / track.hop)),
+        holdFrames,
+      )
+    : null;
   let envelopeOpenUntil = -1;
   let envelopeFrames = 0;
 
@@ -370,6 +503,13 @@ export function planJetCut(
         envelopeFrames += 1;
       }
       speechFrames += 1;
+      // 素材単位の判定（「この素材に声があるか」）だけは、もっと厳しい条件で数える。
+      //
+      // **同じ量でも、要求を厳しくしてよい場所とそうでない場所がある。**
+      // コマ単位の門は 1 コマ落とせばそこで声が切れる（取り返しがつかない）。
+      // 素材単位の判定は 13 秒のうち 5% 残っていればよいので、
+      // 取りこぼしても結論は変わらない。だから厳しい条件はこちらに置く。
+      if (!runGate || runGate[i]) strictSpeechFrames += 1;
     }
     loud.push({
       start: Math.max(0, i * track.hop - opts.padding),
@@ -377,7 +517,9 @@ export function planJetCut(
     });
   }
 
-  const speechRatio = usedMode === 'speech' ? (soundingFrames > 0 ? speechFrames / soundingFrames : 0) : 1;
+  // 割合は厳しいほうで数える（上の strictSpeechFrames の注を参照）。
+  // 門を渡されていなければ strictSpeechFrames === speechFrames なので、振る舞いは変わらない。
+  const speechRatio = usedMode === 'speech' ? (soundingFrames > 0 ? strictSpeechFrames / soundingFrames : 0) : 1;
   const shapeSeconds = shapeFrames * track.hop;
   const envelopeSeconds = envelopeFrames * track.hop;
 

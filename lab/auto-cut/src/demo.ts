@@ -228,6 +228,8 @@ function refreshCut() {
     voice.features.speechScore,
     voice.features.shapeChange,
     voice.features.envelopeChange,
+    // 均す前の列。「この素材に声があるか」を決めるときだけ使う（silence.ts の注を参照）。
+    voice.features.envelopeFlux,
   );
 
   $<HTMLOutputElement>('out-sensitivity').textContent = Number($<HTMLInputElement>('sensitivity').value).toFixed(2);

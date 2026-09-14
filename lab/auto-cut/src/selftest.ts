@@ -4,7 +4,7 @@
  */
 
 import { analyzeLoudness, toDb, type AudioLike, type LoudnessTrack } from './loudness.ts';
-import { autoThresholdDb, DEFAULT_JET_CUT, planJetCut } from './silence.ts';
+import { autoThresholdDb, DEFAULT_JET_CUT, envelopeGateFrames, planJetCut } from './silence.ts';
 import { gainAt, planDucking } from './ducking.ts';
 import { toClipEdits } from './edits.ts';
 import { buildPeaks } from './peaks.ts';
@@ -1061,6 +1061,116 @@ export function runSelfTest(): TestResult[] {
       chained.resultDuration > 3.5,
       `${chained.resultDuration.toFixed(2)} 秒`,
     );
+
+    // --- 「動きが続いたか」を数える工程（2026-09-14） ---
+    //
+    // 上の「既知の限界」の実害を、素材単位の判定の側で塞ぐためのもの。
+    // 一瞬の動きが繰り返し来ても、**1 回ずつは続いていない**ことを見る。
+    {
+      const always = () => true;
+      const spikes = new Float32Array(50);
+      // 0.3 秒ごと（15 コマごと）に 1 コマだけ跳ねる。上の chained と同じ形。
+      for (let i = 0; i < spikes.length; i += 15) spikes[i] = 0.3;
+      const strict = envelopeGateFrames(spikes, always, 0.09, 4, 25);
+      check(
+        '一瞬の動きが繰り返し来ても、続いていなければ開かない',
+        strict.every((v) => v === 0),
+        `開いた ${strict.reduce((a, b) => a + b, 0)} コマ`,
+      );
+      // 同じ列でも、続きを 1 コマしか要求しなければ保持で繋がって開けっぱなしになる
+      // （＝ 2026-09-14 以前の振る舞い）。塞いだのが「続き」の条件だと分かるように並べて留める。
+      const loose = envelopeGateFrames(spikes, always, 0.09, 1, 25);
+      check(
+        '続きを求めなければ、同じ列でも保持で繋がってしまう',
+        loose.reduce((a, b) => a + b, 0) > 40,
+        `開いた ${loose.reduce((a, b) => a + b, 0)} コマ`,
+      );
+
+      // 続いた動きは通る。しかも**続きの頭から**開く。
+      // ここが遅れると、声の語頭が毎回落ちる（測ったら取りこぼしが 3 倍になった）。
+      const run = new Float32Array(50);
+      for (let i = 10; i < 16; i += 1) run[i] = 0.3;
+      const opened = envelopeGateFrames(run, always, 0.09, 4, 5);
+      check(
+        '続いた動きは、続きの頭まで遡って開く',
+        opened[10] === 1 && opened[9] === 0,
+        `10 コマ目 ${opened[10]} / 9 コマ目 ${opened[9]}`,
+      );
+      check(
+        '保持のぶんだけ先まで開く',
+        opened[20] === 1 && opened[21] === 0,
+        `20 コマ目 ${opened[20]} / 21 コマ目 ${opened[21]}`,
+      );
+
+      // 無音をまたいで数えない。またぐと、別々の一瞬の動きが「続いた」ことになってしまう。
+      const split = new Float32Array(50);
+      for (let i = 8; i < 11; i += 1) split[i] = 0.3;
+      for (let i = 12; i < 15; i += 1) split[i] = 0.3;
+      const gapped = envelopeGateFrames(split, (i) => i !== 11, 0.09, 4, 0);
+      check(
+        '無音を挟んだら、続きは数え直す',
+        gapped.every((v) => v === 0),
+        `開いた ${gapped.reduce((a, b) => a + b, 0)} コマ`,
+      );
+      // 保持も無音をまたがない。またぐと、前の声の余韻でそのあとの音楽まで通してしまう。
+      const beforeSilence = new Float32Array(50);
+      for (let i = 5; i < 11; i += 1) beforeSilence[i] = 0.3;
+      const stopped = envelopeGateFrames(beforeSilence, (i) => i < 14, 0.09, 4, 20);
+      check(
+        '保持も無音をまたがない',
+        stopped[13] === 1 && stopped.slice(14).every((v) => v === 0),
+        `13 コマ目 ${stopped[13]} / 14 コマ目以降 ${stopped.slice(14).reduce((a, b) => a + b, 0)} コマ`,
+      );
+      // 動き続ける素材でも、遡りは続きが条件を満たした 1 回だけ。
+      // 毎コマ頭まで戻る書き方だと尺の 2 乗になり、長尺で刺さる。
+      const moving = new Float32Array(20000).fill(0.3);
+      const started = performance.now();
+      const allOpen = envelopeGateFrames(moving, always, 0.09, 4, 25);
+      check(
+        '動き続けても、尺に比例した手間で済む',
+        performance.now() - started < 200 && allOpen[19999] === 1,
+        `${(performance.now() - started).toFixed(0)}ms`,
+      );
+
+      // 素材単位の判定にだけ効かせていること。コマ単位の門は動かさない約束なので、
+      // ここが落ちたら「声を切らない」という前提が崩れている。
+      const spikeColumn = fill((t) => (t % 0.3 < 0.02 ? 0.3 : 0.0));
+      const framesKept = (minEnvelopeRun: number) =>
+        planJetCut(
+          sounding,
+          { ...onlyGate, envelopeHold: 0.5, minEnvelopeRun },
+          loudScore,
+          movingShape,
+          spikeColumn,
+          spikeColumn,
+        ).resultDuration;
+      check(
+        '続きの条件は、コマ単位の門の切り口を変えない',
+        near(framesKept(0.08), framesKept(0), 0.01),
+        `${framesKept(0).toFixed(2)} 秒 → ${framesKept(0.08).toFixed(2)} 秒`,
+      );
+      // そのうえで、素材単位の判定（割合）は落ちる。これが塞いだ穴そのもの。
+      const withRun = planJetCut(
+        sounding,
+        { ...bare, envelopeHold: 0.5, minEnvelopeRun: 0.08 },
+        loudScore,
+        movingShape,
+        spikeColumn,
+        spikeColumn,
+      );
+      check(
+        '一瞬の動きしか無い素材は「声が見つからない」で止まる',
+        withRun.noSpeechFound && withRun.noSpeechReason === 'ratio',
+        `割合 ${(withRun.speechRatio * 100).toFixed(0)}%`,
+      );
+      // 渡されないものを「続かなかった」と読まない（列を渡し忘れただけで止まらないこと）。
+      const noFlux = planJetCut(sounding, { ...bare, envelopeHold: 0.5, minEnvelopeRun: 0.08 }, loudScore, movingShape, spikeColumn);
+      check(
+        '生の列を渡さなければ、続きは見ない',
+        !noFlux.noSpeechFound,
+        `割合 ${(noFlux.speechRatio * 100).toFixed(0)}%`,
+      );
+    }
   }
 
   return results;
