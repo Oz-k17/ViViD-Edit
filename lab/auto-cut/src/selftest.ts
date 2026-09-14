@@ -966,6 +966,38 @@ export function runSelfTest(): TestResult[] {
     const half = planJetCut(sounding, { mode: 'speech' }, fill((t) => (t < 2 ? 0.5 : 0.01)));
     check('声らしいコマの割合が返る', near(half.speechRatio, 0.5, 0.05), half.speechRatio.toFixed(3));
     check('level のときは割合を 1 とする', planJetCut(sounding).speechRatio === 1, '');
+
+    // --- 素材単位の判定に、どれだけ余裕があるか（2026-09-14・2 回目に測って分かったこと）---
+    //
+    // 「素材単位の判定は 13 秒のうち 5% 残ればよいので、2〜3 割取りこぼしても結論は変わらない」
+    // という前の回の読みは、**声がたっぷり入っている素材でしか成り立たない**。
+    // 割合の分母は鳴っているコマ全部なので、余裕は
+    //   （声が尺に占める割合）×（その声を取りこぼさずに数えられた割合）
+    // であり、**声が薄い素材では前の項が先に効いてくる。**
+    //
+    // 同じ取りこぼし率（声のコマの 8 割を落とす）で、声の量だけを変えて結論を見る。
+    // 声の区間のうち 5 コマに 1 コマだけ声らしさを残し、残り 4 コマは落とす。
+    const thinned = (voiceUntil: number) =>
+      fill((t) => (t < voiceUntil && Math.round(t / sounding.hop) % 5 === 0 ? 0.5 : 0.02));
+    // 声が尺の 8 割（0〜3.2 秒）。8 割取りこぼしても 16% 残るので、結論は動かない。
+    const thick = planJetCut(sounding, { mode: 'speech' }, thinned(3.2));
+    check(
+      '声がたっぷりあれば、8 割取りこぼしても「声あり」のまま',
+      !thick.noSpeechFound && thick.speechRatio > DEFAULT_JET_CUT.minSpeechRatio,
+      `割合 ${(thick.speechRatio * 100).toFixed(0)}%`,
+    );
+    // 声が尺の 2 割（0〜0.8 秒）。取りこぼし率は同じなのに 4% しか残らず、線を割る。
+    const thin = planJetCut(sounding, { mode: 'speech' }, thinned(0.8));
+    check(
+      '声が薄いと、同じ取りこぼし率で「声が見つからない」に落ちる（既知の限界）',
+      thin.noSpeechFound && thin.noSpeechReason === 'ratio',
+      `割合 ${(thin.speechRatio * 100).toFixed(0)}%`,
+    );
+    check(
+      '素材単位の余裕は、声がどれだけ入っているかに比例する',
+      near(thick.speechRatio / Math.max(1e-6, thin.speechRatio), 4, 0.5),
+      `${(thick.speechRatio * 100).toFixed(0)}% 対 ${(thin.speechRatio * 100).toFixed(0)}%`,
+    );
   }
 
   // --- 包絡の門と保持 ---

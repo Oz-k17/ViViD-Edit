@@ -472,7 +472,7 @@ function wahChord(data, from, to, level, rate) {
  * 和音が変わればそこで形は動く。本物の曲はたいてい和音が変わるので、
  * 「形がどこかで動いたら声がある」とみなす判定は、そこで破れるはず。破れ方を測るために要る。
  */
-function chordProgression(data, from, to, level, everySeconds) {
+function chordProgression(data, from, to, level, everySeconds, breaks = []) {
   const progression = [
     [220, 277.18, 329.63],
     [246.94, 293.66, 369.99],
@@ -481,6 +481,9 @@ function chordProgression(data, from, to, level, everySeconds) {
   ];
   for (let i = Math.round(from * SR); i < Math.min(data.length, Math.round(to * SR)); i += 1) {
     const t = i / SR;
+    // 休符の中は和音だけを止める。ハイハットは別の関数なので刻み続ける
+    // （曲が抜けてドラムだけになる「ブレイク」。現実の曲にいくらでもある形）。
+    if (breaks.some(([a, b]) => t >= a && t < b)) continue;
     const chord = progression[Math.floor(t / everySeconds) % progression.length];
     const swell = 0.85 + 0.15 * Math.sin(2 * Math.PI * 0.5 * t);
     let v = 0;
@@ -743,6 +746,12 @@ function makeShort(
     /** 和音が何秒ごとに変わるか。0 で鳴らさない。 */
     chordEvery = 0,
     chordLevel = 0.25,
+    /**
+     * 和音だけが休む区間（秒の [始まり, 終わり] の並び）。ハイハットは刻み続ける。
+     * 「音楽が途切れずに鳴り続けているから切られずに済んでいる」素材と、
+     * 途中で曲の顔つきが変わる素材とを分けて測るために置いた。
+     */
+    chordBreaks = [],
     beat = 0,
     beatLevel = 0.25,
     /** シンバル／ハイハットを刻む速さ（Hz）。0 で鳴らさない。 */
@@ -781,7 +790,7 @@ function makeShort(
   noise(data, noiseLevel, random);
   if (bgm) music(data, 0, SHORT_LENGTH, bgmLevel, bgmTremolo, bgmSwellDepth, bgmTremoloDepth);
   if (wah) wahChord(data, 0, SHORT_LENGTH, wahLevel, wah);
-  if (chordEvery) chordProgression(data, 0, SHORT_LENGTH, chordLevel, chordEvery);
+  if (chordEvery) chordProgression(data, 0, SHORT_LENGTH, chordLevel, chordEvery, chordBreaks);
   if (beat) drums(data, 0, SHORT_LENGTH, beatLevel, beat, random);
   if (flute) breathyTone(data, 0, SHORT_LENGTH, fluteLevel, random);
   if (vibrato) vibratoTone(data, 0, SHORT_LENGTH, vibratoLevel, random);

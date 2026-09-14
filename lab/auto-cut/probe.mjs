@@ -17,9 +17,9 @@ import { fileURLToPath } from 'node:url';
 import { readWav } from '../fixtures/wav.mjs';
 import { isSpeechAt, SHORT_FIXTURES } from '../fixtures/spec.mjs';
 
-const { analyzeLoudness } = await import('./src/loudness.ts');
+const { analyzeLoudness, SILENCE_DB } = await import('./src/loudness.ts');
 const { analyzeFeatures, FEATURE_NAMES } = await import('./src/features.ts');
-const { autoThresholdDb, DEFAULT_JET_CUT } = await import('./src/silence.ts');
+const { autoThresholdDb, DEFAULT_JET_CUT, envelopeGateFrames } = await import('./src/silence.ts');
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const out = path.join(root, 'lab/fixtures/out');
@@ -461,6 +461,95 @@ console.log(`${pad('  平均', 22)}${average}`);
   console.log('  そのとき speech-sparse-hats の削減が 13% → 0% になり、得たものが残らない。');
   console.log('\n「歩みを数えた率」が低い素材（鳴りっぱなしの音楽）は、値が 0 でも');
   console.log('「打点が無い」ではなく「そもそも何も動いていない」だけ。取り違えないこと。');
+}
+
+// --- 捨てた量を「置き場所を変えて」測り直す（2026-09-14・2 回目）---
+//
+// 前の回に分かったこと: **同じ量でも、要求を厳しくしてよい場所とそうでない場所がある。**
+// コマ単位の門は 1 コマ落とせばそこで声が切れるが、素材単位の判定は
+// 「声が 5% 残っていればよい」ので、取りこぼしても結論が変わらない——はずだった。
+// `minEnvelopeRun` は実際そうなり、門では交換だったものが素材単位では片側だけの前進になった。
+//
+// そこで、コマ単位の門で捨てた `highBandAlone` を素材単位に置き直して測る段。
+// **次に量を捨てるときも、捨てる前にここへ通すこと。**
+{
+  console.log('\n同じ量を「素材単位の判定」に置いたらどうなるか（声らしいコマの割合）\n');
+  const GATES = [0.3, 0.4, 0.5];
+  console.log(
+    `${pad('素材', 36)}${pad('声', 4)}${pad('いま', 7)}${GATES.map((g) => pad(`門 ${g}`, 7)).join('')}` +
+      '  そのうち声のコマ（いま → 門 0.3）',
+  );
+  console.log('-'.repeat(36 + 4 + 7 + GATES.length * 7 + 30));
+  const opts = DEFAULT_JET_CUT;
+  for (const fixture of SHORT_FIXTURES) {
+    const file = path.join(out, fixture.name);
+    if (!fs.existsSync(file)) continue;
+    const buffer = readWav(file);
+    const track = analyzeLoudness(buffer, 0.02);
+    const features = analyzeFeatures(buffer, track);
+    const thresholdDb = autoThresholdDb(track, opts.sensitivity);
+    const holdFrames = Math.max(0, Math.round(opts.envelopeHold / track.hop));
+    // 判定と同じ道筋をそのままなぞる。ここがずれると、測った数字が判定の出来と噛み合わない。
+    // 鳴っているかの判定も、silence.ts の `sounding` と同じ 2 条件で見る
+    // （自動しきい値が無音の底より下に来た素材で、ここだけずれるのを防ぐ）。
+    const sounding = (i) => track.db[i] > thresholdDb && track.db[i] > SILENCE_DB;
+    const runGate = envelopeGateFrames(
+      features.envelopeFlux,
+      sounding,
+      opts.minEnvelopeChange,
+      Math.max(1, Math.round(opts.minEnvelopeRun / track.hop)),
+      holdFrames,
+    );
+    let inSpeech = false;
+    let soundingFrames = 0;
+    let strict = 0;
+    let voiceSounding = 0;
+    let voiceStrict = 0;
+    let openUntil = -1;
+    const gated = GATES.map(() => 0);
+    const voiceGated = GATES.map(() => 0);
+    for (let i = 0; i < track.db.length; i += 1) {
+      if (!sounding(i)) {
+        inSpeech = false;
+        openUntil = -1;
+        continue;
+      }
+      soundingFrames += 1;
+      const voice = isSpeechAt(fixture, i * track.hop);
+      if (voice) voiceSounding += 1;
+      const score = features.speechScore[i];
+      inSpeech = inSpeech ? score >= Math.min(opts.speechExit, opts.speechThreshold) : score >= opts.speechThreshold;
+      if (!inSpeech) continue;
+      if (features.envelopeChange[i] >= opts.minEnvelopeChange) openUntil = i + holdFrames;
+      if (i > openUntil) continue;
+      if (!runGate[i]) continue;
+      strict += 1;
+      if (voice) voiceStrict += 1;
+      for (let g = 0; g < GATES.length; g += 1) {
+        if (features.highBandAlone[i] < GATES[g]) {
+          gated[g] += 1;
+          if (voice) voiceGated[g] += 1;
+        }
+      }
+    }
+    const pc = (a, b) => (b > 0 ? `${Math.round((a / b) * 100)}%` : '—');
+    console.log(
+      `${pad((fixture.hard ? '※ ' : '  ') + fixture.name, 36)}${pad(fixture.speech ? '有' : '無', 4)}` +
+        `${pad(pc(strict, soundingFrames), 7)}${GATES.map((g, gi) => pad(pc(gated[gi], soundingFrames), 7)).join('')}` +
+        `${fixture.speech ? `  ${pc(voiceStrict, voiceSounding)} → ${pc(voiceGated[0], voiceSounding)}` : ''}`,
+    );
+  }
+  console.log(`\n線は ${DEFAULT_JET_CUT.minSpeechRatio * 100}%。ここを下回ると「声が見つからない」で何もしない。`);
+  console.log('\n**当て（置き場所を変えれば通る）は、半分だけ当たって外れた**（2026-09-14・2 回目）。');
+  console.log('門 0.3 で music-hats は 99% → 4% と線の下へ落ちる。声のある 15 本もどれも線の上に残る。');
+  console.log('ここで止めれば「片側だけの前進」と書けた。潰し素材を 2 本足したらそうではなかった:');
+  console.log('  ※ music-hats-break（和音が 2 回休む・声なし）  93% → 9%  … 落ちない');
+  console.log('  ※ speech-sparse-sustained-hats（声あり 20%）   98% → 9%  … 同じ所に並ぶ');
+  console.log('**実害が出ているほうの音楽（削減 3%）が落ちず、声のある素材と 1 ポイントも違わない。**');
+  console.log('理由は右端の列に出ている。声のコマが 100% → 17% まで落ちるので、');
+  console.log('残った 9% は声の証拠ではなく、落としきれなかった打点のコマのほう。');
+  console.log('\n素材単位の余裕は「13 秒のうち 5%」ではなく、');
+  console.log('**（声が尺に占める割合）×（その声を数えられた割合）**。声が薄い素材では前の項が先に効く。');
 }
 
 console.log('\n※ は意地悪な素材（BGM が大きい / 刻む打楽器 / 震える楽器 / 母音を伸ばす声 など）。');
