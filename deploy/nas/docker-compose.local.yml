@@ -1,0 +1,63 @@
+# ViViD Edit — 手元の PC で予行する版
+#
+# NAS の権限が無くても、置く前に一通り試せます。
+# 中身は UGREENlink 版とほぼ同じで、違いは**素材の置き場所だけ**です。
+# ここで動けば、NAS でも同じように動きます。
+#
+# ---- 使い方 ----
+#   1. Docker Desktop（Windows / Mac）か、Docker の入った Linux を用意する
+#   2. このファイルを空のフォルダに置く
+#   3. 同じフォルダに media と media-personal を作り、素材を入れる
+#        media/              ← 皆で使う素材のつもり
+#        media-personal/
+#          └─ sato/          ← 人ごとのフォルダ（名前は何でもよい）
+#   4. そのフォルダで:  docker compose -f docker-compose.local.yml up -d
+#   5. ブラウザで http://localhost:4193 を開く
+#   6. 片付け:          docker compose -f docker-compose.local.yml down -v
+#
+# ---- ここで確かめられること / 確かめられないこと ----
+# 確かめられる:
+#   - GitHub からアプリを取ってこられるか（NAS でも同じ処理をします）
+#   - 共有 / 個人 の素材がそれぞれ見えるか
+#   - プレビュー、書き出し、プロジェクトの受け渡し
+#   - 使う人を切り替えて作業が混ざらないか
+# 確かめられない:
+#   - UGREENlink のショートカットで外から開けるか（実機でしか試せません）
+#   - 高速な書き出し。localhost は例外的に安全なコンテキスト扱いなので、
+#     ここでは通ってしまいます。http:// で配ったときの落ち方は再現しません。
+
+services:
+  app-fetch:
+    image: alpine/git
+    container_name: vivid-edit-fetch-local
+    restart: "no"
+    entrypoint: >
+      sh -c "rm -rf /srv/app/* /srv/conf/* &&
+             git clone --depth 1 --branch claude/short-form-video-editor-o8oabn
+                 https://github.com/Oz-k17/discord-calendar-bot /tmp/src &&
+             cp -r /tmp/src/docs/. /srv/app/ &&
+             cp /tmp/src/deploy/nas/nginx.conf /srv/conf/default.conf &&
+             echo 'アプリと設定を展開しました'"
+    volumes:
+      - app:/srv/app
+      - nginxconf:/srv/conf
+
+  vivid-edit:
+    image: nginx:alpine
+    container_name: vivid-edit-local
+    restart: unless-stopped
+    depends_on:
+      app-fetch:
+        condition: service_completed_successfully
+    ports:
+      - "4193:80"
+    volumes:
+      - app:/srv/app:ro
+      - nginxconf:/etc/nginx/conf.d:ro
+      # NAS 版と違うのはこの 2 行だけ。このファイルと同じフォルダを見ます。
+      - ./media:/srv/media:ro
+      - ./media-personal:/srv/media-personal:ro
+
+volumes:
+  app:
+  nginxconf:
