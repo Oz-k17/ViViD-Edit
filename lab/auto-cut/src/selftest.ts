@@ -4,7 +4,7 @@
  */
 
 import { analyzeLoudness, toDb, type AudioLike, type LoudnessTrack } from './loudness.ts';
-import { autoThresholdDb, DEFAULT_JET_CUT, envelopeGateFrames, planJetCut } from './silence.ts';
+import { autoThresholdDb, cutSoundingSeconds, DEFAULT_JET_CUT, envelopeGateFrames, planJetCut } from './silence.ts';
 import { gainAt, planDucking } from './ducking.ts';
 import { toClipEdits } from './edits.ts';
 import { buildPeaks } from './peaks.ts';
@@ -308,6 +308,53 @@ export function runSelfTest(): TestResult[] {
     // 全編無音なら 1 本も残らない。
     const quiet = planJetCut(analyzeLoudness(makeTone(2, sr, []), 0.02));
     check('全編無音なら何も残らない', quiet.keep.length === 0, `${quiet.keep.length} 本`);
+
+    // --- 削減の中身を「無音を切ったぶん」と「鳴っているところを切ったぶん」に分ける ---
+    //
+    // 声の無い素材では削減率が実害の大きさを表さない（2026-09-14・3 回目）。
+    // ここが狂うと、また居ない相手を追いかけることになる。
+    {
+      const cutSilence = cutSoundingSeconds(track, split);
+      check(
+        '無音だけを切ったなら、鳴っているところは切っていない',
+        near(cutSilence, 0, 0.05),
+        `${cutSilence.toFixed(2)} 秒`,
+      );
+
+      // 手で「鳴っているところ」を切る計画に差し替えると、その秒数がそのまま出る。
+      // 音は 1.0〜2.0 と 2.5〜3.5 にあるので、1.5 秒から先を切れば 1.5 秒ぶん。
+      const forced = { ...split, keep: [{ start: 0, end: 1.5 }], cut: [{ start: 1.5, end: 4.5 }] };
+      const harm = cutSoundingSeconds(track, forced);
+      check('鳴っているところを切れば、その秒数が出る', near(harm, 1.5, 0.06), `${harm.toFixed(2)} 秒`);
+
+      // 全部残す計画なら、切った秒数はゼロ。
+      const nothing = { ...split, keep: [{ start: 0, end: 4.5 }], cut: [] };
+      check('何も切らなければゼロ', cutSoundingSeconds(track, nothing) === 0, '0.00 秒');
+
+      // 余白のぶん、切る区間の端はコマ境界に乗らない。**コマ単位で数えると
+      // 1 コマ（0.02 秒）に丸まってしまう**ので、重なりの長さで足していること。
+      const sliver = { ...split, keep: [], cut: [{ start: 1.5, end: 1.505 }] };
+      const part = cutSoundingSeconds(track, sliver);
+      check('コマの一部しか覆わない区間は、その重なりぶんだけ数える', near(part, 0.005, 0.001), `${part.toFixed(4)} 秒`);
+
+      // 鳴っているコマが 1 つも無い素材（尺ゼロ・全編無音）に、切る区間だけを渡された場合。
+      // 画面からはこういう素材も放り込まれるので、ここで落ちないこと。
+      const empty = analyzeLoudness(makeTone(0, sr, []), 0.02);
+      check(
+        '鳴っているコマが無ければ、どこを切ってもゼロ',
+        cutSoundingSeconds(empty, { ...split, cut: [{ start: 0, end: 1 }] }) === 0,
+        `${empty.db.length} コマ`,
+      );
+
+      // 区間が増えても、前へ戻らずに数え切れていること（尺に比例した手間の前提）。
+      const many = {
+        ...split,
+        keep: [],
+        cut: Array.from({ length: 50 }, (_, k) => ({ start: 1.0 + k * 0.02, end: 1.0 + k * 0.02 + 0.01 })),
+      };
+      const spread = cutSoundingSeconds(track, many);
+      check('区間がいくつに分かれていても数え落とさない', near(spread, 0.5, 0.02), `${spread.toFixed(2)} 秒`);
+    }
 
     // --- 計画 → クリップ ---
     const edits = toClipEdits(split.keep, { start: 10, duration: 4.5, sourceIn: 0 });

@@ -19,7 +19,7 @@ import { isSpeechAt, SHORT_FIXTURES } from '../fixtures/spec.mjs';
 
 const { analyzeLoudness, SILENCE_DB } = await import('./src/loudness.ts');
 const { analyzeFeatures, FEATURE_NAMES } = await import('./src/features.ts');
-const { autoThresholdDb, DEFAULT_JET_CUT, envelopeGateFrames } = await import('./src/silence.ts');
+const { autoThresholdDb, cutSoundingSeconds, DEFAULT_JET_CUT, envelopeGateFrames, planJetCut } = await import('./src/silence.ts');
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const out = path.join(root, 'lab/fixtures/out');
@@ -550,6 +550,97 @@ console.log(`${pad('  平均', 22)}${average}`);
   console.log('残った 9% は声の証拠ではなく、落としきれなかった打点のコマのほう。');
   console.log('\n素材単位の余裕は「13 秒のうち 5%」ではなく、');
   console.log('**（声が尺に占める割合）×（その声を数えられた割合）**。声が薄い素材では前の項が先に効く。');
+}
+
+// --- 声の無い素材の「削減 %」を、実害と無害に分ける（2026-09-14・3 回目）---
+//
+// ここまでの記録はずっと、声の無い素材の削減率をそのまま実害として読んでいた
+// （「music-wah は声がゼロなのに 7 本に切り刻む」）。そして その素材を弾く手がかりを
+// 7 通り試して 7 回とも落ちた。**読み方のほうが間違っていた。**
+//
+// 無音カットが無音を切るのは正しい振る舞いで、曲は壊れない。壊れるのは
+// **鳴っているところを切ったとき**だけ。分けて数えれば、追うべき相手が変わる。
+{
+  console.log('\n声の無い素材で、削減のうち何秒が「鳴っているところ」だったか\n');
+  console.log(`${pad('素材', 30)}${pad('削減', 9)}${pad('うち鳴', 9)}${pad('素材の無音', 11)}${pad('level でも', 10)}割合`);
+  console.log('-'.repeat(30 + 9 + 9 + 11 + 10 + 6));
+  for (const fixture of SHORT_FIXTURES) {
+    if (fixture.speech) continue;
+    const file = path.join(out, fixture.name);
+    if (!fs.existsSync(file)) continue;
+    const buffer = readWav(file);
+    const track = analyzeLoudness(buffer, 0.02);
+    const features = analyzeFeatures(buffer, track);
+    const level = planJetCut(track, { mode: 'level' });
+    const plan = planJetCut(
+      track,
+      { mode: 'speech' },
+      features.speechScore,
+      features.shapeChange,
+      features.envelopeChange,
+      features.envelopeFlux,
+    );
+    let silent = 0;
+    for (let i = 0; i < track.db.length; i += 1) {
+      if (!(track.db[i] > plan.thresholdDb && track.db[i] > SILENCE_DB)) silent += 1;
+    }
+    const sec = (v) => `${v.toFixed(2)}s`;
+    console.log(
+      `${pad((fixture.hard ? '※ ' : '  ') + fixture.name, 30)}${pad(sec(plan.removed), 9)}` +
+        `${pad(sec(cutSoundingSeconds(track, plan)), 9)}${pad(sec(silent * track.hop), 11)}` +
+        `${pad(sec(level.removed), 10)}${Math.round(plan.speechRatio * 100)}%`,
+    );
+  }
+  console.log('\n**music-wah の 21% は、鳴っているコマを 1 つも切っていない。**');
+  console.log('この素材には 5.32 秒の無音が開いていて、削減はそれを切っただけ。');
+  console.log('level（音量だけ）でも同じ 2.72 秒を切るので、**声らしさの判定は 1 コマも足していない**。');
+  console.log('7 本に分かれるのも「無音で 7 本に分かれた」であって、切り刻んだのではない。');
+  console.log('\n声がゼロの素材で本当に壊しているのは 2 本・合わせて 1 秒弱だけ:');
+  console.log('  ※ music-flute       0.78s … 素材の両端（0.00〜0.54 と 12.68〜13.00）');
+  console.log('  ※ music-hats-break  0.20s … ブレイク中、ハイハットの打点と打点の間');
+  console.log('\n**「誤認」と「実害」は別の話だった。** music-wah は声らしいコマの割合 98% で');
+  console.log('完全に誤認しているのに、壊した秒数はゼロ。誤認していても、切る場所が');
+  console.log('もともと無音なら曲は壊れない。逆に music-flute は割合 66% と誤認が浅いほうなのに、');
+  console.log('線をまたいで出入りするぶん実害が出る。**浅い誤認のほうが害が大きい。**');
+  console.log('\n※ 声のある素材にこの数え方を当ててはいけない。あちらは「鳴っている BGM を切る」のが');
+  console.log('仕事なので、同じ数が大きいほど良い（speech-sparse-bgm は 9.02 秒ある）。');
+
+  // 「線の近くを漂っているか」を量にできないか測った段。**駄目だった。**
+  console.log('\n線の近く（0.1〜0.3）に居るコマの割合 — 実害の予報に使えるか\n');
+  const drift = [];
+  for (const fixture of SHORT_FIXTURES) {
+    const file = path.join(out, fixture.name);
+    if (!fs.existsSync(file)) continue;
+    const buffer = readWav(file);
+    const track = analyzeLoudness(buffer, 0.02);
+    const features = analyzeFeatures(buffer, track);
+    const plan = planJetCut(
+      track,
+      { mode: 'speech' },
+      features.speechScore,
+      features.shapeChange,
+      features.envelopeChange,
+      features.envelopeFlux,
+    );
+    const vals = [];
+    for (let i = 0; i < track.db.length; i += 1) {
+      if (track.db[i] > plan.thresholdDb && track.db[i] > SILENCE_DB) vals.push(features.speechScore[i]);
+    }
+    const near = vals.filter((v) => v >= DEFAULT_JET_CUT.speechExit && v <= DEFAULT_JET_CUT.speechThreshold * 1.5);
+    drift.push([fixture, vals.length ? near.length / vals.length : 0, cutSoundingSeconds(track, plan)]);
+  }
+  drift.sort((a, b) => b[1] - a[1]);
+  for (const [fixture, ratio, harm] of drift.slice(0, 8)) {
+    console.log(
+      `${pad((fixture.hard ? '※ ' : '  ') + fixture.name, 34)}${pad(fixture.speech ? '声あり' : '声なし', 8)}` +
+        `${pad(`${Math.round(ratio * 100)}%`, 6)}${fixture.speech ? '' : `壊した ${harm.toFixed(2)}s`}`,
+    );
+  }
+  console.log('\n**分けられない。** 上位は drums 100% / bgm 95% / music-chords-faster 83% と、');
+  console.log('**壊していない素材**が占める（どれも声らしさが低いまま線の下に居るので出入りしない）。');
+  console.log('music-flute は 81% で 4 番目だが、声のある speech-sustained-hats が 76% で並ぶ。');
+  console.log('「線の近くに居る割合」は、線の下にべったり居るのと、線をまたぐのを区別できない。');
+  console.log('またぐ回数を数える方向はまだ試していないが、実害が 1 秒弱しかないので後回しでよい。');
 }
 
 console.log('\n※ は意地悪な素材（BGM が大きい / 刻む打楽器 / 震える楽器 / 母音を伸ばす声 など）。');

@@ -23,7 +23,7 @@ import { SHORT_FIXTURES, utterancesOf } from '../fixtures/spec.mjs';
 
 const { analyzeLoudness } = await import('./src/loudness.ts');
 const { analyzeFeatures } = await import('./src/features.ts');
-const { planJetCut } = await import('./src/silence.ts');
+const { planJetCut, cutSoundingSeconds } = await import('./src/silence.ts');
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const fixtures = path.join(root, 'lab/fixtures/out');
@@ -125,13 +125,30 @@ for (const file of files) {
 
   // 正解の分かっている素材なら、削減率だけでなく中身の当たり具合も出す。
   const fixture = SHORT_FIXTURES.find((f) => f.name === path.basename(file));
-  const a = accuracy(level, fixture);
-  const b = accuracy(speech, fixture);
-  if (a && b) {
+  if (fixture && !fixture.speech) {
+    // 声の無い素材では「声を残せた率」が常に — になって何も言わない。
+    // 代わりに、削減のうち**鳴っているところを切ったぶん**を出す。
+    // 素材にもともと開いている無音を切ったのなら曲は壊れていないので、
+    // 削減率をそのまま実害として読むと、居ない相手を追いかけることになる
+    // （実際 music-wah を 7 回追いかけた。2026-09-14・3 回目の記録を参照）。
+    const harmLevel = cutSoundingSeconds(track, level);
+    const harmSpeech = cutSoundingSeconds(track, speech);
+    const note =
+      speech.removed > 0 && harmSpeech < speech.removed * 0.05
+        ? `（削減 ${speech.removed.toFixed(2)}s はほぼ素材の無音）`
+        : '';
     console.log(
-      `${' '.repeat(22)} └ 声を残せた率 ${percent(a.recall)} → ${percent(b.recall)}` +
-        ` / 残したうち声だった率 ${percent(a.precision)} → ${percent(b.precision)}`,
+      `${' '.repeat(22)} └ 鳴っているところを切った ${harmLevel.toFixed(2)}s → ${harmSpeech.toFixed(2)}s${note}`,
     );
+  } else {
+    const a = accuracy(level, fixture);
+    const b = accuracy(speech, fixture);
+    if (a && b) {
+      console.log(
+        `${' '.repeat(22)} └ 声を残せた率 ${percent(a.recall)} → ${percent(b.recall)}` +
+          ` / 残したうち声だった率 ${percent(a.precision)} → ${percent(b.precision)}`,
+      );
+    }
   }
 }
 
@@ -139,3 +156,7 @@ console.log(
   '\nspeech は音そのものを見る（FFT）ぶん level より遅い。そのぶん、BGM や環境音が乗った素材で切れるようになる。',
 );
 console.log('削減率だけを見ないこと。全部削れば 100% になるが、それは声ごと消しているだけ。');
+console.log(
+  '声の無い素材は逆向きに読む。削減率ではなく「鳴っているところを切った」秒数を見ること。' +
+    'そこがゼロなら、切ったのは素材にもともと開いていた無音なので曲は壊れていない。',
+);

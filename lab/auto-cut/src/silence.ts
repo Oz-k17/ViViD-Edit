@@ -577,3 +577,40 @@ export function planJetCut(
     envelopeSeconds,
   };
 }
+
+/**
+ * 切った区間のうち、音が鳴っていた秒数。
+ *
+ * **声の無い素材で「削減 X%」を読むための数**（2026-09-14・3 回目に足した）。
+ * 削減率だけでは、素材にもともと開いている無音を切ったのか、鳴っている音楽を
+ * 切ったのかが分からない。無音を切るのは無音カットとして正しい振る舞いで、曲は壊れない。
+ * 壊れるのは鳴っているところを切ったときだけなので、そこを分けて数える。
+ *
+ * これを出したその場で、**7 回ぶんの前提が 1 つ崩れた**。`music-wah.wav` の削減 21% は
+ * 鳴っているコマを 1 つも切っておらず、全部この素材自身に開いている 5.32 秒の無音だった。
+ * 「声がゼロなのに 7 本に切り刻む」と読んで 7 通りの手がかりを試してきたが、
+ * 弾くべき実害はそこには無かった（level モードでも同じ 2.72 秒を切る）。
+ * **声の無い素材の削減率は、単独では実害の大きさを表さない。**
+ *
+ * @param plan `track` と同じ素材に対する計画。`plan.thresholdDb` で鳴っているかを決めるので、
+ *   別の素材の計画を渡すと意味のない数になる。`plan.cut` は昇順で重ならないことを当てにしている
+ *   （`complement()` がそう作る）。手で組んだ区間を渡すときは、そこだけ守ること。
+ */
+export function cutSoundingSeconds(track: LoudnessTrack, plan: JetCutPlan): number {
+  let seconds = 0;
+  // `cut` は complement() が作るので昇順で重ならない。コマも前から見るので、
+  // いちど通り過ぎた区間へ戻る必要はない（尺に比例した手間で済ませるため）。
+  let head = 0;
+  for (let i = 0; i < track.db.length; i += 1) {
+    if (track.db[i] <= plan.thresholdDb || track.db[i] <= SILENCE_DB) continue;
+    const from = i * track.hop;
+    const to = from + track.hop;
+    while (head < plan.cut.length && plan.cut[head].end <= from) head += 1;
+    // コマと区間の重なりで足す。余白（padding）のぶん区間の端はコマ境界に乗らないので、
+    // 「コマの頭が入っているか」で数えると 1 コマぶんずれる。
+    for (let k = head; k < plan.cut.length && plan.cut[k].start < to; k += 1) {
+      seconds += Math.min(to, plan.cut[k].end) - Math.max(from, plan.cut[k].start);
+    }
+  }
+  return seconds;
+}
