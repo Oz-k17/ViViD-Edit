@@ -27,12 +27,20 @@ services:
     image: alpine/git
     container_name: vivid-edit-fetch
     restart: "no"
-    entrypoint: >
-      sh -c "rm -rf /tmp/src && rm -rf /srv/app/* /srv/conf/* &&
-             git clone --depth 1 -b main https://github.com/Oz-k17/ViViD-Edit /tmp/src &&
-             cp -r /tmp/src/docs/. /srv/app/ &&
-             cp /tmp/src/deploy/nas/nginx.conf /srv/conf/default.conf &&
-             echo 'アプリと設定を展開しました'"
+    entrypoint:
+      - sh
+      - -c
+      # 1 行 1 コマンドで書く。折りたたみ記法（>）だと行継続が改行として残り、
+      # URL が単独のコマンドとして実行されてしまう（exit 127）。
+      # set -e を置くのは、途中で失敗したら 0 以外で終わらせるため。
+      # これが無いと、取得に失敗しても nginx が起動してしまう。
+      - |
+        set -e
+        rm -rf /srv/app/* /srv/conf/* /tmp/src
+        git clone --depth 1 --branch claude/short-form-video-editor-o8oabn https://github.com/Oz-k17/discord-calendar-bot /tmp/src
+        cp -r /tmp/src/docs/. /srv/app/
+        cp /tmp/src/deploy/nas/nginx.conf /srv/conf/default.conf
+        echo 'アプリと設定を展開しました'
     volumes:
       - app:/srv/app
       - nginxconf:/srv/conf
