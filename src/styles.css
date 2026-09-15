@@ -1,32 +1,96 @@
 :root {
-  /* 暗室のような、反射のない面。青黒ではなくわずかに緑を含む黒にして目の負担を減らす。 */
-  --bg: #15161a;
-  --bg-raised: #1b1d20;
-  --bg-panel: #1f2124;
-  --bg-input: #272a2e;
-  --bg-input-hover: #2f3338;
-  --line: #33373c;
-  --line-soft: #26292d;
-  --text: #e7e5df;
-  --text-dim: #9b9b94;
-  --text-faint: #6e7278;
-  /* アクセントはくすんだセージ。発光させず、面の一部として置く。 */
-  --accent: #a3bd9e;
-  --accent-strong: #b8d0b2;
-  --accent-soft: rgba(163, 189, 158, 0.15);
-  --accent-dim: #7e9478;
-  --accent-ink: #171d15;
-  --danger: #c98d80;
-  --danger-soft: rgba(201, 141, 128, 0.14);
-  /* トラックの識別色も彩度を落として揃える。 */
-  --track-video: #6f8299;
-  --track-audio: #7e9678;
-  --track-text: #96829a;
-  --radius: 12px;
-  --radius-sm: 8px;
-  --radius-xs: 6px;
-  --font-ui: 'Zen Kaku Gothic New', 'Noto Sans JP', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: 'DM Mono', ui-monospace, 'SFMono-Regular', monospace;
+  /* ===== iOS 18（ダーク）の土台 =====
+     値は Apple の公開仕様に合わせている。SF Symbols や SF Pro のファイルは
+     同梱していない（Apple プラットフォーム向け限定のため）。書体は
+     -apple-system 経由で、その端末が持っているものを使う。 */
+
+  /* --- 地の色。iOS は真っ黒から始めて、手前にくるほど明るくする --- */
+  --ios-bg: #000000;              /* systemBackground */
+  --ios-bg-2: #1c1c1e;            /* secondarySystemBackground */
+  --ios-bg-3: #2c2c2e;            /* tertiarySystemBackground */
+
+  /* --- 面（コントロールの下地）。iOS は不透明色ではなく半透明の塗りを重ねる --- */
+  --ios-fill-1: rgba(120, 120, 128, 0.36);
+  --ios-fill-2: rgba(120, 120, 128, 0.32);
+  --ios-fill-3: rgba(118, 118, 128, 0.24);
+  --ios-fill-4: rgba(116, 116, 128, 0.18);
+
+  /* --- 文字。白からの透過で段階を作るのが iOS のやり方 --- */
+  --ios-label: #ffffff;
+  --ios-label-2: rgba(235, 235, 245, 0.6);
+  --ios-label-3: rgba(235, 235, 245, 0.3);
+  --ios-label-4: rgba(235, 235, 245, 0.18);
+
+  /* --- 区切り --- */
+  --ios-separator: rgba(84, 84, 88, 0.65);
+  --ios-separator-opaque: #38383a;
+
+  /* --- システムカラー（ダーク） --- */
+  --ios-blue: #0a84ff;
+  --ios-green: #30d158;
+  --ios-indigo: #5e5ce6;
+  --ios-orange: #ff9f0a;
+  --ios-pink: #ff375f;
+  --ios-purple: #bf5af2;
+  --ios-red: #ff453a;
+  --ios-teal: #40c8e0;
+  --ios-yellow: #ffd60a;
+  --ios-gray: #8e8e93;
+  --ios-gray-2: #636366;
+  --ios-gray-3: #48484a;
+
+  /* --- 文字の段階（SF の Text Style に対応。px は pt と 1:1） --- */
+  --ios-title-1: 28px;
+  --ios-title-2: 22px;
+  --ios-title-3: 20px;
+  --ios-headline: 17px;   /* 太さ 600 で使う */
+  --ios-body: 17px;
+  --ios-callout: 16px;
+  --ios-subhead: 15px;
+  --ios-footnote: 13px;
+  --ios-caption: 12px;
+  --ios-caption-2: 11px;
+
+  /* --- 触れる大きさ。iOS の最小は 44 --- */
+  --ios-hit: 44px;
+  --ios-hit-sm: 32px;   /* 密度が要る場所（タイムライン脇など）の下限 */
+
+  /* ===== 既存の名前を上に載せ替える =====
+     2100 行の CSS を一度に書き換えると壊れるので、名前は保って値だけ移す。 */
+  --bg: var(--ios-bg);
+  --bg-raised: var(--ios-bg-2);
+  --bg-panel: var(--ios-bg-2);
+  --bg-input: var(--ios-fill-3);
+  --bg-input-hover: var(--ios-fill-2);
+  --line: var(--ios-separator);
+  --line-soft: rgba(84, 84, 88, 0.35);
+  --text: var(--ios-label);
+  --text-dim: var(--ios-label-2);
+  --text-faint: var(--ios-label-3);
+
+  /* 差し色は systemBlue。iOS の既定であり、緑を当てると
+     音声トラックの色や「成功」の意味とぶつかる。 */
+  --accent: var(--ios-blue);
+  --accent-strong: #409cff;
+  --accent-soft: rgba(10, 132, 255, 0.18);
+  --accent-dim: #0a6fd4;
+  --accent-ink: #ffffff;   /* 青の上は白文字（iOS の塗りボタン） */
+  --danger: var(--ios-red);
+  --danger-soft: rgba(255, 69, 58, 0.18);
+
+  /* トラックは互いに見分けがつき、差し色ともぶつからない並びにする。 */
+  --track-video: var(--ios-indigo);
+  --track-audio: var(--ios-green);
+  --track-text: var(--ios-purple);
+
+  /* iOS の角丸。小さい部品ほど控えめにする。 */
+  --radius: 14px;
+  --radius-sm: 10px;
+  --radius-xs: 8px;
+
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Yu Gothic',
+    'Noto Sans JP', system-ui, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', 'DM Mono', Menlo, monospace;
   color-scheme: dark;
 }
 
@@ -43,13 +107,13 @@ body,
 
 body {
   background-color: var(--bg);
-  /* 極細のグレインでマットな質感を出す。映像を見る面（キャンバス）には乗せない。 */
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
-  background-size: 180px 180px;
-  background-blend-mode: soft-light;
+  /* iOS の面は平ら。質感を足すグレインは外した。 */
   color: var(--text);
   font-family: var(--font-ui);
-  font-size: 13px;
+  /* 13px から上げた。iOS の本文は 17 だが、この画面は情報量が多いので
+     まず 15（subheadline）に置き、要所を部品ごとに 17 へ上げていく。 */
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
 
