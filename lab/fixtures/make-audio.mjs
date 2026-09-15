@@ -728,6 +728,40 @@ function vibratoTone(data, from, to, level, random) {
   }
 }
 
+/**
+ * 発話の**頭にぴたりと接する**和音（曲が鳴り止んだ瞬間にしゃべり出す形）。
+ *
+ * 2026-09-15 に入れた「発話の頭を遡って拾う」手を潰しにいくための素材。
+ * 遡りは**鳴っているあいだだけ**戻るので、発話の前が無音なら何も拾わない。
+ * つまり遡りが損をするのは「声の直前まで、声でない音が鳴り続けている」ときだけで、
+ * それがいちばん濃く出る形がこれ。ショート動画では普通にある切り方なので、
+ * 意地悪なだけの形ではない。
+ *
+ * **最初は減衰する一撃（スティンガー）で作ったが、punisher にならなかった。**
+ * 打点は声らしさの判定を素通りするので、遡りが無くても丸ごと残ってしまい、
+ * 遡りの有無で数字が 1 ポイントも動かない（2026-09-15 の記録を参照）。
+ * 潰すには**判定が確かに弾く音**でなければならないので、持続する和音にしてある。
+ *
+ * 乱数を引かない。`speak` のあとから呼べば、声は `speech.wav` と 1 ビットも変わらない。
+ */
+function chordInto(data, starts, level, length) {
+  const chord = [220, 277.18, 329.63];
+  for (const at of starts) {
+    const from = Math.max(0, Math.round((at - length) * SR));
+    const to = Math.min(data.length, Math.round(at * SR));
+    for (let i = from; i < to; i += 1) {
+      const t = i / SR;
+      const inside = (i - from) / SR;
+      // 出入りだけ短く均す。あいだは音量も音色も動かさない（動かすと「和音が変わる音楽」になり、
+      // 何を測っているのか分からなくなる）。声との継ぎ目に段差を作らないため、末尾も 0 へ落とす。
+      const env = Math.min(1, inside / 0.03, (length - inside) / 0.03);
+      let v = 0;
+      for (const f of chord) v += Math.sin(2 * Math.PI * f * t) + 0.4 * Math.sin(2 * Math.PI * f * 2 * t);
+      data[i] += (level * env * v) / (chord.length * 1.4);
+    }
+  }
+}
+
 function makeShort(
   name,
   {
@@ -782,6 +816,11 @@ function makeShort(
     steady = false,
     /** 子音も息も足さない声（2026-09-12 の 1 回目までの声）。子音に頼る判定を潰しにいく素材。 */
     vowelsOnly = false,
+    /** 発話の頭にぴたりと接する和音。「発話の頭を遡って拾う」手を潰しにいく素材。 */
+    chordInto: chordIntoOn = false,
+    chordIntoLevel = 0.3,
+    /** 和音の長さ（秒）。遡りの既定（0.32 秒）よりずっと長くしておく。 */
+    chordIntoLength = 1.0,
     seed = 1,
   },
 ) {
@@ -798,6 +837,10 @@ function makeShort(
     for (const [from, to] of sparse ? SPARSE_UTTERANCES : UTTERANCES)
       speak(data, from, to, speechLevel, random, { flat, sustain, steady, vowelsOnly });
   }
+  // 和音は `speak` のあと・ハイハットの前。乱数を引かないので、
+  // 足しても声もハイハットも 1 ビットも変わらない（`speech.wav` の声とそのまま比べられる）。
+  if (chordIntoOn)
+    chordInto(data, (sparse ? SPARSE_UTTERANCES : UTTERANCES).map(([from]) => from), chordIntoLevel, chordIntoLength);
   // ハイハットは**いちばん最後**に置く。こうしておくと、`hat` を足すだけの素材は
   // **ほかの音が 1 ビットも変わらない**（ここまでの乱数の消費数が同じなら同じ音が出る）。
   // ほかを変えずに 1 つだけ変えた 2 本を並べられないと、

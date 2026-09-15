@@ -57,6 +57,11 @@
             <input type="range" id="envelope-hold" min="0" max="1.2" step="0.05" value="0.5" />
             <small>0 にすると、口が動いた瞬間だけを残す。伸ばした母音を切りたくないので既定は 0.50 秒</small>
           </label>
+          <label class="speech-only">
+            発話の頭を遡って拾う長さ <output id="out-speech-lead-in"></output>
+            <input type="range" id="speech-lead-in" min="0" max="1" step="0.02" value="0.32" />
+            <small>取りこぼしは全部「発話の頭」に出る（判定が後ろへしか伸びないため）。既定 0.32 秒は揺れを見る窓の半分</small>
+          </label>
           <label>
             感度 <output id="out-sensitivity"></output>
             <input type="range" id="sensitivity" min="0" max="0.8" step="0.01" value="0.25" />

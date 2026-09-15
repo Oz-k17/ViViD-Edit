@@ -116,6 +116,21 @@ try {
     `${sparse.envelopeSeconds.toFixed(2)} → ${longHold.envelopeSeconds.toFixed(2)} 秒`);
   await setRange(page, '#envelope-hold', '0.5');
 
+  // 発話の頭を遡るつまみも画面から効くこと。BGM の上でたまにしゃべる素材は、
+  // 遡りを伸ばすほど発話の手前の BGM まで残るので、そこが動けば繋がっている。
+  await setRange(page, '#speech-lead-in', '0');
+  await page.waitForTimeout(400);
+  const noLead = (await page.evaluate(() => window.__lab.state())).plan;
+  await setRange(page, '#speech-lead-in', '1');
+  await page.waitForTimeout(400);
+  const longLead = (await page.evaluate(() => window.__lab.state())).plan;
+  ok('遡りのつまみも出る', await page.locator('#speech-lead-in').isVisible());
+  ok('遡りを伸ばすと発話の頭が戻る', longLead.resultDuration > noLead.resultDuration,
+    `${noLead.resultDuration.toFixed(2)} → ${longLead.resultDuration.toFixed(2)} 秒`);
+  ok('遡っても「声らしいコマの割合」は動かない', Math.abs(longLead.speechRatio - noLead.speechRatio) < 1e-6,
+    `${noLead.speechRatio.toFixed(3)} → ${longLead.speechRatio.toFixed(3)}`);
+  await setRange(page, '#speech-lead-in', '0.32');
+
   await page.locator('#voice-file').setInputFiles(path.join(fixtures, 'speech.wav'));
   await page.waitForFunction(() => window.__lab.state().voice !== null, { timeout: 30000 });
   await page.waitForTimeout(400);

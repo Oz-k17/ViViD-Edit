@@ -383,6 +383,15 @@ export const SHORT_FIXTURES = [
       seed: 14,
     },
   },
+  {
+    name: 'speech-chord-into.wav',
+    // `speech.wav` に和音を足しただけ。声は 1 ビットも同じ（`chordInto` は乱数を引かない）。
+    // 2026-09-15 に入れた「発話の頭を遡って拾う」手が、いちばん損をする形を測るための素材。
+    note: '和音が鳴り止んだ瞬間にしゃべり出す',
+    speech: true,
+    hard: true,
+    options: { chordInto: true, seed: 1 },
+  },
 ];
 
 /** その素材の発話の並び。 */

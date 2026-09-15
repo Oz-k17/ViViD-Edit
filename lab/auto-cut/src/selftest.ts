@@ -993,7 +993,9 @@ export function runSelfTest(): TestResult[] {
       if (t < 1 || t >= 3) return 0.02;
       return t >= 2.0 && t < 2.25 ? 0.14 : 0.5;
     });
-    const bare = { mode: 'speech' as const, minSilence: 0.05, padding: 0 };
+    // 遡り（`speechLeadIn`）は切っておく。ここで見たいのはヒステリシスだけで、
+    // 遡りが入っていると「頭が戻ったから繋がった」のか「出る値で繋がった」のかが分からない。
+    const bare = { mode: 'speech' as const, minSilence: 0.05, padding: 0, speechLeadIn: 0 };
     const single = planJetCut(sounding, { ...bare, speechExit: 0.2 }, dipped);
     const hyst = planJetCut(sounding, { ...bare, speechExit: 0.1 }, dipped);
     check('一瞬のへこみは、入る値だけだと切れ目になる', single.keep.length === 2, `${single.keep.length} 本`);
@@ -1047,6 +1049,81 @@ export function runSelfTest(): TestResult[] {
     );
   }
 
+  // --- 発話の頭を遡って拾う（`speechLeadIn`）---
+  //
+  // 2026-09-15 に足した。取りこぼしが**全部発話の頭**に出ていたのを直すためのもの。
+  // ここで確かめるのは「どこまで戻るか」の境目だけ。効きの数字は bench の仕事。
+  {
+    const sr = 8000;
+    // 0〜2 秒と 2.5〜4 秒が鳴っている（あいだの 0.5 秒は無音）。
+    const track = analyzeLoudness(makeTone(4, sr, [{ from: 0, to: 2 }, { from: 2.5, to: 4 }]), 0.02);
+    const frames = track.db.length;
+    const fill = (fn: (t: number) => number) => {
+      const out = new Float32Array(frames);
+      for (let i = 0; i < frames; i += 1) out[i] = fn(i * track.hop);
+      return out;
+    };
+    const bare = { mode: 'speech' as const, minSilence: 0.05, padding: 0, minKeep: 0, minSpeechRatio: 0 };
+
+    // 1.0 秒から声だと分かる。その手前 1.0 秒ぶんは鳴っているのに判定が届いていない。
+    const late = fill((t) => (t >= 1.0 && t < 2.0 ? 0.5 : 0.02));
+    const off = planJetCut(track, { ...bare, speechLeadIn: 0 }, late);
+    const on = planJetCut(track, { ...bare, speechLeadIn: 0.32 }, late);
+    check('遡らなければ、声だと分かったコマからしか残らない', near(off.keep[0].start, 1.0, 0.03), off.keep[0].start.toFixed(2));
+    check(
+      '遡ると、鳴っていたのに判定が届いていなかった頭が戻る',
+      near(on.keep[0].start, 0.68, 0.03),
+      on.keep[0].start.toFixed(2),
+    );
+    check('遡り幅より先へは行かない', on.keep[0].start >= 1.0 - 0.32 - 1e-6, on.keep[0].start.toFixed(2));
+    check('尻は動かさない（そちらは保持とヒステリシスの持ち場）', near(on.keep[0].end, off.keep[0].end, 1e-6), '');
+
+    // 無音の直後に声が始まる場合。遡っても無音は越えない。
+    const afterSilence = fill((t) => (t >= 2.6 ? 0.5 : 0.02));
+    const crossed = planJetCut(track, { ...bare, speechLeadIn: 1.0 }, afterSilence);
+    check(
+      '遡りは無音をまたがない',
+      crossed.keep[0].start >= 2.5 - 1e-6,
+      crossed.keep[0].start.toFixed(2),
+    );
+
+    // 遡って拾ったコマを「声らしいコマ」に数えてはいけない。
+    // 数えると、素材に声があるかの判断が**判定していないコマ**で水増しされる。
+    const ratioOff = planJetCut(track, { ...bare, speechLeadIn: 0 }, late).speechRatio;
+    const ratioOn = planJetCut(track, { ...bare, speechLeadIn: 0.32 }, late).speechRatio;
+    check('遡って拾ったコマは、声らしいコマの割合に数えない', near(ratioOn, ratioOff, 1e-6), `${ratioOn.toFixed(3)} 対 ${ratioOff.toFixed(3)}`);
+
+    // 声が薄い素材で「声が見つからない」に落ちる境目も、遡りで動いてはいけない。
+    const sparse = fill((t) => (t >= 1.0 && t < 1.1 ? 0.5 : 0.02));
+    const guardOff = planJetCut(track, { mode: 'speech', speechLeadIn: 0 }, sparse);
+    const guardOn = planJetCut(track, { mode: 'speech', speechLeadIn: 0.32 }, sparse);
+    check(
+      '「声が見つからない」の判断も遡りで動かない',
+      guardOff.noSpeechFound === guardOn.noSpeechFound && guardOff.noSpeechReason === guardOn.noSpeechReason,
+      `${String(guardOff.noSpeechReason)} 対 ${String(guardOn.noSpeechReason)}`,
+    );
+
+    // level モードには遡る理由が無い（鳴っているコマはもともと全部残る）。
+    const lvlOff = planJetCut(track, { mode: 'level', speechLeadIn: 0 });
+    const lvlOn = planJetCut(track, { mode: 'level', speechLeadIn: 0.5 });
+    check('level モードは遡りに影響されない', near(lvlOn.resultDuration, lvlOff.resultDuration, 1e-6), '');
+
+    // 声が切れ切れに立つ場合、遡りが前の残し区間へ食い込んで二重に数えないこと。
+    // （食い込んでも mergeRanges が畳むので結果は同じに見える。ここで見るのは境目のほう。）
+    const broken = fill((t) => (Math.round(t / track.hop) % 10 === 0 && t < 2 ? 0.5 : 0.02));
+    const many = planJetCut(track, { ...bare, speechLeadIn: 0.32 }, broken);
+    check(
+      '遡りが重なっても、残す区間は増えない',
+      many.keep.length === 1 && many.keep[0].start >= 0 && many.keep[0].end <= 2.02,
+      `${many.keep.length} 本 / ${many.keep[0].start.toFixed(2)}〜${many.keep[0].end.toFixed(2)}`,
+    );
+
+    // 素材の頭で声が始まる場合。遡り先が無いので、負の秒へ出ない。
+    const fromStart = fill((t) => (t < 1.5 ? 0.5 : 0.02));
+    const edge = planJetCut(track, { ...bare, speechLeadIn: 0.32 }, fromStart);
+    check('素材の頭より前へは出ない', edge.keep[0].start >= 0, edge.keep[0].start.toFixed(2));
+  }
+
   // --- 包絡の門と保持 ---
   //
   // 声らしさの列と包絡の列を直接組み立てて、門の道筋だけを裸で確かめる。
@@ -1064,7 +1141,8 @@ export function runSelfTest(): TestResult[] {
     // 全編が声らしく見えている状態。ここから包絡の列だけを差し替えて効きを見る。
     const loudScore = fill(() => 0.5);
     const movingShape = fill(() => 0.2);
-    const bare = { mode: 'speech' as const, minSilence: 0.05, padding: 0, minKeep: 0 };
+    // ここも遡りは切る（見たいのは包絡の門と保持だけ。遡りは頭を前へ広げるので混ざる）。
+    const bare = { mode: 'speech' as const, minSilence: 0.05, padding: 0, minKeep: 0, speechLeadIn: 0 };
     // 門だけを見たいので、「声が少なすぎたら何もしない」は外しておく。
     // 外さないと、門がうまく閉まったときほど割合が下がって `noSpeechFound` に化け、
     // 結果が「全部残す」になって門の効きが見えなくなる（実際そうなって気づいた）。

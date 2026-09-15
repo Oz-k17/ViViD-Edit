@@ -214,6 +214,7 @@ function refreshCut() {
   document.body.classList.toggle('mode-speech', mode === 'speech');
   $<HTMLOutputElement>('out-speech').textContent = Number($<HTMLInputElement>('speech-threshold').value).toFixed(2);
   $<HTMLOutputElement>('out-envelope-hold').textContent = `${Number($<HTMLInputElement>('envelope-hold').value).toFixed(2)} 秒`;
+  $<HTMLOutputElement>('out-speech-lead-in').textContent = `${Number($<HTMLInputElement>('speech-lead-in').value).toFixed(2)} 秒`;
   if (!voice) return;
   plan = planJetCut(
     voice.track,
@@ -224,6 +225,7 @@ function refreshCut() {
       minSilence: Number($<HTMLInputElement>('min-silence').value),
       padding: Number($<HTMLInputElement>('padding').value),
       envelopeHold: Number($<HTMLInputElement>('envelope-hold').value),
+      speechLeadIn: Number($<HTMLInputElement>('speech-lead-in').value),
     },
     voice.features.speechScore,
     voice.features.shapeChange,
@@ -381,7 +383,7 @@ bindFile('bgm-file', 'bgm-status', $<HTMLCanvasElement>('bgm-canvas'), (loaded) 
   refreshDuck();
 });
 
-for (const id of ['sensitivity', 'min-silence', 'padding', 'speech-threshold', 'envelope-hold']) {
+for (const id of ['sensitivity', 'min-silence', 'padding', 'speech-threshold', 'envelope-hold', 'speech-lead-in']) {
   $<HTMLInputElement>(id).addEventListener('input', refreshCut);
 }
 for (const radio of document.querySelectorAll<HTMLInputElement>('input[name="mode"]')) {

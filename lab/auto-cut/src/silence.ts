@@ -252,6 +252,54 @@ export interface JetCutOptions {
    * 音の間隔がもう少し詰まれば通る。ここは数字を見ながら扱うこと。
    */
   minEnvelopeRun: number;
+  /**
+   * 声だと判断できたコマから、**鳴っているあいだだけ遡って拾う**長さ（秒）。
+   *
+   * `speech` モードの取りこぼしは、2026-09-15 に測ったら**全部が発話の頭**だった
+   * （8 本・10 区間、発話の中も尻も 1 つも無い）。偶然ではなく、
+   * **この判定の仕組みがどれも前方向にしか伸びない**ため:
+   *   - 揺れを見る窓（実効 0.64 秒）は中心が `i` なので、発話の頭では半分が発話の前で埋まる
+   *   - ヒステリシスは入る値 0.2 で開き、出る値 0.1 で閉じる（頭は厳しく、尻は緩い）
+   *   - 包絡の保持（`envelopeHold`）は動いたコマから**後ろへ** 0.5 秒
+   * 後ろへ伸びるものばかりで、**前へ戻すものが 1 つも無い**。だから頭だけが削れる。
+   *
+   * ここで戻すのは「鳴っていたのに、まだ声だと言えていなかったコマ」だけ。
+   * 無音は遡らない（`sounding` でないコマで止まる）ので、前の発話との間や
+   * 素材の頭の無音までは伸びない。
+   *
+   * **既定の 0.32 秒は、揺れを見る窓の半分**（`MOD_WINDOW` は 1.0 秒だが、FFT の格子に
+   * 合わせて 32 コマ＝0.64 秒に丸められる）。窓の中心が `i` である以上、
+   * 判定が間に合うのは**発話が窓の半分を埋めてから**なので、遅れの上限がここになる。
+   * つまみを回して決めた値ではない。
+   *
+   * 測った表（**遡りを潰す素材を足す前**の 28 本で振った。
+   * 声のある 16 本の平均 / 声の無い 12 本の合計。2026-09-15）:
+   *   | 遡り | 声を残せた率 | 残したうち声だった率 | 声ゼロを切った秒 |
+   *   | 0（入れる前） | 97.8% | 71.5% | 0.98s |
+   *   | 0.2s  | 98.9% | 71.1% | 0.76s |
+   *   | **0.32s** | **99.2%** | **70.9%** | **0.64s** |
+   *   | 0.5s  | 99.7% | 70.6% | 0.46s |
+   *   | 0.7s  | 100.0% | 70.2% | 0.42s |
+   *
+   * 潰す素材（`speech-chord-into.wav`）を足したあとの 29 本では
+   * **残せた率 97.9% → 99.3% / 声だった率 71.2% → 70.2% / 声ゼロを切った秒 0.98s → 0.64s**。
+   *
+   * **残せた率と「声ゼロを切った秒」が同時に良くなる**（ふつうは交換になる）。
+   * 声の無い素材で切っていたのも発話の頭と同じ現象（`music-flute` の 0.78 秒は素材の両端）
+   * だったので、同じ手で両方が戻る。
+   *
+   * **代わりに測って捨てた手が 2 つある:**
+   * - **余白（`padding`）を左右いっしょに広げる。** 同じ残せた率 99.0% のところで（同じ 28 本）
+   *   声だった率が **60.4%**（遡りなら 70.9%）。尻は保持で足りているので、
+   *   そちらまで伸ばすぶんが丸損になる。
+   * - **定数を置かず、出る値（0.1）を保っているあいだ遡る。** 自己完結して見えるが、
+   *   残せた率 99.1% / 声だった率 70.5% / 声ゼロ 0.84s と全部の列で負ける。
+   *   `speech-sustained` は 88% で頭打ちになる（頭では声らしさが 0.1 も割っている）。
+   *   **遅れの大きさは声らしさの値ではなく窓の幅で決まる**ので、値から遡り幅は出せない。
+   *
+   * 0 にすれば入れる前の振る舞いに戻る（`LAB_NO_LEAD=1 npm run lab:bench`）。
+   */
+  speechLeadIn: number;
 }
 
 /**
@@ -288,6 +336,7 @@ export const DEFAULT_JET_CUT: JetCutOptions = {
   minEnvelopeChange: 0.09,
   envelopeHold: 0.5,
   minEnvelopeRun: 0.08,
+  speechLeadIn: 0.32,
 };
 
 export interface JetCutPlan {
@@ -483,8 +532,20 @@ export function planJetCut(
     : null;
   let envelopeOpenUntil = -1;
   let envelopeFrames = 0;
+  // 発話の頭を遡って拾うぶん。level モードでは鳴っているコマをすべて拾うので出番が無い。
+  const leadFrames = usedMode === 'speech' ? Math.max(0, Math.round(opts.speechLeadIn / track.hop)) : 0;
+  // どこまで拾ったか。同じコマを二度拾わないため（重なっても mergeRanges が畳むが、
+  // 数を膨らませるだけ無駄なので止めておく）。
+  let lastKept = -1;
 
   const loud: Range[] = [];
+  const keepFrame = (i: number) => {
+    loud.push({
+      start: Math.max(0, i * track.hop - opts.padding),
+      end: Math.min(duration, (i + 1) * track.hop + opts.padding),
+    });
+    lastKept = i;
+  };
   for (let i = 0; i < track.db.length; i += 1) {
     if (track.db[i] <= thresholdDb || track.db[i] <= SILENCE_DB) {
       inSpeech = false;
@@ -521,11 +582,20 @@ export function planJetCut(
       // 素材単位の判定は 13 秒のうち 5% 残っていればよいので、
       // 取りこぼしても結論は変わらない。だから厳しい条件はこちらに置く。
       if (!runGate || runGate[i]) strictSpeechFrames += 1;
+      // 発話の頭を遡って拾う。**鳴っていたのに声だと言えていなかったコマ**だけが対象で、
+      // 無音に当たったらそこで止まる（`sounding` が false なら break）。
+      //
+      // ここで拾ったコマは `speechFrames` にも `strictSpeechFrames` にも数えない。
+      // 数えると「この素材に声があるか」の割合が、判定していないコマで水増しされる。
+      // 拾うのは**声だと判断できた場所の手前**に限るので、割合の意味は変えない。
+      if (leadFrames > 0) {
+        let from = i;
+        const floor = Math.max(lastKept + 1, i - leadFrames);
+        while (from > floor && sounding(from - 1)) from -= 1;
+        for (let k = from; k < i; k += 1) keepFrame(k);
+      }
     }
-    loud.push({
-      start: Math.max(0, i * track.hop - opts.padding),
-      end: Math.min(duration, (i + 1) * track.hop + opts.padding),
-    });
+    keepFrame(i);
   }
 
   // 割合は厳しいほうで数える（上の strictSpeechFrames の注を参照）。

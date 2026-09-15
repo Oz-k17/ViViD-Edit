@@ -5,6 +5,7 @@
  *   npm run lab:bench
  *   npm run lab:bench -- lab/fixtures/out/speech-long.wav   # ファイルを指定してもよい
  *   LAB_NO_RUN=1 npm run lab:bench   # 「動きが続いたか」を見ない（2026-09-14 以前の振る舞い）
+ *   LAB_NO_LEAD=1 npm run lab:bench  # 発話の頭を遡らない（2026-09-15 以前の振る舞い）
  *
  * `LAB_NO_RUN` は A/B を並べるためのもの。判定に手を入れたら、
  * **入れる前と入れたあとを同じコマンドで出せる**ようにしておかないと、
@@ -93,7 +94,11 @@ for (const file of files) {
   const features = analyzeFeatures(buffer, track);
   const speech = planJetCut(
     track,
-    { mode: 'speech', ...(process.env.LAB_NO_RUN ? { minEnvelopeRun: 0 } : {}) },
+    {
+      mode: 'speech',
+      ...(process.env.LAB_NO_RUN ? { minEnvelopeRun: 0 } : {}),
+      ...(process.env.LAB_NO_LEAD ? { speechLeadIn: 0 } : {}),
+    },
     features.speechScore,
     features.shapeChange,
     features.envelopeChange,
