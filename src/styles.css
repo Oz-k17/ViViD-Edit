@@ -120,6 +120,7 @@ body {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+  border-radius: var(--radius-xs);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -133,68 +134,74 @@ body {
 
 button {
   font: inherit;
-  color: inherit;
-  background: var(--bg-input);
-  border: 1px solid var(--line-soft);
+  color: var(--text);
+  /* iOS のコントロールは枠線を持たず、半透明の塗りで面を作る。 */
+  background: var(--ios-fill-3);
+  border: none;
   border-radius: var(--radius-sm);
-  padding: 6px 10px;
+  padding: 7px 14px;
+  /* iPad で指でも押せる高さ。純正の iPad アプリのツールバーもこの辺り。
+     最小タップ領域 44 は、リスト行とダイアログの主ボタンで確保する。 */
+  min-height: 36px;
+  font-size: var(--ios-subhead);
   cursor: pointer;
-  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
-  /* アイコンと文字を同じ行に、字面の中心で揃える。
-     インライン画像のままだとベースラインに乗って沈む。 */
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-}
-
-/* アイコン。文字色に追従し、伸び縮みしない。 */
-.icon {
-  display: block;
-  flex: none;
+  /* 押し込みは iOS の手触り。色を変えるより沈ませる。 */
+  -webkit-tap-highlight-color: transparent;
 }
 
 button:hover:not(:disabled) {
-  background: var(--bg-input-hover);
-  border-color: var(--line);
+  background: var(--ios-fill-2);
+}
+
+button:active:not(:disabled) {
+  opacity: 0.6;
 }
 
 button:disabled {
-  opacity: 0.4;
+  opacity: 0.32;
   cursor: not-allowed;
 }
 
+/* 主ボタン。塗りつぶし＋白文字が iOS の形。 */
 button.primary {
   background: var(--accent);
-  border-color: var(--accent);
   color: var(--accent-ink);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 button.primary:hover:not(:disabled) {
   background: var(--accent-strong);
-  border-color: var(--accent-strong);
 }
 
+/* 破壊的な操作。iOS は赤い文字で示し、塗りは薄く敷く。 */
 button.danger {
   color: var(--danger);
-  border-color: transparent;
   background: var(--danger-soft);
 }
 
 button.danger:hover:not(:disabled) {
-  background: rgba(201, 141, 128, 0.22);
-  border-color: transparent;
+  background: rgba(255, 69, 58, 0.26);
 }
 
+/* 文字だけのボタン。iOS のツールバーはこれが既定。 */
 button.ghost {
   background: transparent;
 }
 
+button.ghost:hover:not(:disabled) {
+  background: var(--ios-fill-4);
+}
+
+/* 入り / 切り のある操作。差し色を薄く敷いて、文字も差し色にする。 */
 button.active {
   background: var(--accent-soft);
-  border-color: transparent;
-  color: var(--accent-strong);
+  color: var(--accent);
+  font-weight: 600;
 }
 
 button.wide {
@@ -215,12 +222,23 @@ input[type='number'],
 select,
 textarea {
   width: 100%;
-  background: var(--bg-input);
-  border: 1px solid var(--line-soft);
+  /* 枠線ではなく塗りで囲う。iOS のテキストフィールドの形。 */
+  background: var(--ios-fill-3);
+  border: none;
   border-radius: var(--radius-sm);
   color: var(--text);
-  padding: 6px 8px;
+  padding: 9px 12px;
+  min-height: 36px;
   font: inherit;
+  font-size: var(--ios-callout);
+}
+
+input[type='text']:focus-visible,
+input[type='number']:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
 }
 
 /* 既定のトラックは明るく浮くので、細い溝と小さなつまみに置き換える。 */
@@ -228,46 +246,49 @@ input[type='range'] {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: 16px;
+  height: 24px;
   background: transparent;
   cursor: pointer;
 }
 
 input[type='range']::-webkit-slider-runnable-track {
-  height: 3px;
+  height: 4px;
   border-radius: 999px;
-  background: var(--line);
+  background: var(--ios-fill-2);
 }
 
+/* iOS のつまみは白い円に影。溝より一回り大きく、掴む場所が分かる。 */
 input[type='range']::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 12px;
-  height: 12px;
-  margin-top: -4.5px;
+  width: 20px;
+  height: 20px;
+  margin-top: -8px;
   border: none;
   border-radius: 50%;
-  background: var(--accent);
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(0, 0, 0, 0.12);
 }
 
 input[type='range']::-moz-range-track {
-  height: 3px;
+  height: 4px;
   border-radius: 999px;
-  background: var(--line);
+  background: var(--ios-fill-2);
 }
 
 input[type='range']::-moz-range-progress {
-  height: 3px;
+  height: 4px;
   border-radius: 999px;
-  background: var(--accent-dim);
+  background: var(--accent);
 }
 
 input[type='range']::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
+  width: 20px;
+  height: 20px;
   border: none;
   border-radius: 50%;
-  background: var(--accent);
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
 
 input[type='range']:disabled::-webkit-slider-thumb,
@@ -676,7 +697,7 @@ textarea {
 
 .panel {
   background: var(--bg-panel);
-  border: 1px solid var(--line-soft);
+  border: none;
   border-radius: var(--radius);
   overflow: hidden;
 }
@@ -686,17 +707,19 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 9px 11px;
-  background: var(--bg-raised);
-  border-bottom: 1px solid var(--line-soft);
+  padding: 10px 14px;
+  background: transparent;
+  /* iOS の区切りは細く薄い。面の色を変えて段差を作らない。 */
+  border-bottom: 0.5px solid var(--ios-separator);
 }
 
+/* 見出しは字間を開けた小文字ではなく、太めの本文。iOS の作法。 */
 .panel-head h2 {
   margin: 0;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.12em;
-  color: var(--text-dim);
+  font-size: var(--ios-headline);
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text);
 }
 
 .panel-actions {
@@ -711,15 +734,16 @@ textarea {
 }
 
 .panel-head button {
-  padding: 3px 8px;
-  font-size: 11px;
+  padding: 5px 10px;
+  min-height: 30px;
+  font-size: var(--ios-footnote);
 }
 
 .panel-body {
-  padding: 10px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
 }
 
 .field {
@@ -733,7 +757,7 @@ textarea {
   justify-content: space-between;
   align-items: baseline;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--ios-footnote);
   color: var(--text-dim);
 }
 
@@ -833,10 +857,9 @@ hr {
 
 .segmented {
   display: flex;
-  background: var(--bg-input);
-  border: 1px solid var(--line-soft);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
+  background: var(--ios-fill-4);
+  border: none;
+  border-radius: 9px;
   padding: 2px;
   gap: 2px;
 }
@@ -844,17 +867,27 @@ hr {
 .segmented button {
   flex: 1;
   border: none;
-  border-radius: var(--radius-xs);
+  border-radius: 7px;
   background: transparent;
-  padding: 5px 4px;
-  font-size: 11px;
+  padding: 6px 8px;
+  min-height: 30px;
+  font-size: var(--ios-footnote);
+  font-weight: 500;
   color: var(--text-dim);
 }
 
+.segmented button:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text);
+}
+
+/* iOS のセグメントは、選んだ側を差し色で塗らない。
+   灰色のつまみが動いて、文字が白くなるだけ。差し色で塗ると別物になる。 */
 .segmented button.active {
-  background: var(--accent);
-  color: var(--accent-ink);
-  font-weight: 700;
+  background: var(--ios-fill-1);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
 }
 
 .chip-row {
@@ -867,16 +900,16 @@ hr {
 }
 
 .chip {
-  padding: 4px 10px;
-  font-size: 11px;
-  border-radius: var(--radius-xs);
+  padding: 6px 13px;
+  min-height: 32px;
+  font-size: var(--ios-footnote);
+  border-radius: 999px;   /* iOS のチップは丸い */
 }
 
 .chip.active {
   background: var(--accent-soft);
-  color: var(--accent-strong);
-  border-color: transparent;
-  font-weight: 700;
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .toggle {
@@ -1008,13 +1041,54 @@ hr {
 .checkbox {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--text-dim);
+  justify-content: space-between;
+  gap: 10px;
+  min-height: var(--ios-hit);
+  font-size: var(--ios-subhead);
+  color: var(--text);
+  cursor: pointer;
 }
 
-.checkbox input {
-  accent-color: var(--accent-dim);
+/* iOS のスイッチ。51 × 31、入のときは緑。
+   緑なのは差し色とは無関係で、iOS ではスイッチの入＝緑と決まっているため。 */
+.checkbox input[type='checkbox'] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 51px;
+  height: 31px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--ios-fill-1);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.checkbox input[type='checkbox']::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+  transition: transform 0.2s ease;
+}
+
+.checkbox input[type='checkbox']:checked {
+  background: var(--ios-green);
+}
+
+.checkbox input[type='checkbox']:checked::after {
+  transform: translateX(20px);
+}
+
+.checkbox input[type='checkbox']:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .progress {
@@ -1289,9 +1363,9 @@ hr {
 .tabs {
   display: flex;
   gap: 2px;
-  background: var(--bg-input);
-  border: 1px solid var(--line-soft);
-  border-radius: var(--radius-sm);
+  background: var(--ios-fill-4);
+  border: none;
+  border-radius: 9px;
   padding: 2px;
 }
 
@@ -1299,20 +1373,19 @@ hr {
   flex: 1;
   border: none;
   background: transparent;
-  border-radius: 6px;
-  padding: 5px 4px;
-  font-size: 11px;
+  border-radius: 7px;
+  padding: 6px 8px;
+  min-height: 30px;
+  font-size: var(--ios-footnote);
+  font-weight: 500;
   color: var(--text-dim);
 }
 
 .tabs button.active {
-  background: var(--accent);
-  color: var(--accent-ink);
-  font-weight: 700;
-}
-
-.tabs button {
-  border-radius: var(--radius-xs);
+  background: var(--ios-fill-1);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
 }
 
 /* ---------- 素材パネル ---------- */
@@ -1362,6 +1435,17 @@ hr {
 .asset-card .asset-thumb {
   width: 100%;
   height: 54px;
+}
+
+.pager button {
+  background: transparent;
+  color: var(--accent);
+  min-height: 32px;
+  padding: 4px 10px;
+}
+
+.pager button:disabled {
+  color: var(--text-faint);
 }
 
 .pager {
@@ -1457,6 +1541,7 @@ hr {
 
 /* 細いレールに入れても、ボタンの文字が縦に折れないようにする。 */
 .tl-toolbar button {
+  min-height: 32px;
   white-space: nowrap;
 }
 
@@ -1487,27 +1572,32 @@ hr {
 }
 
 .tl-heads {
-  flex: 0 0 76px;
-  border-right: 1px solid var(--line);
-  background: var(--bg);
+  flex: 0 0 86px;
+  border-right: 0.5px solid var(--ios-separator);
+  /* 真っ黒だとパネルに穴が空いて見える。同じ面の上に置く。 */
+  background: var(--bg-panel);
 }
 
 .tl-head-spacer {
   height: 22px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 0.5px solid var(--ios-separator);
+  background: var(--bg-panel);
 }
 
+/* 黒い箱を並べず、地に馴染ませる。種類は左の色帯だけで見分ける。 */
 .tl-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 4px;
   margin-top: 4px;
-  padding: 0 6px;
-  background: var(--bg-panel);
-  border-left: 3px solid var(--line);
-  font-size: 11px;
-  letter-spacing: 0.04em;
+  padding: 0 8px;
+  background: transparent;
+  border-left: 3px solid var(--ios-gray-3);
+  font-size: var(--ios-caption);
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text-dim);
 }
 
 .tl-head.kind-video {
@@ -1528,10 +1618,18 @@ hr {
 }
 
 .tl-head-buttons button {
-  padding: 0 3px;
-  font-size: 9px;
+  padding: 0;
+  width: 26px;
+  min-height: 26px;
+  font-size: var(--ios-caption-2);
   background: transparent;
   border: none;
+  color: var(--text-dim);
+}
+
+.tl-head-buttons button:hover:not(:disabled) {
+  background: var(--ios-fill-4);
+  color: var(--text);
 }
 
 .tl-head-buttons button.off {
@@ -1976,24 +2074,31 @@ hr {
 .mobile-tabs {
   flex: 0 0 auto;
   display: flex;
-  border-bottom: 1px solid var(--line);
+  gap: 2px;
+  margin: 8px 16px 10px;
+  padding: 2px;
+  background: var(--ios-fill-4);
+  border-radius: 9px;
 }
 
 .mobile-tabs button {
   flex: 1;
   border: none;
-  border-radius: 0;
+  border-radius: 7px;
   background: transparent;
-  padding: 10px 4px;
-  font-size: 12px;
+  padding: 7px 4px;
+  min-height: 32px;
+  font-size: var(--ios-subhead);
+  font-weight: 500;
   color: var(--text-dim);
-  border-bottom: 2px solid transparent;
 }
 
+/* 選んだ側は灰色のつまみ。差し色で塗るのは iOS のセグメントではない。 */
 .mobile-tabs button.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-  font-weight: 700;
+  background: var(--ios-fill-1);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
 }
 
 .mobile-sheet-body {
