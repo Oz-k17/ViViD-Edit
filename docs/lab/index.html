@@ -8,7 +8,7 @@
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23b7d0a8'/%3E%3Cpath d='M4 5v6M7 3v10M10 6v4M13 4v8' stroke='%23101114' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E"
     />
-    <script defer src="./assets/index-B1IvDb98.js"></script>
+    <script defer src="./assets/index-BiIxyzUe.js"></script>
   </head>
   <body>
     <header class="head">
@@ -56,6 +56,11 @@
             音色が止まっても残す長さ <output id="out-envelope-hold"></output>
             <input type="range" id="envelope-hold" min="0" max="1.2" step="0.05" value="0.5" />
             <small>0 にすると、口が動いた瞬間だけを残す。伸ばした母音を切りたくないので既定は 0.50 秒</small>
+          </label>
+          <label class="speech-only">
+            発話の頭を遡って拾う長さ <output id="out-speech-lead-in"></output>
+            <input type="range" id="speech-lead-in" min="0" max="1" step="0.02" value="0.32" />
+            <small>取りこぼしは全部「発話の頭」に出る（判定が後ろへしか伸びないため）。既定 0.32 秒は揺れを見る窓の半分</small>
           </label>
           <label>
             感度 <output id="out-sensitivity"></output>

@@ -6,6 +6,7 @@ import { Inspector } from './Inspector';
 import { MediaPanel } from './MediaPanel';
 import { MultiTimeline } from './MultiTimeline';
 import { PreviewStage } from './PreviewStage';
+import { Icon } from '../Icon';
 
 type Sheet = 'media' | 'edit' | 'timeline';
 
@@ -76,10 +77,10 @@ export function MobileEditor({
 
       <div className="mobile-actions">
         <button type="button" onClick={onAddText}>
-          ＋ テロップ
+          <Icon name="plus" />テロップ
         </button>
         <button type="button" onClick={() => apply((seq) => splitAt(seq, player.time, selection))}>
-          ✂ 分割
+          <Icon name="scissors" />分割
         </button>
         <button
           type="button"
@@ -87,14 +88,14 @@ export function MobileEditor({
           disabled={selection.length === 0}
           onClick={() => apply((seq) => removeClips(seq, selection, false))}
         >
-          🗑 削除
+          <Icon name="trash" />削除
         </button>
         <button
           type="button"
           disabled={selection.length === 0}
           onClick={() => apply((seq) => removeClips(seq, selection, true))}
         >
-          ⇤ 詰めて削除
+          <Icon name="ripple-delete" />詰めて削除
         </button>
       </div>
 

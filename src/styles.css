@@ -76,6 +76,18 @@ button {
   padding: 6px 10px;
   cursor: pointer;
   transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+  /* アイコンと文字を同じ行に、字面の中心で揃える。
+     インライン画像のままだとベースラインに乗って沈む。 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+/* アイコン。文字色に追従し、伸び縮みしない。 */
+.icon {
+  display: block;
+  flex: none;
 }
 
 button:hover:not(:disabled) {

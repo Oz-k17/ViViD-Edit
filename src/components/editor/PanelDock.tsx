@@ -35,6 +35,7 @@ import {
   type PanelId,
   type PanelSlot,
 } from '../../store/app';
+import { Icon } from '../Icon';
 
 /**
  * ドロップ先。位置ではなく**相手そのもの**で指す。
@@ -258,7 +259,7 @@ export function PanelMenu() {
         onClick={() => setOpen((v) => !v)}
         title="出すパネルを選ぶ"
       >
-        ⊞ パネル{hidden.size > 0 ? `（${PANEL_IDS.length - hidden.size}/${PANEL_IDS.length}）` : ''}
+        <Icon name="panels" />パネル{hidden.size > 0 ? `（${PANEL_IDS.length - hidden.size}/${PANEL_IDS.length}）` : ''}
       </button>
       {open && (
         <>
@@ -344,7 +345,7 @@ export function DockSlot({
                     onPointerDown={(e) => e.stopPropagation()}
                     onClick={() => dock?.hide(id)}
                   >
-                    ×
+                    <Icon name="xmark" size={13} />
                   </span>
                 </button>
               ))}

@@ -1,6 +1,8 @@
 import { TRANSITION_META, type TransitionType } from '../../model/types';
 import { useEditor } from '../../store/editor';
 import { Field, Slider } from '../ui';
+import { Icon } from '../Icon';
+import { TRANSITION_ICON } from './transitionIcon';
 
 /** タイムラインの継ぎ目アイコンから開く、切り替え効果の選択ダイアログ。 */
 export function TransitionPicker({ clipId, onClose }: { clipId: string; onClose: () => void }) {
@@ -29,7 +31,7 @@ export function TransitionPicker({ clipId, onClose }: { clipId: string; onClose:
               className={clip.transitionIn.type === type ? 'transition-card active' : 'transition-card'}
               onClick={() => patch({ type })}
             >
-              <span className="transition-icon">{TRANSITION_META[type].icon}</span>
+              <span className="transition-icon"><Icon name={TRANSITION_ICON[type]} size={20} /></span>
               {TRANSITION_META[type].label}
             </button>
           ))}

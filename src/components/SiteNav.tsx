@@ -27,7 +27,11 @@ export function SiteNav() {
 export function Brand() {
   return (
     <div className="brand">
-      <span className="brand-mark">▮</span>
+      {/* 縦型（9:16）の画面に再生マーク。このアプリが何を作る道具かを一目で示す。 */}
+      <svg className="brand-mark" width="18" height="18" viewBox="0 0 26 26" aria-hidden="true" focusable="false">
+        <rect x="7" y="2.5" width="12" height="21" rx="3.4" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        <path d="M11.2 9.4v7.2l5.6-3.6-5.6-3.6Z" fill="currentColor" />
+      </svg>
       <div>
         <strong>ViViD Edit</strong>
         <small>ショート動画エディタ</small>

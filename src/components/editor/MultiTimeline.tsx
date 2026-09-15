@@ -14,10 +14,12 @@ import {
   trimClip,
 } from '../../model/ops';
 import { clipFromAsset } from '../../model/factory';
-import { clipEnd, previewText, TRANSITION_META, type Clip, type Sequence, type Track } from '../../model/types';
+import { clipEnd, previewText, type Clip, type Sequence, type Track } from '../../model/types';
 import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
 import { EyeIcon, EyeOffIcon, MuteIcon, SoundIcon } from '../ui';
+import { Icon } from '../Icon';
+import { TRANSITION_ICON } from './transitionIcon';
 
 export const MEDIA_DND_TYPE = 'application/x-vivid-media';
 const MIN_PPS = 6;
@@ -145,7 +147,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           disabled={!selection.length}
           title="後続のクリップを詰めて削除（Shift+Delete）"
         >
-          ⇤ リップル削除
+          <Icon name="ripple-delete" />リップル削除
         </button>
         <span className="tl-count">{selection.length > 0 ? `${selection.length} 個選択中` : ''}</span>
         <span className="spacer" />
@@ -155,17 +157,17 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           onClick={() => updateSettings({ snap: !settings.snap })}
           title="クリップの端に吸着"
         >
-          ⇥ スナップ
+          <Icon name="magnet" />スナップ
         </button>
         <button type="button" className={follow ? 'active' : ''} onClick={() => setFollow((f) => !f)} title="再生に合わせてスクロール">
-          ⇉ 追従
+          <Icon name="link" />追従
         </button>
         <div className="zoom">
           <button type="button" onClick={() => setPps((p) => Math.max(MIN_PPS, p / 1.4))} title="縮小">
-            −
+            <Icon name="minus" size={15} label="縮小" />
           </button>
           <button type="button" onClick={() => setPps((p) => Math.min(MAX_PPS, p * 1.4))} title="拡大">
-            ＋
+            <Icon name="plus" size={15} label="拡大" />
           </button>
         </div>
       </div>
@@ -410,7 +412,7 @@ function ClipBlock({
             onPickTransition(clip.id);
           }}
         >
-          {TRANSITION_META[clip.transitionIn.type].icon}
+          <Icon name={TRANSITION_ICON[clip.transitionIn.type]} size={12} />
         </button>
       )}
       <span className="tl-clip-label">

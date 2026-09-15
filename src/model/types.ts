@@ -189,13 +189,13 @@ export const EFFECT_META: Record<EffectType, { label: string; unit: string; def:
   invert: { label: '反転', unit: '', def: 1 },
 };
 
-export const TRANSITION_META: Record<TransitionType, { label: string; icon: string }> = {
-  none: { label: 'なし', icon: '—' },
-  dissolve: { label: 'ディゾルブ', icon: '◐' },
-  fade: { label: 'フェード', icon: '▰' },
-  slide: { label: 'スライド', icon: '→' },
-  wipe: { label: 'ワイプ', icon: '៖' },
-  flash: { label: 'フラッシュ', icon: '✦' },
+export const TRANSITION_META: Record<TransitionType, { label: string }> = {
+  none: { label: 'なし' },
+  dissolve: { label: 'ディゾルブ' },
+  fade: { label: 'フェード' },
+  slide: { label: 'スライド' },
+  wipe: { label: 'ワイプ' },
+  flash: { label: 'フラッシュ' },
 };
 
 export const TEXT_ANIMATION_LABELS: Record<TextAnimation, string> = {
@@ -265,7 +265,7 @@ export function truncateAtoms(segments: ContentSegment[], count: number): Conten
 
 /** 一覧のラベルなど、絵文字トークンをそのまま出したくない場所での短い表示用。 */
 export function previewText(content: string): string {
-  return content.replace(EMOJI_TOKEN_RE, '🖼');
+  return content.replace(EMOJI_TOKEN_RE, '[画像]');
 }
 
 export function clipEnd(clip: Clip): number {

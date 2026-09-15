@@ -90,7 +90,7 @@ export default function TemplatesPage() {
 
         <Panel title={`動画レイアウト（${layoutTemplates.length}）`}>
           {layoutTemplates.length === 0 ? (
-            <p className="empty-hint">エディタ上部の「⌂ レイアウトを保存」で、いまのタイムライン構成を丸ごと保存できます。</p>
+            <p className="empty-hint">エディタ上部の「レイアウトを保存」で、いまのタイムライン構成を丸ごと保存できます。</p>
           ) : (
             <ul className="template-list">
               {layoutTemplates.map((template) => (

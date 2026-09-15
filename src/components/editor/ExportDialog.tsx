@@ -19,6 +19,7 @@ import { ASPECT_PRESETS, type AspectKey } from '../../model/types';
 import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
 import { Field, Segmented } from '../ui';
+import { Icon } from '../Icon';
 
 const QUALITIES = [
   { value: 1080, label: '1080p' },
@@ -271,7 +272,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           </>
         ) : (
           <button type="button" className="wide primary" disabled={!supported || duration <= 0} onClick={() => void run()}>
-            ⬇ 書き出す
+            <Icon name="export" />書き出す
           </button>
         )}
 

@@ -4,6 +4,7 @@ import { Brand, SiteNav } from '../components/SiteNav';
 import { useMediaAssets, importFiles } from '../components/editor/MediaPanel';
 import { formatBytes, formatTime, mediaRegistry, UNSORTED } from '../engine/media';
 import { Field, Panel } from '../components/ui';
+import { Icon } from '../components/Icon';
 
 export default function MediaLibraryPage() {
   const assets = useMediaAssets();
@@ -34,7 +35,7 @@ export default function MediaLibraryPage() {
         <div className="topbar-actions">
           <LayoutToggle />
           <button type="button" className="primary" disabled={busy} onClick={() => inputRef.current?.click()}>
-            {busy ? '読込中…' : '＋ 素材を追加'}
+            {busy ? '読込中…' : <><Icon name="plus" />素材を追加</>}
           </button>
         </div>
       </header>
@@ -84,13 +85,13 @@ export default function MediaLibraryPage() {
 
         <Panel title={`素材（${filtered.length}）`}>
           {filtered.length === 0 ? (
-            <p className="empty-hint">まだ素材がありません。「＋ 素材を追加」から読み込んでください。</p>
+            <p className="empty-hint">まだ素材がありません。「素材を追加」から読み込んでください。</p>
           ) : (
             <ul className="media-table">
               {filtered.map((asset) => (
                 <li key={asset.id}>
                   <div className="asset-thumb">
-                    {asset.thumbnail ? <img src={asset.thumbnail} alt="" /> : <span className="asset-icon">{asset.kind === 'audio' ? '♪' : '▦'}</span>}
+                    {asset.thumbnail ? <img src={asset.thumbnail} alt="" /> : <span className="asset-icon"><Icon name={asset.kind === 'audio' ? 'music-note' : asset.kind === 'image' ? 'photo' : 'film'} size={20} /></span>}
                   </div>
                   <div className="media-meta">
                     <input

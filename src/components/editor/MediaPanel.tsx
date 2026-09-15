@@ -8,6 +8,7 @@ import { useEditor } from '../../store/editor';
 import { MEDIA_DND_TYPE } from './MultiTimeline';
 import { NasBrowser } from './NasBrowser';
 import { EmptyHint, Panel } from '../ui';
+import { Icon } from '../Icon';
 
 const PAGE_SIZE = 6;
 
@@ -101,7 +102,7 @@ export function MediaPanel() {
             NAS
           </button>
           <button type="button" className="ghost" onClick={() => inputRef.current?.click()} disabled={busy}>
-            {busy ? '読込中…' : '＋ 追加'}
+            {busy ? '読込中…' : <><Icon name="plus" />追加</>}
           </button>
         </div>
       }
@@ -139,7 +140,7 @@ export function MediaPanel() {
 
       {filtered.length === 0 ? (
         <EmptyHint>
-          動画・画像・音声をドラッグ＆ドロップ、または「＋ 追加」で読み込みます。
+          動画・画像・音声をドラッグ＆ドロップ、または「追加」で読み込みます。
           <br />
           ファイルはブラウザの中だけで処理され、どこにもアップロードされません。
         </EmptyHint>
@@ -158,11 +159,11 @@ export function MediaPanel() {
               title={asset.warning ? `${asset.name}\n${asset.warning}` : `${asset.name}\nタイムラインへドラッグ、またはダブルクリックで配置`}
             >
               <div className="asset-thumb">
-                {asset.thumbnail ? <img src={asset.thumbnail} alt="" /> : <span className="asset-icon">{asset.kind === 'audio' ? '♪' : '▦'}</span>}
+                {asset.thumbnail ? <img src={asset.thumbnail} alt="" /> : <span className="asset-icon"><Icon name={asset.kind === 'audio' ? 'music-note' : asset.kind === 'image' ? 'photo' : 'film'} size={20} /></span>}
               </div>
               <strong>{asset.name}</strong>
               <span>
-                {asset.warning ? '⚠ 読み取れず' : asset.kind === 'image' ? '画像' : formatTime(asset.duration)}
+                {asset.warning ? <><Icon name="warning" size={13} />読み取れず</> : asset.kind === 'image' ? '画像' : formatTime(asset.duration)}
                 {asset.fps ? <em className="asset-fps">{asset.fps}fps</em> : null}
               </span>
             </li>
@@ -173,13 +174,13 @@ export function MediaPanel() {
       {pageCount > 1 && (
         <div className="pager">
           <button type="button" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>
-            ‹
+            <Icon name="chevron-left" size={15} label="前のページ" />
           </button>
           <span>
             {page + 1} / {pageCount}
           </span>
           <button type="button" onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))} disabled={page >= pageCount - 1}>
-            ›
+            <Icon name="chevron-right" size={15} label="次のページ" />
           </button>
         </div>
       )}

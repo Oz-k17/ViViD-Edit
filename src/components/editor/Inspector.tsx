@@ -26,6 +26,8 @@ import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
 import { ColorInput, EmptyHint, Field, MuteIcon, Panel, Segmented, Slider, SoundIcon, Tabs, Toggle } from '../ui';
 import { importFiles, useMediaAssets } from './MediaPanel';
+import { Icon } from '../Icon';
+import { TRANSITION_ICON } from './transitionIcon';
 
 type TabKey = 'props' | 'effects' | 'text' | 'emoji';
 
@@ -468,7 +470,7 @@ export function TransitionControls({ clip }: { clip: Clip }) {
               className={clip.transitionIn.type === type ? 'chip active' : 'chip'}
               onClick={() => patch({ transitionIn: { ...clip.transitionIn, type } })}
             >
-              {TRANSITION_META[type].icon} {TRANSITION_META[type].label}
+              <Icon name={TRANSITION_ICON[type]} size={16} /> {TRANSITION_META[type].label}
             </button>
           ))}
         </div>
@@ -522,7 +524,7 @@ function EffectsTab({ clip }: { clip: Clip }) {
         <div className="chip-row wrap">
           {(Object.keys(EFFECT_META) as EffectType[]).map((type) => (
             <button key={type} type="button" className="chip" onClick={() => add(type)}>
-              ＋ {EFFECT_META[type].label}
+              <Icon name="plus" size={15} />{EFFECT_META[type].label}
             </button>
           ))}
         </div>
@@ -541,7 +543,7 @@ function EffectsTab({ clip }: { clip: Clip }) {
                   className="danger"
                   onClick={() => patch({ effects: clip.effects.filter((e) => e.id !== effect.id) })}
                 >
-                  ×
+                  <Icon name="xmark" size={14} />
                 </button>
               </div>
               <Slider
@@ -743,7 +745,7 @@ function EmojiTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curs
         }}
       />
       <button type="button" className="wide ghost" onClick={() => inputRef.current?.click()} disabled={busy}>
-        {busy ? '読込中…' : '＋ 画像から絵文字を追加'}
+        {busy ? '読込中…' : <><Icon name="plus" />画像から絵文字を追加</>}
       </button>
       {error && <p className="error-note">{error}</p>}
 
@@ -756,7 +758,7 @@ function EmojiTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curs
           {emojis.map((asset) => (
             <li key={asset.id}>
               <button type="button" className="emoji-btn" title={asset.name} onClick={() => insert(asset.id)}>
-                {asset.thumbnail ? <img src={asset.thumbnail} alt={asset.name} /> : <span className="asset-icon">▦</span>}
+                {asset.thumbnail ? <img src={asset.thumbnail} alt={asset.name} /> : <span className="asset-icon"><Icon name="photo" size={18} /></span>}
               </button>
             </li>
           ))}

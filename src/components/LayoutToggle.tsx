@@ -1,4 +1,5 @@
 import { useApp } from '../store/app';
+import { Icon } from './Icon';
 
 /**
  * PC 表示とスマホ表示の切り替え。
@@ -15,7 +16,7 @@ export function LayoutToggle() {
       title={mobile ? 'PC 表示に切り替える' : 'スマホ表示に切り替える'}
       onClick={() => updateSettings({ layout: mobile ? 'desktop' : 'mobile' })}
     >
-      {mobile ? '📱' : '🖥'}
+      <Icon name={mobile ? 'iphone' : 'display'} size={17} />
     </button>
   );
 }

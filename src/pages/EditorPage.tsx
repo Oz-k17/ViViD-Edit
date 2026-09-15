@@ -20,6 +20,7 @@ import {
   type ShortcutAction,
 } from '../store/app';
 import { useEditor } from '../store/editor';
+import { Icon } from '../components/Icon';
 
 /**
  * 編集画面の本体。パネルは置き場（左 / 右 / 下）の中身として描き、
@@ -127,15 +128,15 @@ function TimelinePanel({
         <div className="panel-head-tail">
           <div className="panel-actions">
             <button type="button" onClick={onAddText}>
-              ＋ テロップ
+              <Icon name="plus" />テロップ
             </button>
             <button type="button" onClick={onSplit}>
-              ✂ 分割
+              <Icon name="scissors" />分割
             </button>
           </div>
           {grip && !grip.grouped && (
             <button type="button" className="panel-close" aria-label="タイムラインを仕舞う" onClick={grip.hide}>
-              ×
+              <Icon name="xmark" size={15} />
             </button>
           )}
         </div>

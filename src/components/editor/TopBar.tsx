@@ -5,6 +5,7 @@ import { useEditor } from '../../store/editor';
 import { LayoutToggle } from '../LayoutToggle';
 import { Brand, SiteNav } from '../SiteNav';
 import { PanelMenu } from './PanelDock';
+import { Icon } from '../Icon';
 
 export function TopBar({ onExport, onHelp }: { onExport: () => void; onHelp: () => void }) {
   const { project, sequence, dispatch, canUndo, canRedo } = useEditor();
@@ -28,20 +29,20 @@ export function TopBar({ onExport, onHelp }: { onExport: () => void; onHelp: () 
       <div className="topbar-actions">
         <LayoutToggle />
         <button type="button" disabled={!canUndo} onClick={() => dispatch({ type: 'undo' })} title="元に戻す">
-          ↺<span className="btn-label"> {t('戻す')}</span>
+          <Icon name="undo" /><span className="btn-label">{t('戻す')}</span>
         </button>
         <button type="button" disabled={!canRedo} onClick={() => dispatch({ type: 'redo' })} title="やり直す">
-          ↻<span className="btn-label"> {t('進む')}</span>
+          <Icon name="redo" /><span className="btn-label">{t('進む')}</span>
         </button>
         {!mobile && <PanelMenu />}
         <button type="button" className="desktop-only" onClick={saveLayout}>
-          {saved ? '保存しました' : '⌂ レイアウトを保存'}
+          {saved ? '保存しました' : <><Icon name="bookmark" />レイアウトを保存</>}
         </button>
         <button type="button" className="desktop-only" onClick={onHelp}>
-          ? {t('ショートカット')}
+          <Icon name="question" />{t('ショートカット')}
         </button>
         <button type="button" className="primary" onClick={onExport}>
-          ⬇ {t('書き出し')}
+          <Icon name="export" />{t('書き出し')}
         </button>
       </div>
     </header>
