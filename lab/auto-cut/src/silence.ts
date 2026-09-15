@@ -684,3 +684,149 @@ export function cutSoundingSeconds(track: LoudnessTrack, plan: JetCutPlan): numb
   }
   return seconds;
 }
+
+/** 残した秒のうち、声でなかったぶんの内訳（`keepEdgeSeconds`）。 */
+export interface KeepEdges {
+  /** 発話の**手前**に付いていた秒（右どなりが声、左は声でない）。 */
+  head: number;
+  /** 発話の**うしろ**に付いていた秒（左どなりが声、右は声でない）。 */
+  tail: number;
+  /** 発話と発話の**あいだを渡った**秒（両どなりが声）。息継ぎを繋いだぶんはここ。 */
+  bridge: number;
+  /** どの発話にも**接していない**秒（丸ごと誤って残した区間）。 */
+  stray: number;
+}
+
+/**
+ * 残した区間のうち**声でなかった秒**を、発話との位置関係で 4 つに分ける。
+ *
+ * **「残したうち声だった率」（精度）が低いとき、どこで落としているかを見るための数**
+ * （2026-09-15・2 回目に足した）。精度は 1 つの数なので、
+ * 「頭に余白を付けすぎている」のか「発話の間を渡ってしまっている」のか
+ * 「声と関係ない所を丸ごと残している」のかが区別できない。直す手はそれぞれ別なので、
+ * 分けずに眺めているかぎり、どのつまみを回せばよいかが決まらない。
+ *
+ * **これを出して、前の回の読みが 1 つ外れた。** 「尻は保持とヒステリシスで足りている」と
+ * 書いていたが、乾いた素材の尻に付いていたのは**余白（`padding`）ちょうどの 0.08 秒**で、
+ * 保持もヒステリシスも 1 コマも伸ばしていなかった。どちらも「鳴っている」が前提なので、
+ * 発話のあとが無音なら即座に閉じる。**足りていたのではなく、そもそも働いていなかった。**
+ *
+ * 尻が伸びるのは発話のあとも音が鳴り続ける素材だけで、そこでは 0.7〜1.4 秒まで伸びる。
+ * ただし**それもヒステリシスのせいではない**（`keepScoreSeconds` の注を参照）。
+ *
+ * `bridge` を「余計」と読みすぎないこと。発話の間が `minSilence` より短ければ
+ * 繋ぐのが正しい振る舞いで、正解の側が息継ぎを発話に含めていないだけ。
+ * 実際いまの素材では 0.2 秒の切れ目が 2 つあり、そこは毎回ここに入る。
+ *
+ * @param keep 残す区間。昇順で重ならないこと（`planJetCut` の `keep` がそう作る）。
+ * @param truth 発話の正解区間。こちらも昇順で重ならないこと。
+ */
+export function keepEdgeSeconds(keep: Range[], truth: Range[]): KeepEdges {
+  const edges: KeepEdges = { head: 0, tail: 0, bridge: 0, stray: 0 };
+  // 秒は浮動小数なので、端が一致するかはコマ 1 つ（0.02 秒）よりずっと細かい幅で見る。
+  const EPS = 1e-9;
+  const add = (seconds: number, left: boolean, right: boolean) => {
+    if (seconds <= 0) return;
+    if (left && right) edges.bridge += seconds;
+    else if (left) edges.tail += seconds;
+    else if (right) edges.head += seconds;
+    else edges.stray += seconds;
+  };
+  // keep も truth も昇順なので、いちど通り過ぎた発話へ戻る必要はない
+  // （戻る書き方だと尺の 2 乗になり、長尺で刺さる。cutSoundingSeconds と同じ理由）。
+  let head = 0;
+  for (const r of keep) {
+    while (head < truth.length && truth[head].end <= r.start) head += 1;
+    // keep の頭が、ちょうど発話の終わりに接している場合（左どなりは声）。
+    let leftIsSpeech = head > 0 && Math.abs(truth[head - 1].end - r.start) < EPS;
+    let cursor = r.start;
+    // r.end ちょうどから始まる発話も見る（右どなりが声なので、そこは「頭」）。
+    for (let k = head; k < truth.length && truth[k].start <= r.end; k += 1) {
+      const u = truth[k];
+      if (u.start > cursor) add(u.start - cursor, leftIsSpeech, true);
+      cursor = Math.max(cursor, Math.min(u.end, r.end));
+      // 発話の終わりが keep の外なら、そこから先に隙間は無い（次の周で u.start > cursor にならない）。
+      leftIsSpeech = u.end <= r.end;
+    }
+    add(r.end - cursor, leftIsSpeech, false);
+  }
+  return edges;
+}
+
+/** 残した秒のうち、声でなかったぶんを声らしさの値で分けたもの（`keepScoreSeconds`）。 */
+export interface KeepScores {
+  /** 入る値以上。**判定そのものが「声だ」と言っている**ぶん。 */
+  above: number;
+  /** 入る値と出る値のあいだ。**ヒステリシスが伸ばした**ぶん。 */
+  between: number;
+  /** 出る値未満。余白や区間の繋ぎが持ってきたぶん。 */
+  below: number;
+}
+
+/**
+ * 残した区間のうち**声でなかった秒**を、声らしさの値で 3 つに分ける。
+ *
+ * `keepEdgeSeconds` が「どこで」なら、こちらは「**何が**そこを残させたか」。
+ * 直す手が値ごとに違うので分ける:
+ * `above` は声らしさの中身を変えるしかなく、`between` はヒステリシスのつまみ、
+ * `below` は余白と区間の繋ぎのつまみで動く。
+ *
+ * **この 3 つを並べたところで、この回の見立てが潰れた**（2026-09-15・2 回目）。
+ * 声のある 17 本で余計に残した 54.88 秒の内訳は
+ * **`above` 40.94 秒（75%）/ `between` 12.30 秒（22%）/ `below` 1.64 秒（3%）**。
+ * 尻が 1.4 秒伸びていた素材でも、伸ばしていたのはヒステリシスではなく
+ * **背景そのものが入る値を超えていた**（打楽器の上では、発話が終わったあとも
+ * 声らしさが 0.2 を跨いで出入りし続ける）。
+ *
+ * だから「出る値で伸ばしてよい上限」を置いても効かない。実際に置いて振ったが、
+ * 上限 0.2 秒まで 3 つの数字が 1 つも動かない（`auto-cut/README.md` に表がある）。
+ * **端の扱いで拾えるのは残り 25% だけで、4 分の 3 は声らしさの中身の問題。**
+ *
+ * @param track `keep` と同じ素材の音量の列。コマの刻みをここから採る。
+ * @param speechScore `track` と同じ長さの声らしさ。長さが違えば全部 0 を返す。
+ * @param enter 入る値（`speechThreshold`）。 @param exit 出る値（`speechExit`）。
+ */
+export function keepScoreSeconds(
+  track: LoudnessTrack,
+  keep: Range[],
+  truth: Range[],
+  speechScore: Float32Array,
+  enter: number,
+  exit: number,
+): KeepScores {
+  const scores: KeepScores = { above: 0, between: 0, below: 0 };
+  if (speechScore.length !== track.db.length) return scores;
+  // 出る値が入る値を上回っていても、planJetCut と同じく入る値まで引き下げて扱う
+  // （そうしないと between が負の幅になり、全部 below に落ちる）。
+  const low = Math.min(exit, enter);
+  let keepHead = 0;
+  let truthHead = 0;
+  for (let i = 0; i < track.db.length; i += 1) {
+    const from = i * track.hop;
+    const to = from + track.hop;
+    // コマと区間の重なりで数える（余白のぶん、区間の端はコマ境界に乗らない）。
+    while (keepHead < keep.length && keep[keepHead].end <= from) keepHead += 1;
+    while (truthHead < truth.length && truth[truthHead].end <= from) truthHead += 1;
+    let kept = 0;
+    let keptVoice = 0;
+    for (let k = keepHead; k < keep.length && keep[k].start < to; k += 1) {
+      const a = Math.max(from, keep[k].start);
+      const b = Math.min(to, keep[k].end);
+      kept += b - a;
+      // **声のぶんは「このコマにある声」ではなく「残したところにある声」で引く。**
+      // コマの途中で発話も残しかたも切れると、同じコマの中で
+      // 「声だが残していない」と「残したが声でない」が同時に立つ。
+      // コマ単位で引くと、その 2 つが打ち消し合って数え落とす。
+      for (let j = truthHead; j < truth.length && truth[j].start < b; j += 1) {
+        keptVoice += Math.max(0, Math.min(b, truth[j].end) - Math.max(a, truth[j].start));
+      }
+    }
+    const extra = kept - keptVoice;
+    if (extra <= 0) continue;
+    const score = speechScore[i];
+    if (score >= enter) scores.above += extra;
+    else if (score >= low) scores.between += extra;
+    else scores.below += extra;
+  }
+  return scores;
+}

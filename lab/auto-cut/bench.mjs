@@ -24,7 +24,7 @@ import { SHORT_FIXTURES, utterancesOf } from '../fixtures/spec.mjs';
 
 const { analyzeLoudness } = await import('./src/loudness.ts');
 const { analyzeFeatures } = await import('./src/features.ts');
-const { planJetCut, cutSoundingSeconds } = await import('./src/silence.ts');
+const { planJetCut, cutSoundingSeconds, keepEdgeSeconds, keepScoreSeconds, DEFAULT_JET_CUT } = await import('./src/silence.ts');
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const fixtures = path.join(root, 'lab/fixtures/out');
@@ -81,6 +81,12 @@ function accuracy(plan, fixture) {
 }
 
 const percent = (v) => (v === null ? '—' : `${Math.round(v * 100)}%`);
+
+/**
+ * 余計に残した秒の合計。素材ごとの数は小さいので、ここで足して最後に並べる。
+ * **精度が低いのは分かっても、どこで落としているかは 1 つの数からは読めない**（2026-09-15・2 回目）。
+ */
+const extra = { head: 0, tail: 0, bridge: 0, stray: 0, above: 0, between: 0, below: 0 };
 
 for (const file of files) {
   const buffer = readWav(file);
@@ -154,7 +160,57 @@ for (const file of files) {
           ` / 残したうち声だった率 ${percent(a.precision)} → ${percent(b.precision)}`,
       );
     }
+    // 精度が低いとき、どこで・何が落としているか。直す手が別なので分けて出す。
+    if (fixture && !speech.noSpeechFound) {
+      const truth = utterancesOf(fixture).map(([start, end]) => ({ start, end }));
+      const where = keepEdgeSeconds(speech.keep, truth);
+      const what = keepScoreSeconds(
+        track,
+        speech.keep,
+        truth,
+        features.speechScore,
+        DEFAULT_JET_CUT.speechThreshold,
+        DEFAULT_JET_CUT.speechExit,
+      );
+      extra.head += where.head;
+      extra.tail += where.tail;
+      extra.bridge += where.bridge;
+      extra.stray += where.stray;
+      extra.above += what.above;
+      extra.between += what.between;
+      extra.below += what.below;
+      const total = where.head + where.tail + where.bridge + where.stray;
+      console.log(
+        `${' '.repeat(22)} └ 余計に残した ${total.toFixed(2)}s` +
+          `（頭 ${where.head.toFixed(2)} / 尻 ${where.tail.toFixed(2)}` +
+          ` / 発話の間を渡った ${where.bridge.toFixed(2)} / 無関係 ${where.stray.toFixed(2)}）` +
+          ` ← 判定 ${what.above.toFixed(2)} / ヒステリシス ${what.between.toFixed(2)} / 余白と繋ぎ ${what.below.toFixed(2)}`,
+      );
+    }
   }
+}
+
+{
+  const where = extra.head + extra.tail + extra.bridge + extra.stray;
+  const what = extra.above + extra.between + extra.below;
+  const share = (v, of) => (of > 0 ? `${Math.round((v / of) * 100)}%` : '—');
+  console.log(
+    `\n余計に残した秒の合計 ${where.toFixed(2)}s —` +
+      ` 頭 ${extra.head.toFixed(2)}（${share(extra.head, where)}）` +
+      ` / 尻 ${extra.tail.toFixed(2)}（${share(extra.tail, where)}）` +
+      ` / 発話の間を渡った ${extra.bridge.toFixed(2)}（${share(extra.bridge, where)}）` +
+      ` / 無関係 ${extra.stray.toFixed(2)}（${share(extra.stray, where)}）`,
+  );
+  console.log(
+    `${' '.repeat(10)}同じ秒を値で ${what.toFixed(2)}s —` +
+      ` 判定そのもの ${extra.above.toFixed(2)}（${share(extra.above, what)}）` +
+      ` / ヒステリシス ${extra.between.toFixed(2)}（${share(extra.between, what)}）` +
+      ` / 余白と繋ぎ ${extra.below.toFixed(2)}（${share(extra.below, what)}）`,
+  );
+  console.log(
+    '**「判定そのもの」が大半を占めているうちは、端の扱い（余白・遡り・ヒステリシス）を' +
+      'いじっても精度は動かない。** そこは声らしさの中身の問題。',
+  );
 }
 
 console.log(

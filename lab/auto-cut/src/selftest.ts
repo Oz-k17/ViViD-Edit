@@ -4,7 +4,15 @@
  */
 
 import { analyzeLoudness, toDb, type AudioLike, type LoudnessTrack } from './loudness.ts';
-import { autoThresholdDb, cutSoundingSeconds, DEFAULT_JET_CUT, envelopeGateFrames, planJetCut } from './silence.ts';
+import {
+  autoThresholdDb,
+  cutSoundingSeconds,
+  DEFAULT_JET_CUT,
+  envelopeGateFrames,
+  keepEdgeSeconds,
+  keepScoreSeconds,
+  planJetCut,
+} from './silence.ts';
 import { gainAt, planDucking } from './ducking.ts';
 import { toClipEdits } from './edits.ts';
 import { buildPeaks } from './peaks.ts';
@@ -354,6 +362,153 @@ export function runSelfTest(): TestResult[] {
       };
       const spread = cutSoundingSeconds(track, many);
       check('区間がいくつに分かれていても数え落とさない', near(spread, 0.5, 0.02), `${spread.toFixed(2)} 秒`);
+    }
+
+    // --- 余計に残した秒を、置き場所と値で分ける ---
+    //
+    // 精度（残したうち声だった率）は 1 つの数なので、そのままでは
+    // 「頭に余白を付けすぎている」のか「発話の間を渡った」のか
+    // 「関係ない所を丸ごと残した」のかが分からない。直す手はそれぞれ別（2026-09-15・2 回目）。
+    {
+      const truth = [
+        { start: 1, end: 2 },
+        { start: 3, end: 4 },
+      ];
+
+      const both = keepEdgeSeconds([{ start: 0.8, end: 2.2 }], truth);
+      check(
+        '発話をはみ出した前後が、頭と尻に分かれる',
+        near(both.head, 0.2, 1e-9) && near(both.tail, 0.2, 1e-9) && both.bridge === 0 && both.stray === 0,
+        `頭 ${both.head.toFixed(2)} / 尻 ${both.tail.toFixed(2)}`,
+      );
+
+      // 両どなりが声なら渡ったぶん。息継ぎを繋いだのはここに入るので、
+      // 尻や頭と混ぜて数えると「余白を付けすぎている」と読み違える。
+      const across = keepEdgeSeconds([{ start: 1.5, end: 3.5 }], truth);
+      check(
+        '発話と発話のあいだを渡ったぶんは、頭でも尻でもない',
+        near(across.bridge, 1, 1e-9) && across.head === 0 && across.tail === 0,
+        `渡った ${across.bridge.toFixed(2)} 秒`,
+      );
+
+      // **同じ切れ目でも、残し方で置き場所が変わる。** 途中で切れていれば
+      // 前半は前の発話の尻、後半は次の発話の頭になる。渡ったことにはしない。
+      const halves = keepEdgeSeconds(
+        [
+          { start: 2, end: 2.4 },
+          { start: 2.6, end: 3 },
+        ],
+        truth,
+      );
+      check(
+        '切れ目が途中で切れていれば、尻と頭に分かれる',
+        near(halves.tail, 0.4, 1e-9) && near(halves.head, 0.4, 1e-9) && halves.bridge === 0,
+        `尻 ${halves.tail.toFixed(2)} / 頭 ${halves.head.toFixed(2)}`,
+      );
+
+      // 残し方の端が、発話の端にぴたり接する場合。**その発話を残していなくても、
+      // どなりが声であることは変わらない**（接している向きで頭か尻かが決まる）。
+      const touching = keepEdgeSeconds(
+        [
+          { start: 0.5, end: 1 },
+          { start: 2, end: 2.5 },
+        ],
+        truth,
+      );
+      check(
+        '発話に接しているだけでも、頭と尻を見分ける',
+        near(touching.head, 0.5, 1e-9) && near(touching.tail, 0.5, 1e-9) && touching.stray === 0,
+        `頭 ${touching.head.toFixed(2)} / 尻 ${touching.tail.toFixed(2)}`,
+      );
+
+      // 区間が増えても、前へ戻らずに数え切れていること（尺に比例した手間の前提）。
+      const manyTruth = Array.from({ length: 2000 }, (_, k) => ({ start: k * 2, end: k * 2 + 1 }));
+      const manyKeep = Array.from({ length: 2000 }, (_, k) => ({ start: k * 2 - 0.1, end: k * 2 + 1.1 }));
+      const startedEdges = performance.now();
+      const wide = keepEdgeSeconds(manyKeep, manyTruth);
+      check(
+        '区間がいくつに分かれていても、尺に比例した手間で数え切る',
+        performance.now() - startedEdges < 200 && near(wide.head + wide.tail, 2000 * 0.2, 0.5),
+        `${(performance.now() - startedEdges).toFixed(0)}ms / 頭と尻 ${(wide.head + wide.tail).toFixed(1)} 秒`,
+      );
+
+      const away = keepEdgeSeconds([{ start: 5, end: 6 }], truth);
+      check(
+        'どの発話にも接していなければ、丸ごと誤りとして数える',
+        near(away.stray, 1, 1e-9) && away.head === 0 && away.tail === 0 && away.bridge === 0,
+        `無関係 ${away.stray.toFixed(2)} 秒`,
+      );
+
+      // 発話の中にすっぽり収まっていれば、余計に残したものは無い。
+      const inside = keepEdgeSeconds([{ start: 1.2, end: 1.8 }], truth);
+      check(
+        '発話の中だけを残していれば、どこにも数えない',
+        inside.head + inside.tail + inside.bridge + inside.stray === 0,
+        '0.00 秒',
+      );
+
+      // 正解が 1 つも無い素材（声なし）。残したものは全部「無関係」に落ちる。
+      const noTruth = keepEdgeSeconds([{ start: 0, end: 3 }], []);
+      check('正解が空なら、残したぶんは全部が無関係', near(noTruth.stray, 3, 1e-9), `${noTruth.stray.toFixed(2)} 秒`);
+
+      // --- 同じ秒を、声らしさの値で分ける ---
+      //
+      // 置き場所が分かっても、そこを残させたものが
+      // 「判定そのもの」なのか「ヒステリシス」なのか「余白」なのかで手が変わる。
+      const score = new Float32Array(track.db.length);
+      const one = [{ start: 1, end: 2 }];
+      // 0.50〜1.00（頭）は入る値の上、2.00〜2.50（尻）は入る値と出る値のあいだ。
+      for (let i = 25; i < 50; i += 1) score[i] = 0.3;
+      for (let i = 100; i < 125; i += 1) score[i] = 0.15;
+      const bands = keepScoreSeconds(track, [{ start: 0.5, end: 2.5 }], one, score, 0.2, 0.1);
+      check(
+        '余計に残した秒が、声らしさの値で分かれる',
+        near(bands.above, 0.5, 0.01) && near(bands.between, 0.5, 0.01) && near(bands.below, 0, 0.01),
+        `以上 ${bands.above.toFixed(2)} / あいだ ${bands.between.toFixed(2)} / 未満 ${bands.below.toFixed(2)}`,
+      );
+
+      // 声に当たっているぶんは引く。**コマの途中で発話が終わる場合**、
+      // 同じコマに声と余りが同居するので、多いほうへ寄せると 1 コマぶんずれる。
+      const straddle = keepScoreSeconds(track, [{ start: 1, end: 2.01 }], [{ start: 1, end: 2.005 }], score, 0.2, 0.1);
+      check(
+        'コマの途中で発話が終わっても、はみ出したぶんだけ数える',
+        near(straddle.above + straddle.between + straddle.below, 0.005, 0.001),
+        `${(straddle.above + straddle.between + straddle.below).toFixed(4)} 秒`,
+      );
+
+      // **同じコマの中で「声だが残していない」と「残したが声でない」が同時に立つ場合。**
+      // コマ単位で声のぶんを引くと、この 2 つが打ち消し合って 0 秒に見える。
+      // 声を切ってしまっている素材では実際に起きるので、ここは残したところの中だけで引くこと。
+      const crossed = keepScoreSeconds(
+        track,
+        [{ start: 1.01, end: 1.02 }],
+        [{ start: 1, end: 1.01 }],
+        score,
+        0.2,
+        0.1,
+      );
+      check(
+        '同じコマで声を切り、別のところを残していても、打ち消し合わない',
+        near(crossed.above + crossed.between + crossed.below, 0.01, 0.001),
+        `${(crossed.above + crossed.between + crossed.below).toFixed(4)} 秒`,
+      );
+
+      // 出る値が入る値を上回っていても、planJetCut と同じく入る値まで引き下げる
+      // （引き下げないと「あいだ」が負の幅になり、全部が未満に落ちる）。
+      const swapped = keepScoreSeconds(track, [{ start: 0.5, end: 2.5 }], one, score, 0.2, 0.5);
+      check(
+        '出る値が入る値より大きくても、あいだが裏返らない',
+        near(swapped.above, 0.5, 0.01) && near(swapped.below, 0.5, 0.01) && swapped.between === 0,
+        `以上 ${swapped.above.toFixed(2)} / 未満 ${swapped.below.toFixed(2)}`,
+      );
+
+      // 長さの違う列を渡されたら、黙って 0 を返す（当てにならない数を出さない）。
+      const mismatched = keepScoreSeconds(track, [{ start: 0.5, end: 2.5 }], one, new Float32Array(3), 0.2, 0.1);
+      check(
+        '長さの違う列を渡されたら数えない',
+        mismatched.above + mismatched.between + mismatched.below === 0,
+        '0.00 秒',
+      );
     }
 
     // --- 計画 → クリップ ---
