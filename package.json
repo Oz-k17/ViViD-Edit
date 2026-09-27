@@ -54,6 +54,7 @@
     "lab:export": "node lab/export-cost/bench.mjs",
     "lab:keyframe": "node lab/keyframe/bench.mjs",
     "lab:keyframe:probe": "node lab/keyframe/probe.mjs",
+    "lab:keyframe:hold": "node lab/keyframe/hold-probe.mjs",
     "lab:keyframe:demo": "vite lab/keyframe",
     "lab:keyframe:uitest": "node lab/keyframe/uitest.mjs",
     "lab:export:audio": "node lab/export-cost/audio.mjs"

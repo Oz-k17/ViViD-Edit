@@ -336,40 +336,101 @@ try {
     `${easeState.keys.map((k) => k.ease ?? 'linear').join(' / ')}`,
   );
 
-  // --- 打点を置く / 消す。**時間軸は打点が 0 個になると消える**ので、画面が渡しているか ---
+  // --- 打点を置く / 消す。**既定でない時間軸が、打点を全部消しても残るか** ---
+  //
+  // 2026-09-27 の 2 回目の画面は `state.base` という**自分の欄**に軸を覚えていたので、
+  // 「打点が 0 個になると軸が消える」は画面では起きなかった（起きるのは本体へ持っていったとき）。
+  // 3 回目に画面は覚えるのをやめて値から読むようにしたので、**ここで初めて画面から確かめられる。**
+  //
+  // 打点の立つ秒は `keyStandsAt()` に聞く。**確かめの側で時間軸ごとの式を書くと 2 本目の物差しになる**
+  //（実際、前の回はここに `fraction` だけの式を直書きしていた）。
+  const clearAllKeys = () =>
+    api(() => {
+      const kf = window.__labKeyframe;
+      const canvas = document.getElementById('kf-curve');
+      // Alt を押しながら押す＝画面と同じ「消す」操作。
+      for (let guard = 0; guard < 16 && kf.state().keys.length > 0; guard += 1) {
+        const stands = kf.keyStandsAt();
+        const k = kf.state().keys[0];
+        const p2 = kf.toPixel(stands[0], k.v);
+        const r = canvas.getBoundingClientRect();
+        canvas.dispatchEvent(
+          new PointerEvent('pointerdown', {
+            bubbles: true,
+            button: 0,
+            altKey: true,
+            clientX: r.left + p2.x,
+            clientY: r.top + p2.y,
+          }),
+        );
+      }
+      return kf.state();
+    });
+
   await api(() => window.__labKeyframe.setScenario('image-kenburns'));
   await api(() => window.__labKeyframe.setBase('fraction'));
-  const emptied = await api(() => {
-    const kf = window.__labKeyframe;
-    // 打点を全部消す（Alt を押しながら押す＝画面と同じ操作）
-    for (let i = kf.state().keys.length - 1; i >= 0; i -= 1) {
-      const k = kf.state().keys[i];
-      const p = kf.toPixel(
-        kf.state().base === 'fraction'
-          ? kf.state().clip.start + k.t * kf.state().clip.duration
-          : k.t,
-        k.v,
-      );
-      const canvas = document.getElementById('kf-curve');
-      canvas.dispatchEvent(
-        new PointerEvent('pointerdown', {
-          bubbles: true,
-          button: 0,
-          altKey: true,
-          clientX: canvas.getBoundingClientRect().left + p.x,
-          clientY: canvas.getBoundingClientRect().top + p.y,
-        }),
-      );
-    }
-    return kf.state();
-  });
-  ok('打点を全部消せる（Alt を押しながら）', emptied.keys.length === 0, `残り ${emptied.keys.length} 個`);
-  await page.getByRole('button', { name: 'いまの時刻に打点を置く' }).click();
-  const replaced = await api(() => window.__labKeyframe.state());
+  const kbEmpty = await clearAllKeys();
+  ok('打点を全部消せる（Alt を押しながら）', kbEmpty.keys.length === 0, `残り ${kbEmpty.keys.length} 個`);
   ok(
-    '置き直しても時間軸が既定へ戻らない（画面が覚えている側から渡している）',
-    replaced.base === 'fraction' && replaced.keys.length === 1,
-    `${replaced.base} ・ 打点 ${replaced.keys.length} 個`,
+    '打点を全部消しても、選んだ時間軸が値に残る（畳んだ形）',
+    kbEmpty.base === 'fraction' && /"base":"fraction"/.test(kbEmpty.valueJson),
+    `${kbEmpty.valueJson} ・ 軸 ${kbEmpty.base}`,
+  );
+  ok(
+    '畳んでも値が既定へ跳ねない（絵がそのまま出る）',
+    Number.isFinite(kbEmpty.composed.alpha) && Math.abs(kbEmpty.composed.values.scale - 1.2) < 1e-9,
+    `拡大 ${kbEmpty.composed.values.scale.toFixed(3)}`,
+  );
+  await page.getByRole('button', { name: 'いまの時刻に打点を置く' }).click();
+  const kbAgain = await api(() => window.__labKeyframe.state());
+  ok(
+    '軸を渡さずに置き直しても fraction で入る（画面が覚えなくてよくなった）',
+    kbAgain.base === 'fraction' && kbAgain.keys.length === 1,
+    `軸 ${kbAgain.base} ・ 打点 ${kbAgain.keys.length} 個 ・ ${kbAgain.valueJson}`,
+  );
+
+  // 既定の軸まで覚えると JSON が太るので、既定へ戻したら素の数へ畳むこと。
+  await api(() => window.__labKeyframe.setBase('local'));
+  const kbPlain = await clearAllKeys();
+  ok(
+    '既定の軸へ戻して全部消すと、素の数へ畳む（JSON を太らせない）',
+    kbPlain.keys.length === 0 &&
+      kbPlain.valueJson === String(Number(kbPlain.valueJson)) &&
+      typeof kbPlain.clip.value === 'number',
+    `${kbPlain.valueJson}`,
+  );
+
+  // 打点が 0 個の状態で軸だけ選ぶ（`setTrackBase()` の口。2 回目には作れなかった操作）
+  await api(() => window.__labKeyframe.setBase('fraction'));
+  const kbSeated = await api(() => window.__labKeyframe.state());
+  ok(
+    '打点が 0 個でも時間軸だけ先に選べる（置く前に決められる）',
+    kbSeated.keys.length === 0 && kbSeated.base === 'fraction' && /"base":"fraction"/.test(kbSeated.valueJson),
+    `${kbSeated.valueJson}`,
+  );
+  await page.getByRole('button', { name: 'いまの時刻に打点を置く' }).click();
+  const kbFirstKey = await api(() => window.__labKeyframe.state());
+  ok(
+    '先に選んだ軸で 1 つ目の打点が入る',
+    kbFirstKey.keys.length === 1 && kbFirstKey.base === 'fraction',
+    `軸 ${kbFirstKey.base} ・ ${kbFirstKey.valueJson}`,
+  );
+
+  // 粗探し: **打点 0 個 × 既定でない軸**のまま編集を当てる。
+  // 畳んだ形は `Animated`（素の数か打点の列）ではないので、そのまま編集へ渡すと落ちる所があった。
+  await api(() => window.__labKeyframe.setScenario('image-kenburns'));
+  await api(() => window.__labKeyframe.setBase('fraction'));
+  const kbNone = await clearAllKeys();
+  for (const step of OP_STEPS) await api((a) => window.__labKeyframe.applyEdit(a.op, a.pick), step);
+  const kbEdited = await api(() => window.__labKeyframe.state());
+  ok(
+    '打点 0 個 × 既定でない軸のまま編集しても割れない（軸は残る）',
+    kbNone.keys.length === 0 &&
+      kbEdited.keys.length === 0 &&
+      kbEdited.base === 'fraction' &&
+      Number.isFinite(kbEdited.composed.alpha) &&
+      Number.isFinite(kbEdited.score.fraction),
+    `${kbEdited.valueJson} ・ 尺 ${kbEdited.clip.duration.toFixed(3)}s ・ 透明度 ${kbEdited.composed.alpha.toFixed(3)}`,
   );
 
   // --- 絵（本体へ差す形）。矩形と透明度が Node 側と合うか ---

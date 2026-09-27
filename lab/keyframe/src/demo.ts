@@ -25,15 +25,20 @@
 import {
   keysOf,
   normalizeKeys,
-  type Animated,
   type Ease,
   type Keyframe,
 } from './value.ts';
 import {
   defaultTrackBase,
+  isKeyedTrack,
   keyTimeInUnclamped,
+  keysOfTrack,
+  sampleClipValue,
   putKeyAtTime,
+  removeKeyAt,
+  setTrackBase,
   timeAtKeyTime,
+  trackBaseIn,
   type AnimatedTrack,
   type TrackBase,
 } from './track.ts';
@@ -82,7 +87,15 @@ const OP_LABELS: Record<string, string> = {
 
 interface State {
   scenario: Scenario;
-  base: TrackBase;
+  /**
+   * **打点が 0 個のときの値**（`number` か `{ base, v }`）。時間軸の置き場所でもある。
+   *
+   * 2026-09-27 の 2 回目まで、ここは `base: TrackBase` という**画面が自分で覚える欄**だった。
+   * 3 回目に畳んだ形（`StillTrack`）が軸を持つようになったので、
+   * **画面は覚えるのをやめて、値の側から読む**（`baseNow()`）。
+   * 打点があるあいだ読むのは `base` だけで、`v` は畳んだときに `removeKeyAt()` が入れ直す。
+   */
+  seat: AnimatedTrack;
   valueName: ValueName;
   /** いまのクリップ（編集を当てたあと）。 */
   clip: LabClip;
@@ -107,7 +120,7 @@ interface State {
 const first = SCENARIOS[0];
 const state: State = {
   scenario: first,
-  base: defaultTrackBase(first.kind),
+  seat: first.fallback,
   valueName: SHOW_AS[first.name],
   clip: baseClip(first),
   keys: [],
@@ -126,19 +139,37 @@ const state: State = {
 const sortedKeys = (): Keyframe[] => normalizeKeys(state.keys);
 
 /**
- * いまの曲線。**打点が 1 つも無ければ素の数**（本体の保存済みプロジェクトと同じ形）。
+ * いま読むときの時間軸。**画面は覚えず、値から読む。**
+ *
+ * 覚えると、覚えた側と値の側が食い違ったときに黙ってずれる（`track.ts` の `trackBaseIn()` の注）。
+ */
+const baseNow = (): TrackBase => trackBaseIn(state.clip, state.seat);
+
+/**
+ * いまの曲線。**打点が 1 つも無ければ畳んだ形**（素の数、または軸を覚えている `{ base, v }`）。
  *
  * `fallback` に素材の既定（`scenario.fallback`）を使うのは、
  * `probe.mjs` が測っているのと同じ値でないと数字を突き合わせられないため。
  */
 function curve(): AnimatedTrack {
   const keys = sortedKeys();
-  return keys.length > 0 ? { base: state.base, keys } : state.scenario.fallback;
+  return keys.length > 0 ? { base: baseNow(), keys } : state.seat;
 }
 
-/** いまのクリップ（曲線を入れた形）。編集の操作と採点はこれを見る。 */
+/**
+ * いまのクリップ（曲線を入れた形）。編集の操作と採点はこれを見る。
+ *
+ * **畳んだ形はここで数へ落とす。** `LabClip.value` は `Animated`（素の数か打点の列）なので、
+ * `{ base, v }` をそのまま通すと `shiftKeys()` などが `keys` を読んで落ちる
+ *（付け替えを書く道に入ったときだけ出る穴なので、いまの `raw` では表に出ない）。
+ * 落とすときの値は読んだ値そのままなので、絵も採点も変わらない。
+ */
 function clipNow(): LabClip {
-  return { ...state.clip, value: curve() as Animated };
+  const c = curve();
+  return {
+    ...state.clip,
+    value: isKeyedTrack(c) ? c : sampleClipValue(state.clip, c, state.time, state.scenario.fallback),
+  };
 }
 
 /** 絵にするための 4 値。**動かすのは 1 本だけで、残りは素の数のまま。** */
@@ -295,7 +326,7 @@ interface View {
 function view(): View {
   const canvas = $<HTMLCanvasElement>('kf-curve');
   const clip = state.clip;
-  const times = sortedKeys().map((k) => timeAtKeyTime(state.base, clip, k.t));
+  const times = sortedKeys().map((k) => timeAtKeyTime(baseNow(), clip, k.t));
   const lo = Math.min(clip.start, ...times);
   const hi = Math.max(clipEnd(clip), ...times);
   const span = Math.max(0.5, hi - lo);
@@ -391,7 +422,7 @@ function drawCurve() {
 
   // --- 打点。クリップの外に居るものは色を変える（消さないと決めたものなので、見せる） ---
   sortedKeys().forEach((k, i) => {
-    const t = timeAtKeyTime(state.base, clip, k.t);
+    const t = timeAtKeyTime(baseNow(), clip, k.t);
     const p = toPixel(v, t, k.v);
     const outside = t < clip.start - 1e-9 || t > clipEnd(clip) + 1e-9;
     ctx.fillStyle = outside ? 'rgba(164, 112, 122, 0.95)' : '#b7d0a8';
@@ -425,7 +456,7 @@ function pickKey(x: number, y: number): number {
   let best = -1;
   let bestDist = 10;
   sortedKeys().forEach((k, i) => {
-    const p = toPixel(v, timeAtKeyTime(state.base, clip, k.t), k.v);
+    const p = toPixel(v, timeAtKeyTime(baseNow(), clip, k.t), k.v);
     const d = Math.hypot(p.x - x, p.y - y);
     if (d < bestDist) {
       bestDist = d;
@@ -460,7 +491,7 @@ function keyAtPixel(x: number, y: number): { t: number; v: number } {
   const at = fromPixel(v, x, y);
   const range = VALUE_RANGE[state.valueName];
   return {
-    t: keyTimeInUnclamped(state.base, state.clip, at.time),
+    t: keyTimeInUnclamped(baseNow(), state.clip, at.time),
     v: Math.min(range.max, Math.max(range.min, at.value)),
   };
 }
@@ -543,7 +574,11 @@ curveCanvas.addEventListener('pointercancel', endDrag);
 function removeKeyIndex(index: number) {
   const keys = sortedKeys();
   if (index < 0 || index >= keys.length) return;
-  state.keys = keys.filter((_, i) => i !== index);
+  // **`removeKeyAt()` を通す。** 直に `filter` すると、最後の 1 つを消したときに
+  // 畳んだ形（軸を覚えている `{ base, v }`）が作られず、画面だけ軸を保っていることになる。
+  const next = removeKeyAt(state.clip, curve(), keys[index].t, state.scenario.fallback);
+  state.keys = keysOfTrack(next);
+  if (state.keys.length === 0) state.seat = next;
   state.selected = -1;
   syncEaseSelect();
   drawAll();
@@ -552,10 +587,10 @@ function removeKeyIndex(index: number) {
 $<HTMLButtonElement>('kf-remove').addEventListener('click', () => removeKeyIndex(state.selected));
 
 $<HTMLButtonElement>('kf-put').addEventListener('click', () => {
-  // **時間軸を明示して渡す。** 打点が 0 個のとき、値は素の数なので時間軸を持っていない
-  //（`putKeyAtTime` に渡さないと、種類の既定へ黙って戻る）。
-  const next = putKeyAtTime(clipNow(), curve(), state.time, undefined, undefined, state.base);
-  state.keys = keysOf(next as Animated);
+  // **時間軸を渡していない。** 2026-09-27 の 2 回目は渡さないと種類の既定へ戻ったが、
+  // 3 回目に畳んだ形が軸を持つようになったので、`putKeyAtTime()` が値の側から拾う。
+  const next = putKeyAtTime(clipNow(), curve(), state.time);
+  state.keys = keysOfTrack(next);
   state.selected = -1;
   drawAll();
 });
@@ -674,7 +709,7 @@ function snapshot(): Intended {
     before: clip,
     authored: {
       keys: normalizeKeys(
-        sortedKeys().map((k) => ({ t: timeAtKeyTime(state.base, clip, k.t), v: k.v, ease: k.ease })),
+        sortedKeys().map((k) => ({ t: timeAtKeyTime(baseNow(), clip, k.t), v: k.v, ease: k.ease })),
       ),
     },
     intent: state.scenario.intent,
@@ -687,10 +722,10 @@ function applyEdit(name: string, pick = 0) {
   const op = opsFor(state.scenario).find((o) => o.name === name);
   if (!op) return;
   // **付け替えは書かない**（`raw`）。それで期待どおりになるのが 9/27 の結論で、ここはその確かめ。
-  const out = applyOp(op, state.base as TimeBase, clipNow(), 'raw');
+  const out = applyOp(op, baseNow() as TimeBase, clipNow(), 'raw');
   const chosen = out[Math.min(pick, out.length - 1)];
   state.clip = chosen;
-  state.keys = keysOf(chosen.value);
+  state.keys = keysOfTrack(chosen.value);
   state.log.push({ op: name, pick });
   state.time = Math.min(clipEnd(chosen), Math.max(chosen.start, state.time));
   syncTimeRange();
@@ -774,12 +809,12 @@ $<HTMLButtonElement>('kf-reset').addEventListener('click', () => resetScenario()
 
 function resetScenario() {
   const s = state.scenario;
-  state.base = defaultTrackBase(s.kind);
+  state.seat = s.fallback;
   state.valueName = SHOW_AS[s.name];
   state.clip = baseClip(s);
   // 素材が書いた打点は**タイムラインの秒**なので、選んだ時間軸へ写して入れる。
   state.keys = normalizeKeys(
-    s.authored.map((k) => ({ t: keyTimeInUnclamped(state.base, state.clip, k.at), v: k.v, ease: k.ease })),
+    s.authored.map((k) => ({ t: keyTimeInUnclamped(baseNow(), state.clip, k.at), v: k.v, ease: k.ease })),
   );
   state.selected = -1;
   state.log = [];
@@ -796,7 +831,7 @@ function resetScenario() {
   $<HTMLInputElement>('kf-fade-out').value = '0';
   $<HTMLInputElement>('kf-fade-on').checked = true;
   showFades();
-  $<HTMLSelectElement>('kf-base').value = state.base;
+  $<HTMLSelectElement>('kf-base').value = baseNow();
   $<HTMLSelectElement>('kf-value').value = state.valueName;
   $<HTMLParagraphElement>('kf-note').textContent =
     `${s.kind} ・ 頭 ${s.start.toFixed(2)}s ・ 尺 ${s.duration.toFixed(2)}s ・ ` +
@@ -827,10 +862,11 @@ function syncTimeRange() {
  */
 $<HTMLSelectElement>('kf-base').addEventListener('change', () => {
   const next = $<HTMLSelectElement>('kf-base').value as TrackBase;
-  const clip = state.clip;
-  const timeline = sortedKeys().map((k) => ({ ...k, at: timeAtKeyTime(state.base, clip, k.t) }));
-  state.base = next;
-  state.keys = normalizeKeys(timeline.map((k) => ({ t: keyTimeInUnclamped(next, clip, k.at), v: k.v, ease: k.ease })));
+  // 写し替えの式は `setTrackBase()` に寄せた（画面にも同じものが書いてあった）。
+  // **打点が 0 個でも通る**ので、「先に軸を決めてから置く」がこのボタンだけで済む。
+  const moved = setTrackBase(state.clip, curve(), next, state.scenario.fallback);
+  state.keys = keysOfTrack(moved);
+  state.seat = setTrackBase(state.clip, state.seat, next, state.scenario.fallback);
   state.selected = -1;
   syncEaseSelect();
   drawAll();
@@ -854,7 +890,7 @@ function showKeys() {
   const keys = sortedKeys();
   const clip = state.clip;
   const outside = keys.filter((k) => {
-    const t = timeAtKeyTime(state.base, clip, k.t);
+    const t = timeAtKeyTime(baseNow(), clip, k.t);
     return t < clip.start - 1e-9 || t > clipEnd(clip) + 1e-9;
   }).length;
   $<HTMLParagraphElement>('kf-keys').textContent =
@@ -863,7 +899,7 @@ function showKeys() {
       : `打点 ${keys.length} 個` +
         `（クリップの外 ${outside} 個）: ` +
         keys
-          .map((k) => `${k.t.toFixed(3)}${state.base === 'fraction' ? '' : 's'} → ${k.v.toFixed(3)}${k.ease && k.ease !== 'linear' ? ` [${k.ease}]` : ''}`)
+          .map((k) => `${k.t.toFixed(3)}${baseNow() === 'fraction' ? '' : 's'} → ${k.v.toFixed(3)}${k.ease && k.ease !== 'linear' ? ` [${k.ease}]` : ''}`)
           .join(' , ');
 
   const warn = $<HTMLParagraphElement>('kf-warning');
@@ -880,7 +916,7 @@ function showKeys() {
         '（期待の土台は編集前の曲線で固めてあります）。「編集を元に戻す」を押してから触ってください。',
     );
   }
-  if (state.base !== defaultTrackBase(state.scenario.kind)) {
+  if (baseNow() !== defaultTrackBase(state.scenario.kind)) {
     messages.push(
       `<strong>時間軸を種類の既定（${defaultTrackBase(state.scenario.kind)}）から外しています。</strong>` +
         '下の「4.」で、その代価が数字に出ます。',
@@ -935,6 +971,11 @@ declare global {
         absorbed: number;
         log: { op: string; pick: number }[];
         time: number;
+        /**
+         * いまの値を JSON にしたもの（**時間軸がどこに書かれているか**を外から見るため）。
+         * 打点が 0 個なら畳んだ形（素の数 か `{ base, v }`）がそのまま出る。
+         */
+        valueJson: string;
         /** 3 通りのずれ（画面に出ている数字と同じもの）。 */
         score: Record<string, number>;
         composed: Composed;
@@ -952,6 +993,12 @@ declare global {
       fromPixel: (x: number, y: number) => { time: number; value: number };
       /** その画素が指す打点の（時刻・値）。丸めない写しを通したもの。 */
       keyAtPixel: (x: number, y: number) => { t: number; v: number };
+      /**
+       * いまの打点が**タイムラインの何秒に立つか**（`timeAtKeyTime()` を通したもの）。
+       *
+       * 確かめの側で秒を組み立て直すと同じ式が 2 本になるので、画面が使っているものを出す。
+       */
+      keyStandsAt: () => number[];
       /** 素材 6 本 × 時間軸 3 通り × 操作 6 つ（付け替えなし）。`probe.mjs` の 3 段目と同じもの。 */
       probeTable: () => { name: string; intent: string; base: string; errors: number[] }[];
       opNames: () => string[];
@@ -975,14 +1022,15 @@ window.__labKeyframe = {
   },
   state: () => ({
     scenario: state.scenario.name,
-    base: state.base,
+    base: baseNow(),
+    valueJson: JSON.stringify(curve()),
     valueName: state.valueName,
     intent: state.scenario.intent,
     clip: clipNow(),
     keys: sortedKeys(),
     selected: state.selected,
     outside: sortedKeys().filter((k) => {
-      const t = timeAtKeyTime(state.base, state.clip, k.t);
+      const t = timeAtKeyTime(baseNow(), state.clip, k.t);
       return t < state.clip.start - 1e-9 || t > clipEnd(state.clip) + 1e-9;
     }).length,
     absorbed: state.absorbed,
@@ -1027,6 +1075,7 @@ window.__labKeyframe = {
   toPixel: (t, v) => toPixel(activeView(), t, v),
   fromPixel: (x, y) => fromPixel(activeView(), x, y),
   keyAtPixel,
+  keyStandsAt: () => sortedKeys().map((k) => timeAtKeyTime(baseNow(), state.clip, k.t)),
   probeTable: () =>
     SCENARIOS.flatMap((s) =>
       TRACK_BASES.map((base) => ({

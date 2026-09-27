@@ -31,12 +31,15 @@ import {
 } from './value.ts';
 import {
   defaultTrackBase,
+  isStillTrack,
   kenBurns,
   keyTimeIn,
   keyTimeInUnclamped,
+  keysOfTrack,
   putKeyAtTime,
   removeKeyAt,
   sampleClipValue,
+  setTrackBase,
   sourceTimeAt,
   timeAtKeyTime,
   trackBaseOf,
@@ -47,6 +50,7 @@ import {
 import { composeAt } from './compose.ts';
 import { applyOp, editOps, TIME_BASES, type LabClip, type TimeBase } from './timebase.ts';
 import { clipInBase, scoreClip, SCENARIOS, EXACT } from './scenarios.ts';
+import { clearAll, keysIn, OFF_DEFAULTS, readAt, slotFor } from './hold.ts';
 
 export interface TestResult {
   name: string;
@@ -240,10 +244,21 @@ export function runSelfTest(): TestResult[] {
     'テロップに打点を置くと、頭からの秒で入る',
     trackBaseOf(putKeyAtTime(clip({ kind: 'text', sourceIn: 0 }), 1, 3)) === 'local',
   );
-  check(
-    '打点を消して空になったら素の数へ戻す（毎コマ既定を通らせない）',
-    removeKeyAt({ base: 'local', keys: [{ t: 1, v: 0.3 }] }, 1, 1) === 0.3,
-  );
+  {
+    // テロップの既定は `local` なので、覚えるものが無い＝素の数へ畳む。
+    const textC = clip({ kind: 'text', sourceIn: 0 });
+    check(
+      '既定の時間軸なら、打点を消して空になったら素の数へ戻す（毎コマ既定を通らせない）',
+      removeKeyAt(textC, { base: 'local', keys: [{ t: 1, v: 0.3 }] }, 1, 1) === 0.3,
+    );
+    // 映像の既定は `source` なので、`local` は人が外した軸＝覚えておく。
+    const kept = removeKeyAt(c, { base: 'local', keys: [{ t: 1, v: 0.3 }] }, 1, 1);
+    check(
+      '既定でない時間軸なら、畳んでも軸と値を両方残す（{ base, v }）',
+      isStillTrack(kept) && trackBaseOf(kept) === 'local' && near(sampleClipValue(c, kept, 99, 1), 0.3),
+      `${JSON.stringify(kept)}`,
+    );
+  }
 
   // テロップに `source` で打点が入っている値（既定と違う持ち方）へ 2 つ目を足す。
   const textClip = clip({ kind: 'text', sourceIn: 0 });
@@ -263,7 +278,7 @@ export function runSelfTest(): TestResult[] {
   );
   check(
     '数でない値を置こうとしても列が壊れない（黙って増えない）',
-    keysOf(putKeyAtTime(c, twoKeys, 5.5, Number.NaN)).length === keysOf(twoKeys).length,
+    keysOfTrack(putKeyAtTime(c, twoKeys, 5.5, Number.NaN)).length === keysOfTrack(twoKeys).length,
   );
 
   const kb = kenBurns();
@@ -458,23 +473,124 @@ export function runSelfTest(): TestResult[] {
     );
   }
 
-  // 時間軸は打点と一緒に持っているので、打点が 0 個になると消える
+  // 打点を全部消しても時間軸が残るか（2026-09-27 の 3 回目に持ち方を足した所）
   {
     const kb = kenBurns(1, 1.2);
     const image: ClipTiming = { kind: 'image', start: 0, duration: 5, sourceIn: 0, speed: 1 };
-    const emptied = removeKeyAt(removeKeyAt(kb, 0, 1), 1, 1);
+    const emptied = removeKeyAt(image, removeKeyAt(image, kb, 0, 1), 1, 1);
     const wentBack = putKeyAtTime(image, emptied, 2.5);
-    const kept = putKeyAtTime(image, emptied, 2.5, undefined, undefined, 'fraction');
     check(
-      '打点を全部消すと時間軸も消える（素の数へ畳むため）',
-      typeof emptied === 'number' && trackBaseOf(wentBack) === 'local',
-      `${typeof emptied === 'number' ? '素の数へ畳んだ' : '畳んでいない'} / 置き直すと ${trackBaseOf(wentBack)}（もとは fraction）`,
+      '打点を全部消しても時間軸が残る（畳んだ形が軸を持つ）',
+      isStillTrack(emptied) && trackBaseOf(emptied) === 'fraction' && trackBaseOf(wentBack) === 'fraction',
+      `${JSON.stringify(emptied)} / 置き直すと ${trackBaseOf(wentBack)}`,
     );
     check(
-      '時間軸を渡せば、打点が 0 個でも保てる（画面が覚えている側から渡す）',
-      trackBaseOf(kept) === 'fraction' && trackBaseOf(wentBack) === 'local',
-      `渡す ${trackBaseOf(kept)} / 渡さない ${trackBaseOf(wentBack)}（種類の既定）`,
+      '畳んでも値が既定へ跳ねない（空の列を残す形との違い）',
+      near(sampleClipValue(image, emptied, 3, 0.5), 1.2) &&
+        near(sampleClipValue(image, { base: 'fraction', keys: [] }, 3, 0.5), 0.5),
+      `畳んだ形 ${sampleClipValue(image, emptied, 3, 0.5)} / 空の列 ${sampleClipValue(image, { base: 'fraction', keys: [] }, 3, 0.5)}`,
     );
+    check(
+      '軸を渡さなくても元の軸で置き直せる（画面が覚えておく必要が無くなった）',
+      trackBaseOf(putKeyAtTime(image, emptied, 2.5)) === 'fraction',
+    );
+    // 既定の軸（静止画なら local）は覚えない。覚えると JSON が打点を消すたびに太る。
+    const plainBase = removeKeyAt(image, { base: 'local', keys: [{ t: 1, v: 0.7 }] }, 1, 1);
+    check(
+      '既定と同じ軸は覚えない（素の数へ畳む）',
+      typeof plainBase === 'number' && plainBase === 0.7,
+      `${JSON.stringify(plainBase)}`,
+    );
+    // 打点を置く前に軸だけ決める口（`inKeys` では書く場所が無かった所）。
+    const seated = setTrackBase(image, 0.9, 'fraction');
+    check(
+      '打点が 0 個でも時間軸だけ先に選べる（setTrackBase）',
+      isStillTrack(seated) &&
+        trackBaseOf(seated) === 'fraction' &&
+        near(sampleClipValue(image, seated, 2, 0), 0.9) &&
+        trackBaseOf(putKeyAtTime(image, seated, 2.5)) === 'fraction',
+      `${JSON.stringify(seated)}`,
+    );
+    check(
+      '既定へ戻すと素の数へ畳む（覚えるものが無い）',
+      setTrackBase(image, seated, 'local') === 0.9,
+    );
+    // 軸を替えると、見た目が変わらないように打点の時刻を写し替える（画面にあった式を寄せた）
+    {
+      let worst = 0;
+      const withKeys = kenBurns(1, 1.2);
+      for (const to of ['source', 'local', 'fraction'] as TrackBase[]) {
+        const moved = setTrackBase(image, withKeys, to);
+        for (let i = 0; i <= 50; i += 1) {
+          const time = image.start + (i / 50) * image.duration;
+          worst = Math.max(
+            worst,
+            Math.abs(sampleClipValue(image, withKeys, time, 1) - sampleClipValue(image, moved, time, 1)),
+          );
+        }
+      }
+      check(
+        '時間軸を替えても、編集していなければ 1 コマも変わらない（setTrackBase の写し替え）',
+        worst <= 1e-9,
+        `最悪 ${worst.toExponential(1)}`,
+      );
+    }
+    // **読む軸と畳む軸が食い違わないこと。** `base` を省いた列は `sampleClipValue()` が
+    // `source` と読むので、畳むときも `source` として覚えなければ、保存を通した値だけが壊れる。
+    {
+      const baseless: AnimatedTrack = { keys: [{ t: 0.5, v: 0.3 }] };
+      const clips: ClipTiming[] = [
+        { kind: 'text', start: 1, duration: 4, sourceIn: 0, speed: 1 },
+        { kind: 'image', start: 1, duration: 4, sourceIn: 0, speed: 1 },
+        { kind: 'video', start: 1, duration: 4, sourceIn: 2, speed: 1 },
+      ];
+      const ok2 = clips.every((cc) => {
+        const folded = removeKeyAt(cc, baseless, 0.5, 1);
+        // 畳んで、また打点を置いたときに、読み方が変わっていないこと。
+        const again = putKeyAtTime(cc, folded, cc.start + 1, 0.4);
+        return trackBaseOf(again) === 'source';
+      });
+      check(
+        '時間軸を省いた列は、畳んでも source のまま（読む所と畳む所を食い違わせない）',
+        ok2,
+        clips.map((cc) => `${cc.kind} ${JSON.stringify(removeKeyAt(cc, baseless, 0.5, 1))}`).join(' / '),
+      );
+    }
+
+    // 壊れた形が保存から来たときに落ちないか（`base` も `v` も外から来る値）
+    {
+      const broken: AnimatedTrack[] = [
+        { base: 'fraction', v: Number.NaN },
+        { base: 'fraction', v: undefined as unknown as number },
+        { base: 'fraction', keys: [] },
+        { base: 'bogus' as unknown as TrackBase, v: 0.3 },
+      ];
+      const reads = broken.map((v) => sampleClipValue(image, v, 2, 0.6));
+      check(
+        '壊れた畳んだ形が保存から来ても、数を返す（絵を消さない）',
+        reads.every((r) => Number.isFinite(r)) &&
+          near(reads[0], 0.6) &&
+          near(reads[1], 0.6) &&
+          near(reads[2], 0.6) &&
+          near(reads[3], 0.3),
+        reads.map((r) => r.toFixed(2)).join(' / '),
+      );
+      check(
+        '値の無い畳んだ形に打点を置いても、列は壊れない',
+        keysOfTrack(putKeyAtTime(image, { base: 'fraction', v: Number.NaN }, 2, 0.5)).length === 1,
+      );
+    }
+
+    // 保存・複製・値だけのコピーで軸が付いてくるか（`hold-probe.mjs` の 1 段目の要点）
+    {
+      const roundTrip = JSON.parse(JSON.stringify(emptied)) as AnimatedTrack;
+      const other: ClipTiming = { kind: 'image', start: 3, duration: 7.5, sourceIn: 0, speed: 1 };
+      check(
+        '畳んだ形は保存を通り、値だけ別のクリップへ写しても軸が付いてくる',
+        trackBaseOf(roundTrip) === 'fraction' &&
+          trackBaseOf(putKeyAtTime(other, roundTrip, 5)) === 'fraction',
+      );
+    }
     // 消えるとどれだけずれるか。尺 5 秒の静止画で、割合 1.0 の打点は尻（5.00s）に立つが、
     // 秒として読まれると 1.00s に立つ。
     const drift =
@@ -557,6 +673,38 @@ export function runSelfTest(): TestResult[] {
       '時間軸を替えても、編集していなければ 1 コマも変わらない（画面の写し替え）',
       worst <= 1e-9,
       `最悪 ${worst.toExponential(1)}`,
+    );
+  }
+
+  // 測る側（`hold.ts`）の `stillValue` が、持っていく形（`track.ts`）と同じ道を通るか。
+  // **ここが食い違うと、`hold-probe.mjs` の表は「本体がどうなるか」を語れない。**
+  {
+    let worstRead = 0;
+    let sameShape = true;
+    for (const s of OFF_DEFAULTS) {
+      const slot = slotFor('stillValue', s);
+      const track: AnimatedTrack = { base: s.want, keys: keysIn(slot.value) };
+      const frames = Math.round(slot.clip.duration * 30);
+      for (let i = 0; i <= frames; i += 1) {
+        const time = slot.clip.start + Math.min(slot.clip.duration, i / 30);
+        worstRead = Math.max(
+          worstRead,
+          Math.abs(
+            readAt('stillValue', slot, time, s.fallback) -
+              sampleClipValue(slot.clip, track, time, s.fallback),
+          ),
+        );
+      }
+      // 打点を全部消したあとの形も、両方の道で同じであること。
+      const byHold = clearAll('stillValue', slot).value;
+      let byTrack: AnimatedTrack = track;
+      for (const k of keysIn(slot.value)) byTrack = removeKeyAt(slot.clip, byTrack, k.t, s.fallback);
+      if (JSON.stringify(byHold) !== JSON.stringify(byTrack)) sameShape = false;
+    }
+    check(
+      '測る側の stillValue は、持っていく形と 1 コマも違わない（物差しを 2 本置かないため）',
+      worstRead <= 1e-9 && sameShape,
+      `読みの最悪 ${worstRead.toExponential(1)} / 畳んだ形 ${sameShape ? '一致' : '**食い違う**'}`,
     );
   }
 
