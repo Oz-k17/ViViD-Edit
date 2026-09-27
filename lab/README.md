@@ -19,6 +19,7 @@
 | [`thumbnail/`](./thumbnail/) | 表紙（サムネイル）候補の自動抽出 | `npm run lab:thumb` |
 | [`reframe/`](./reframe/) | 自動リフレーム（縦型へ切り出す窓を被写体に合わせて動かす） | `npm run lab:reframe` |
 | [`export-cost/`](./export-cost/) | 書き出しの費用（映像も音も、どこで時間とメモリを使っているか） | `npm run lab:export` |
+| [`keyframe/`](./keyframe/) | 時間で変化する値（キーフレーム）の持ち方 | `npm run lab:keyframe` |
 
 ```
 npm run lab            # 開発サーバで開く
@@ -63,15 +64,19 @@ npm run lab:reframe:uitest  # 自動リフレームの画面まで通して確�
 
 npm run lab:export          # 書き出しの費用を測る（数え上げ → 実測の 2 段）
 npm run lab:export:audio    # 音の側の先払い（一括ミックス 対 窓に割る）を測る
+
+npm run lab:keyframe:probe  # 打点の時刻を「何の秒」で持つか、4 通りを編集に当てて測る
+npm run lab:keyframe        # 打点を持つと 1 コマあたりどれだけ高くつくかを測る
 ```
 
-`export-cost` だけは**触る画面を持たない**（`index.html` は実測を差し込むための空き地）。
+`export-cost` は**触る画面を持たない**（`index.html` は実測を差し込むための空き地）。
 書き出しはデコードもエンコードも WebCodecs なので Node 側に測る相手が無く、
 ブラウザを使うが人は触らない、という形になっている。
+`keyframe` は画面そのものがまだ無い（計算と測る段だけ。打点をつまむ画面は次の回）。
 
 `lab:test` は**すべての試作の検算をまとめて走らせる**（1 つだけ緑にして終わらないため）。
 `lab:uitest` も同じで、**画面を持っている試作ぜんぶ**（`auto-cut`・`beat`・`scene-cut`・`thumbnail`・`reframe`）を
-続けて通します。
+続けて通します（`export-cost`・`keyframe` は画面が無いので入っていません）。
 
 確かめ方は 4 段に分けてあります。役割が違うので、どれか 1 つで済ませないでください。
 

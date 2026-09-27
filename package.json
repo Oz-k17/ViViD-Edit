@@ -12,8 +12,8 @@
     "bundle": "npm run build && npm run lab:build && node scripts/sync-bundles.mjs",
     "lab": "vite lab/auto-cut",
     "lab:build": "vite build lab/auto-cut",
-    "lab:typecheck": "tsc -p lab/auto-cut --pretty false && tsc -p lab/scene-cut --pretty false && tsc -p lab/beat --pretty false && tsc -p lab/thumbnail --pretty false && tsc -p lab/reframe --pretty false && tsc -p lab/export-cost --pretty false",
-    "lab:test": "node lab/auto-cut/selftest.mjs && node lab/scene-cut/selftest.mjs && node lab/beat/selftest.mjs && node lab/thumbnail/selftest.mjs && node lab/reframe/selftest.mjs && node lab/export-cost/selftest.mjs",
+    "lab:typecheck": "tsc -p lab/auto-cut --pretty false && tsc -p lab/scene-cut --pretty false && tsc -p lab/beat --pretty false && tsc -p lab/thumbnail --pretty false && tsc -p lab/reframe --pretty false && tsc -p lab/export-cost --pretty false && tsc -p lab/keyframe --pretty false",
+    "lab:test": "node lab/auto-cut/selftest.mjs && node lab/scene-cut/selftest.mjs && node lab/beat/selftest.mjs && node lab/thumbnail/selftest.mjs && node lab/reframe/selftest.mjs && node lab/export-cost/selftest.mjs && node lab/keyframe/selftest.mjs",
     "lab:fixtures": "node lab/fixtures/make-audio.mjs",
     "lab:bench": "node lab/auto-cut/bench.mjs",
     "lab:loudness": "node lab/auto-cut/loudness.mjs",
@@ -52,6 +52,8 @@
     "lab:reframe:decimate": "node lab/reframe/decimate-probe.mjs",
     "lab:reframe:gate": "node lab/reframe/gate-probe.mjs",
     "lab:export": "node lab/export-cost/bench.mjs",
+    "lab:keyframe": "node lab/keyframe/bench.mjs",
+    "lab:keyframe:probe": "node lab/keyframe/probe.mjs",
     "lab:export:audio": "node lab/export-cost/audio.mjs"
   },
   "dependencies": {
