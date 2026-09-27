@@ -1,0 +1,109 @@
+/*
+ * キーフレームの画面の見た目。
+ *
+ * **土台は `auto-cut` のものを借りている。** ほかの 5 つの画面と同じ理由で、
+ * 試作ごとに見た目を作り直すと、直したいのは判定なのに CSS を 6 か所で直すことになる。
+ * ここに置くのは、この画面にしか無い差分だけ。
+ */
+
+@import '../../auto-cut/src/style.css';
+
+/* 凡例の色見本。曲線に重ねる色と同じにしてある。 */
+.swatch.curve {
+  background: #d8b87a;
+}
+
+.swatch.key {
+  background: #b7d0a8;
+}
+
+.swatch.outside {
+  background: rgba(164, 112, 122, 0.85);
+}
+
+.swatch.clip {
+  background: rgba(183, 208, 168, 0.12);
+  border: 1px solid rgba(183, 208, 168, 0.5);
+}
+
+.swatch.play {
+  background: rgba(232, 233, 234, 0.6);
+}
+
+/*
+ * 曲線のキャンバスは掴む場所なので、指で触っても画面がスクロールしないようにしておく。
+ * （`touch-action` を外すと、縦に掴んだ瞬間にページが動いて打点が置けない）
+ */
+#kf-curve {
+  touch-action: none;
+  cursor: crosshair;
+}
+
+/* 出ている絵と、その内訳を横に並べる。 */
+.preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  align-items: flex-start;
+}
+
+.preview .frame {
+  flex: 0 0 auto;
+  background: #000;
+  border: 1px solid rgba(232, 233, 234, 0.18);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.preview .frame canvas {
+  display: block;
+  /* 市松模様がにじまないように。合成の絵は等倍で見せる。 */
+  image-rendering: auto;
+}
+
+.preview-side {
+  flex: 1 1 300px;
+  min-width: 260px;
+}
+
+.small {
+  font-size: 0.82rem;
+  margin-top: 6px;
+}
+
+.row input[type='range'] {
+  flex: 1 1 200px;
+}
+
+/* 見出しの中に置く選択（「繋ぎ方」）。`.controls` の縦並びとは別扱い。 */
+label.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.86rem;
+  color: #9aa0a6;
+}
+
+label.inline select {
+  margin: 0;
+}
+
+.controls label.check {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.controls label.check small {
+  flex-basis: 100%;
+}
+
+/* ずれの表で、0 と 0 でないものを見分けられるように。 */
+.stats dd.hit {
+  color: #b7d0a8;
+}
+
+.stats dd.miss {
+  color: #d49098;
+}

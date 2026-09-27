@@ -33,14 +33,18 @@ import {
   defaultTrackBase,
   kenBurns,
   keyTimeIn,
+  keyTimeInUnclamped,
   putKeyAtTime,
   removeKeyAt,
   sampleClipValue,
   sourceTimeAt,
+  timeAtKeyTime,
   trackBaseOf,
   type AnimatedTrack,
   type ClipTiming,
+  type TrackBase,
 } from './track.ts';
+import { composeAt } from './compose.ts';
 import { applyOp, editOps, TIME_BASES, type LabClip, type TimeBase } from './timebase.ts';
 import { clipInBase, scoreClip, SCENARIOS, EXACT } from './scenarios.ts';
 
@@ -403,6 +407,158 @@ export function runSelfTest(): TestResult[] {
     sameBefore <= EXACT,
     `最悪 ${sameBefore.toExponential(1)}`,
   );
+
+
+  // ---------------------------------------------------------------------------
+  // 4 段目: **画面のために要った所**（2026-09-27 の 2 回目に足した）
+  //
+  // 読むだけなら片道（タイムラインの秒 → 打点の秒）で足りるので、ここは
+  // 「つまむ側」で初めて要る。**画面にしか関係が無い計算も、判定と同じ所に置いて検算する**
+  // ——画面の中に書くと `npm run lab:test` の外へ落ち、壊れても気づけない。
+  // ---------------------------------------------------------------------------
+
+  // 逆向きの写しは、クリップの外でも往復する（つまんだ先が飛ばないことの根拠）
+  {
+    const cases: { base: TrackBase; clip: ClipTiming }[] = [
+      { base: 'source', clip: clip({ start: 2, duration: 6, sourceIn: 3, speed: 1 }) },
+      { base: 'source', clip: clip({ start: 1, duration: 5, sourceIn: 4, speed: 2 }) },
+      { base: 'local', clip: clip({ kind: 'text', start: 3, duration: 4, sourceIn: 0, speed: 1 }) },
+      { base: 'fraction', clip: clip({ kind: 'image', start: 0, duration: 5, sourceIn: 0, speed: 1 }) },
+    ];
+    let worst = 0;
+    let worstAt = '';
+    for (const c of cases) {
+      // クリップの外（頭より 2 秒前・尻より 2 秒後ろ）まで含めて往復させる
+      for (let time = c.clip.start - 2; time <= c.clip.start + c.clip.duration + 2; time += 0.25) {
+        const t = keyTimeInUnclamped(c.base, c.clip, time);
+        const back = timeAtKeyTime(c.base, c.clip, t);
+        if (Math.abs(back - time) > worst) {
+          worst = Math.abs(back - time);
+          worstAt = `${c.base}/${time.toFixed(2)}s`;
+        }
+      }
+    }
+    check(
+      '打点の秒 ↔ タイムラインの秒が、クリップの外でも往復する',
+      worst <= 1e-9,
+      worst <= 1e-9 ? `4 通り × 頭の前後 2 秒まで` : `最悪 ${worst.toExponential(1)} @ ${worstAt}`,
+    );
+  }
+
+  // 丸めた写し（本体の `sourceTimeAt`）では、頭より前をつまめない
+  {
+    const c = clip({ start: 2, duration: 5, sourceIn: 3, speed: 1 });
+    const before = c.start - 1;
+    const clamped = keyTimeIn('source', c, before);
+    const raw = keyTimeInUnclamped('source', c, before);
+    check(
+      '丸めた写しでは、クリップの頭より前に打点を置けない（つまむ側が丸めない理由）',
+      Math.abs(clamped - c.sourceIn) <= 1e-9 && Math.abs(raw - (c.sourceIn - 1)) <= 1e-9,
+      `1 秒前を指すと 丸め ${clamped.toFixed(2)}s（頭に張り付く） / 丸めない ${raw.toFixed(2)}s`,
+    );
+  }
+
+  // 時間軸は打点と一緒に持っているので、打点が 0 個になると消える
+  {
+    const kb = kenBurns(1, 1.2);
+    const image: ClipTiming = { kind: 'image', start: 0, duration: 5, sourceIn: 0, speed: 1 };
+    const emptied = removeKeyAt(removeKeyAt(kb, 0, 1), 1, 1);
+    const wentBack = putKeyAtTime(image, emptied, 2.5);
+    const kept = putKeyAtTime(image, emptied, 2.5, undefined, undefined, 'fraction');
+    check(
+      '打点を全部消すと時間軸も消える（素の数へ畳むため）',
+      typeof emptied === 'number' && trackBaseOf(wentBack) === 'local',
+      `${typeof emptied === 'number' ? '素の数へ畳んだ' : '畳んでいない'} / 置き直すと ${trackBaseOf(wentBack)}（もとは fraction）`,
+    );
+    check(
+      '時間軸を渡せば、打点が 0 個でも保てる（画面が覚えている側から渡す）',
+      trackBaseOf(kept) === 'fraction' && trackBaseOf(wentBack) === 'local',
+      `渡す ${trackBaseOf(kept)} / 渡さない ${trackBaseOf(wentBack)}（種類の既定）`,
+    );
+    // 消えるとどれだけずれるか。尺 5 秒の静止画で、割合 1.0 の打点は尻（5.00s）に立つが、
+    // 秒として読まれると 1.00s に立つ。
+    const drift =
+      timeAtKeyTime('fraction', image, 1) - timeAtKeyTime('local', image, 1);
+    check(
+      '時間軸が既定へ戻ると、同じ打点の立つ所が動く（消えたときの被害）',
+      Math.abs(drift - 4) <= 1e-9,
+      `割合 1.0 の打点が 5.00s → 1.00s（${drift.toFixed(2)} 秒ずれる）`,
+    );
+  }
+
+  // 絵にする式（本体の写し）。値が合っていても、差す場所が違えば絵だけが変わる
+  {
+    const c = { kind: 'video' as const, start: 0, duration: 4, sourceIn: 0, speed: 1, fadeIn: 0, fadeOut: 0 };
+    const canvas = { width: 270, height: 480 };
+    const media = { width: 1280, height: 720 };
+    const plain = composeAt(c, { scale: 1, x: 0, y: 0, opacity: 1 }, 1, canvas, media);
+    // cover なので、9:16 の画角に 16:9 を入れると**縦がちょうど埋まり、横がはみ出す**
+    check(
+      '拡大 1 倍・位置 0 では、画角の真ん中に cover で収まる（本体の fitRect と同じ）',
+      near(plain.rect.h, canvas.height) &&
+        plain.rect.w > canvas.width &&
+        near(plain.rect.x + plain.rect.w / 2, canvas.width / 2) &&
+        near(plain.rect.y + plain.rect.h / 2, canvas.height / 2),
+      `${plain.rect.w.toFixed(1)}×${plain.rect.h.toFixed(1)} @ ${plain.rect.x.toFixed(1)},${plain.rect.y.toFixed(1)}`,
+    );
+    const zoomed = composeAt(c, { scale: 2, x: 0, y: 0, opacity: 1 }, 1, canvas, media);
+    check(
+      '拡大は真ん中から効く（幅が 2 倍・中心は動かない）',
+      Math.abs(zoomed.rect.w - plain.rect.w * 2) < 1e-9 &&
+        Math.abs(zoomed.rect.x + zoomed.rect.w / 2 - canvas.width / 2) < 1e-9,
+      `幅 ${plain.rect.w.toFixed(1)} → ${zoomed.rect.w.toFixed(1)}`,
+    );
+    const moved = composeAt(c, { scale: 1, x: 0.25, y: -0.5, opacity: 1 }, 1, canvas, media);
+    check(
+      '位置は画角に対する割合（本体と同じ単位）',
+      Math.abs(moved.rect.x - (plain.rect.x + 0.25 * canvas.width)) < 1e-9 &&
+        Math.abs(moved.rect.y - (plain.rect.y - 0.5 * canvas.height)) < 1e-9,
+      `x +0.25 で ${(moved.rect.x - plain.rect.x).toFixed(1)}px / y -0.5 で ${(moved.rect.y - plain.rect.y).toFixed(1)}px`,
+    );
+  }
+
+  // 打点とフェードは掛け算で重なる（どちらを打点で置き換えるかを決める前の確かめ）
+  {
+    const c = { kind: 'video' as const, start: 0, duration: 4, sourceIn: 0, speed: 1, fadeIn: 1, fadeOut: 0 };
+    const half: AnimatedTrack = { base: 'local', keys: [{ t: 0, v: 0.5 }] };
+    const withFade = composeAt(c, { scale: 1, x: 0, y: 0, opacity: half }, 0.5, { width: 270, height: 480 }, { width: 1280, height: 720 });
+    const without = composeAt(c, { scale: 1, x: 0, y: 0, opacity: half }, 0.5, { width: 270, height: 480 }, { width: 1280, height: 720 }, false);
+    check(
+      '打点 × フェードは掛け算（0.5 × 0.5 = 0.25）',
+      near(withFade.alpha, 0.25) && near(without.alpha, 0.5) && near(withFade.fade, 0.5),
+      `掛ける ${withFade.alpha.toFixed(3)} / 掛けない ${without.alpha.toFixed(3)}`,
+    );
+  }
+
+  // 画面が時間軸を替えるときの写し替え（見た目を保つ）
+  {
+    let worst = 0;
+    for (const s of SCENARIOS) {
+      const from = clipInBase(s, 'source');
+      for (const to of ['source', 'local', 'fraction'] as TrackBase[]) {
+        // 打点をタイムラインの秒へ戻し、別の時間軸へ入れ直す（画面の `kf-base` がやっていること）
+        const timeline = keysOf(from.value).map((k) => ({ ...k, at: timeAtKeyTime('source', from, k.t) }));
+        const moved: LabClip = {
+          ...from,
+          value: {
+            keys: normalizeKeys(timeline.map((k) => ({ t: keyTimeInUnclamped(to, from, k.at), v: k.v, ease: k.ease }))),
+          },
+        };
+        const frames = Math.round(moved.duration * 30);
+        for (let i = 0; i <= frames; i += 1) {
+          const time = moved.start + Math.min(moved.duration, i / 30);
+          const a = sampleAnimated(from.value, keyTimeIn('source', from, time), s.fallback);
+          const b = sampleAnimated(moved.value, keyTimeIn(to, moved, time), s.fallback);
+          worst = Math.max(worst, Math.abs(a - b));
+        }
+      }
+    }
+    check(
+      '時間軸を替えても、編集していなければ 1 コマも変わらない（画面の写し替え）',
+      worst <= 1e-9,
+      `最悪 ${worst.toExponential(1)}`,
+    );
+  }
 
   return [...results];
 }

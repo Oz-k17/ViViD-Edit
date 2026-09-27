@@ -19,7 +19,7 @@
 | [`thumbnail/`](./thumbnail/) | 表紙（サムネイル）候補の自動抽出 | `npm run lab:thumb` |
 | [`reframe/`](./reframe/) | 自動リフレーム（縦型へ切り出す窓を被写体に合わせて動かす） | `npm run lab:reframe` |
 | [`export-cost/`](./export-cost/) | 書き出しの費用（映像も音も、どこで時間とメモリを使っているか） | `npm run lab:export` |
-| [`keyframe/`](./keyframe/) | 時間で変化する値（キーフレーム）の持ち方 | `npm run lab:keyframe` |
+| [`keyframe/`](./keyframe/) | 時間で変化する値（キーフレーム）の持ち方 | `npm run lab:keyframe:demo` |
 
 ```
 npm run lab            # 開発サーバで開く
@@ -67,16 +67,20 @@ npm run lab:export:audio    # 音の側の先払い（一括ミックス 対 窓
 
 npm run lab:keyframe:probe  # 打点の時刻を「何の秒」で持つか、4 通りを編集に当てて測る
 npm run lab:keyframe        # 打点を持つと 1 コマあたりどれだけ高くつくかを測る
+npm run lab:keyframe:demo   # キーフレームの画面を開く（打点を置く・つまむ・繋ぎ方を選ぶ）
+npm run lab:keyframe:uitest # キーフレームの画面まで通して確かめる（lab:uitest からも走る）
 ```
 
 `export-cost` は**触る画面を持たない**（`index.html` は実測を差し込むための空き地）。
 書き出しはデコードもエンコードも WebCodecs なので Node 側に測る相手が無く、
 ブラウザを使うが人は触らない、という形になっている。
-`keyframe` は画面そのものがまだ無い（計算と測る段だけ。打点をつまむ画面は次の回）。
+`keyframe` の画面は 2026-09-27 の 2 回目に入った（打点を置く・つまむ・繋ぎ方を選ぶ）。
+**この試作は素材を読まない**——打点は秒と値しか見ないので、絵は `<video>` / `<img>` に
+そのまま出させるだけで足り、コマの列に起こす必要が無い。
 
 `lab:test` は**すべての試作の検算をまとめて走らせる**（1 つだけ緑にして終わらないため）。
-`lab:uitest` も同じで、**画面を持っている試作ぜんぶ**（`auto-cut`・`beat`・`scene-cut`・`thumbnail`・`reframe`）を
-続けて通します（`export-cost`・`keyframe` は画面が無いので入っていません）。
+`lab:uitest` も同じで、**画面を持っている試作ぜんぶ**（`auto-cut`・`beat`・`scene-cut`・`thumbnail`・
+`reframe`・`keyframe`）を続けて通します（`export-cost` は触る画面が無いので入っていません）。
 
 確かめ方は 4 段に分けてあります。役割が違うので、どれか 1 つで済ませないでください。
 

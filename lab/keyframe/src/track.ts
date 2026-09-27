@@ -114,11 +114,20 @@ export function putKeyAtTime(
   time: number,
   next?: number,
   ease?: Ease,
+  /**
+   * 打点が 1 つも無いときに使う時間軸。
+   *
+   * **画面を作って要った引数**（2026-09-27 の 2 回目）。時間軸は値と一緒に持っているので、
+   * **打点が 0 個の値には時間軸が残っていない**——`removeKeyAt()` が最後の打点を消すと
+   * 素の数へ畳むため、そこで時間軸ごと消える。渡さなければ種類の既定へ戻る（前のままの振る舞い）。
+   * 既定でない時間軸を人に選ばせるなら、**打点とは別の場所に覚えておく側が渡す**必要がある。
+   */
+  wantBase?: TrackBase,
 ): AnimatedTrack {
   // **すでに打点を持っているなら、その時間軸を動かさない。**
   // 種類の既定を当てにいくと、テロップに `source` で打点を置いていた値が
   // 2 つ目を足した瞬間に `local` として読み直され、1 つ目の打点だけ場所が飛ぶ。
-  const base = isKeyedTrack(value) ? trackBaseOf(value) : defaultTrackBase(clip.kind);
+  const base = isKeyedTrack(value) ? trackBaseOf(value) : (wantBase ?? defaultTrackBase(clip.kind));
   const keys = isKeyedTrack(value) ? value.keys : [];
   const v = next ?? sampleClipValue(clip, value, time, typeof value === 'number' ? value : 0);
   const t = keyTimeIn(base, clip, time);
@@ -157,4 +166,37 @@ function lastValueOf(value: AnimatedTrack, fallback: number): number {
  */
 export function kenBurns(from = 1, to = 1.2): AnimatedTrack {
   return { base: 'fraction', keys: normalizeKeys([{ t: 0, v: from, ease: 'easeInOut' }, { t: 1, v: to }]) };
+}
+
+/**
+ * 打点の時刻 → タイムラインの時刻（`keyTimeIn()` の**逆向き**）。
+ *
+ * **画面を作って初めて要ると分かった所。** 読むだけなら片道（タイムラインの秒 → 打点の秒）で
+ * 足りるので、2026-09-27 の測定にも本体の `renderer.ts` へ差す形にも逆は出てこない。
+ * ところが打点を**描く / つまむ**には逆が要る——「この打点はキャンバスのどこに立つのか」が
+ * 分からないと、点も曲線も置けない。
+ *
+ * `source` では速さで割る。速さ 0 は本体が作らせないが、**保存した JSON から来る値**なので、
+ * 0 のときはクリップの頭へ落とす（`Infinity` を返して描画ごと消さないため）。
+ */
+export function timeAtKeyTime(base: TrackBase, clip: ClipTiming, t: number): number {
+  if (base === 'local') return clip.start + t;
+  if (base === 'fraction') return clip.start + t * clip.duration;
+  const speed = clip.speed || 1;
+  return speed > 0 ? clip.start + (t - clip.sourceIn) / speed : clip.start;
+}
+
+/**
+ * `keyTimeIn()` の、**クリップの頭で丸めない版**（つまむとき用）。
+ *
+ * 本体の `sourceTimeAt()` は `Math.max(0, time - start)` で頭を丸めている。
+ * 読む側はクリップの外を読まないので丸めて困らないが、**つまむ側は丸めると壊れる**——
+ * 頭より前に居る打点（`video-fade-in` を詰めた状態がそれ）を掴むと、
+ * 丸めのせいで掴んだ先が `sourceIn` に張り付き、離した瞬間に曲線ごと飛ぶ。
+ * **「刈らない」と決めた打点は、必ずこの外側に居る**ので、丸めた式では触れない。
+ */
+export function keyTimeInUnclamped(base: TrackBase, clip: ClipTiming, time: number): number {
+  if (base === 'local') return time - clip.start;
+  if (base === 'fraction') return clip.duration > 0 ? (time - clip.start) / clip.duration : 0;
+  return clip.sourceIn + (time - clip.start) * (clip.speed || 1);
 }

@@ -25,7 +25,7 @@
  * ここがこの測定の本体。
  */
 
-const { SCENARIOS, clipInBase, intendedValue, scoreClip, EXACT } = await import('./src/scenarios.ts');
+const { SCENARIOS, clipInBase, intendedValue, scoreClip, worstError, EXACT } = await import('./src/scenarios.ts');
 const { applyOp, editOps, keyTimeAt, rebaseSites, TIME_BASES } = await import('./src/timebase.ts');
 const { sampleAnimated } = await import('./src/value.ts');
 
@@ -44,15 +44,13 @@ const opsFor = (s) =>
     rippleBy: s.edits.rippleBy,
   });
 
-/** 1 つの（素材・時間軸・方針・操作）での最悪のずれ。 */
-function worstError(s, base, policy, op) {
-  let worst = 0;
-  for (const after of applyOp(op, base, clipInBase(s, base), policy)) {
-    if (after.duration <= 0) continue;
-    worst = Math.max(worst, scoreClip(s, base, after, FPS).max);
-  }
-  return worst;
-}
+/**
+ * 1 つの（素材・時間軸・方針・操作）での最悪のずれ。
+ *
+ * **式は `scenarios.ts` に置いてある**（画面も同じものを呼ぶ）。ここは引数の順を
+ * この表の読み順（素材 → 時間軸 → 方針 → 操作）に合わせているだけ。
+ */
+const worstErrorFor = (s, base, policy, op) => worstError(s, base, op, policy, FPS);
 
 // --- 1. 編集前は 4 通りとも同じか ------------------------------------------------
 console.log('## 1. 編集前（同じ見た目から作った打点が、4 通りとも同じ値を返すか）\n');
@@ -89,7 +87,7 @@ for (const policy of ['follow', 'raw']) {
       let exact = 0;
       for (const s of SCENARIOS) {
         const op = opsFor(s).find((o) => o.name === name);
-        const err = worstError(s, base, policy, op);
+        const err = worstErrorFor(s, base, policy, op);
         if (err <= EXACT) exact += 1;
         max = Math.max(max, err);
       }
@@ -106,7 +104,7 @@ for (const policy of ['follow', 'raw']) {
       let total = 0;
       for (const s of targets) {
         for (const op of opsFor(s)) {
-          if (worstError(s, base, policy, op) <= EXACT) exact += 1;
+          if (worstErrorFor(s, base, policy, op) <= EXACT) exact += 1;
           total += 1;
         }
       }
@@ -124,7 +122,7 @@ for (const s of SCENARIOS) {
   const ops = opsFor(s);
   console.log(`    ${pad('', 10)}${ops.map((o) => pad(o.name, 12)).join('')}`);
   for (const base of TIME_BASES) {
-    const cells = ops.map((op) => pad(num(worstError(s, base, 'raw', op), 3), 12));
+    const cells = ops.map((op) => pad(num(worstErrorFor(s, base, 'raw', op), 3), 12));
     console.log(`    ${pad(base, 10)}${cells.join('')}`);
   }
   console.log('');
@@ -182,7 +180,7 @@ for (const intent of INTENTS) {
     let max = 0;
     for (const s of targets) {
       for (const op of opsFor(s)) {
-        const err = worstError(s, base, 'raw', op);
+        const err = worstErrorFor(s, base, 'raw', op);
         if (err <= EXACT) exact += 1;
         max = Math.max(max, err);
         total += 1;

@@ -25,7 +25,17 @@
  */
 
 import { normalizeKeys, sampleAnimated, type Animated, type Ease } from './value.ts';
-import { keyTimeAt, sourceTimeAt, TIME_BASES, type ClipKind, type LabClip, type TimeBase } from './timebase.ts';
+import {
+  applyOp,
+  keyTimeAt,
+  sourceTimeAt,
+  TIME_BASES,
+  type ClipKind,
+  type EditOp,
+  type LabClip,
+  type RebasePolicy,
+  type TimeBase,
+} from './timebase.ts';
 
 export type Intent = 'content' | 'head' | 'stretch';
 
@@ -183,33 +193,56 @@ export function clipInBase(s: Scenario, base: TimeBase): LabClip {
 }
 
 /**
+ * **期待の土台**——編集前のクリップと、そのとき「タイムラインの秒」で書いてあった曲線。
+ *
+ * 素材（`Scenario`）から作るのが本筋だが、**画面から人が置いた曲線も同じ物差しに載せたい**
+ * ので、素材ではなくこの 4 つを受ける形に開いてある（2026-09-27 の 2 回目に画面を作って要った）。
+ * 物差しを 2 本書かないのは `reframe/score.mjs` と同じ立場で、
+ * **食い違ったときに「判定が変わったのか物差しが変わったのか」を読めなくしないため。**
+ */
+export interface Intended {
+  before: LabClip;
+  /** 編集前のタイムラインの秒で読める曲線。 */
+  authored: Animated;
+  intent: Intent;
+  fallback: number;
+}
+
+export function intendedOf(s: Scenario): Intended {
+  return { before: baseClip(s), authored: authoredCurve(s), intent: s.intent, fallback: s.fallback };
+}
+
+/**
  * 期待する値。編集後のクリップと、その上のタイムラインの時刻から決める。
  *
  * どれも**編集前に書いた曲線を、期待の形で引き直しただけ**。
  * `content` は素材の秒、`head` はクリップの頭からの秒、`stretch` は尺の割合で引く。
  */
-export function intendedValue(s: Scenario, after: LabClip, time: number): number {
-  const curve = authoredCurve(s);
-  const before = baseClip(s);
-  switch (s.intent) {
+export function intendedValueOf(want: Intended, after: LabClip, time: number): number {
+  const { before, authored: curve } = want;
+  switch (want.intent) {
     case 'content': {
       // 出ている素材の秒 → 編集前ならそれが何秒に見えていたか → その時刻の値
       const source = sourceTimeAt(after, time);
       const at = before.start + (source - before.sourceIn) / (before.speed || 1);
-      return sampleAnimated(curve, at, s.fallback);
+      return sampleAnimated(curve, at, want.fallback);
     }
     case 'head':
-      return sampleAnimated(curve, before.start + (time - after.start), s.fallback);
+      return sampleAnimated(curve, before.start + (time - after.start), want.fallback);
     case 'stretch': {
       const u = after.duration > 0 ? (time - after.start) / after.duration : 0;
-      return sampleAnimated(curve, before.start + u * before.duration, s.fallback);
+      return sampleAnimated(curve, before.start + u * before.duration, want.fallback);
     }
   }
 }
 
+export function intendedValue(s: Scenario, after: LabClip, time: number): number {
+  return intendedValueOf(intendedOf(s), after, time);
+}
+
 /** 編集後のクリップを 1 コマずつ見て、期待とのずれの最大・平均を出す。 */
-export function scoreClip(
-  s: Scenario,
+export function scoreAgainst(
+  want: Intended,
   base: TimeBase,
   after: LabClip,
   fps = 30,
@@ -220,14 +253,47 @@ export function scoreClip(
   const frames = Math.max(1, Math.round(after.duration * fps));
   for (let i = 0; i <= frames; i += 1) {
     const time = after.start + Math.min(after.duration, i / fps);
-    const got = sampleAnimated(after.value, keyTimeAt(base, after, time), s.fallback);
-    const want = intendedValue(s, after, time);
-    const err = Math.abs(got - want);
+    const got = sampleAnimated(after.value, keyTimeAt(base, after, time), want.fallback);
+    const err = Math.abs(got - intendedValueOf(want, after, time));
     if (err > max) max = err;
     sum += err;
     n += 1;
   }
   return { max, mean: n > 0 ? sum / n : 0, samples: n };
+}
+
+export function scoreClip(
+  s: Scenario,
+  base: TimeBase,
+  after: LabClip,
+  fps = 30,
+): { max: number; mean: number; samples: number } {
+  return scoreAgainst(intendedOf(s), base, after, fps);
+}
+
+/**
+ * 1 つの（素材・時間軸・方針・操作）での**最悪のずれ**。
+ *
+ * `probe.mjs` と画面の両方がここを呼ぶ。**測る式を 2 本置かないため**で、
+ * 置いてしまうと「画面とコマンドラインで数字が違う」ときに
+ * 判定が違うのか物差しが違うのかを切り分けられない（画面を足した 2026-09-27 の 2 回目に寄せた）。
+ *
+ * 割ると 2 本返るので**両方を見て悪いほう**を採る。尺が 0 になった側は見ない
+ * （本体の最小の尺で止まるので実際には出ないが、引数を手で変えると出る）。
+ */
+export function worstError(
+  s: Scenario,
+  base: TimeBase,
+  op: EditOp,
+  policy: RebasePolicy,
+  fps = 30,
+): number {
+  let worst = 0;
+  for (const after of applyOp(op, base, clipInBase(s, base), policy)) {
+    if (after.duration <= 0) continue;
+    worst = Math.max(worst, scoreClip(s, base, after, fps).max);
+  }
+  return worst;
 }
 
 export const EXACT = 1e-9;

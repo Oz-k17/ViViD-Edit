@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ViViD Edit ラボ — キーフレーム（打点をつまむ）</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23b7d0a8'/%3E%3Cpath d='M2 11.5 L6 4.5 L10 9 L14 6' fill='none' stroke='%23101114' stroke-width='1.6'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <header class="head">
+      <h1>キーフレーム（クリップの中で、値を時間とともに動かす）</h1>
+      <p>
+        拡大・位置・不透明度を、クリップの中で打点（キーフレーム）で動かします。
+        <strong>この画面の本題は「編集しても打点が期待どおりに付いてくるか」</strong>で、
+        曲線の引き方そのものはどの持ち方でも同じです（測った表は
+        <code>lab/keyframe/README.md</code>）。処理はすべてこのページの中で完結し、どこにも送信しません。
+      </p>
+    </header>
+
+    <main>
+      <section class="card">
+        <h2>1. 素材とクリップ</h2>
+        <p class="muted">
+          並んでいるのは <code>lab:keyframe:probe</code> が測っているのと<strong>同じ素材 6 本</strong>です。
+          打点も、そこに書いてある曲線をそのまま入れてあります
+          （<strong>画面だけ別の素材で触ると、出た数字を表と突き合わせられなくなる</strong>ため）。
+        </p>
+
+        <div class="controls">
+          <label>
+            素材
+            <select id="kf-scenario"></select>
+            <small id="kf-note"></small>
+          </label>
+          <label>
+            打点の時刻を「何の秒」で持つか（時間軸）
+            <select id="kf-base">
+              <option value="source">source ・ 素材の秒（映像・音の既定）</option>
+              <option value="local">local ・ クリップの頭からの秒（テロップ・静止画の既定）</option>
+              <option value="fraction">fraction ・ 尺の割合（ケンバーンズのような型が名乗る）</option>
+            </select>
+            <small>
+              <strong>既定は素材の種類で決まります</strong>（素材を選び直すと戻ります）。
+              ここを既定から外すと、下の「4.」のずれが出ます——それがこの試作の結論そのものです
+            </small>
+          </label>
+          <label>
+            この値を何に効かせるか
+            <select id="kf-value">
+              <option value="scale">scale ・ 拡大</option>
+              <option value="opacity">opacity ・ 不透明度</option>
+            </select>
+            <small>
+              動かすのは<strong>この 1 本だけ</strong>。残りの 3 つ（<code>x</code>・<code>y</code>・
+              もう片方）は素の数のままで、読むときに即返る道（<code>sampleClipValue</code> の頭の行）を通ります。
+              位置（<code>x</code>・<code>y</code>）を並べていないのは、素材が書いている数
+              （0〜1.35）が位置としては画面の外になるためで、<strong>持ち方は同じ</strong>です
+            </small>
+          </label>
+          <label>
+            素材の絵を差し替える（任意）
+            <input type="file" id="kf-file" accept="video/*,image/*" />
+            <small>
+              選ばなければ<strong>合成の絵</strong>（升目と、そのコマの素材の秒）を出します。
+              動画を選ぶと、<code>&lt;video&gt;</code> の時刻を<strong>素材の秒</strong>に合わせて描くので、
+              <code>source</code> の打点が本当に絵に付いているかを目で見られます
+            </small>
+          </label>
+        </div>
+        <p class="status" id="kf-status"></p>
+      </section>
+
+      <section class="card">
+        <h2>2. 打点をつまむ</h2>
+        <p class="muted">
+          横は<strong>タイムラインの秒</strong>、縦は値です。何も無い所を押すと打点が増え、
+          打点を掴むと動きます（<strong>Alt を押しながら</strong>、または右クリックで消えます）。
+          <strong>横軸をタイムラインの秒にしてあるのが、この画面でいちばん効いた所</strong>——
+          打点の秒は時間軸ごとに意味が違うので、そのまま並べると 3 通りを見比べられません。
+          代わりに、打点の秒 → タイムラインの秒の<strong>逆向きの写し</strong>が要りました
+          （<code>timeAtKeyTime()</code>。読むだけなら片道で足ります）。
+        </p>
+
+        <div class="canvas-wrap">
+          <canvas id="kf-curve" data-height="260"></canvas>
+        </div>
+        <p class="legend">
+          <span class="swatch curve"></span>曲線（打点から読んだ値）　<span class="swatch key"></span>打点
+          　<span class="swatch outside"></span>クリップの外に居る打点　<span class="swatch clip"></span>クリップの範囲
+          　<span class="swatch play"></span>いま見ている時刻
+          <br /><strong>クリップの外の打点も消しません</strong>——頭を詰めて戻したときに戻らなくなるためです（9/27 に測った）
+        </p>
+
+        <div class="row">
+          <label class="inline">
+            選んだ打点からの繋ぎ方
+            <select id="kf-ease">
+              <option value="linear">linear ・ まっすぐ</option>
+              <option value="hold">hold ・ 次まで動かない</option>
+              <option value="easeIn">easeIn ・ ゆっくり出る</option>
+              <option value="easeOut">easeOut ・ ゆっくり入る（本体のテロップと同じ式）</option>
+              <option value="easeInOut">easeInOut ・ 両端がゆるい</option>
+            </select>
+          </label>
+          <button type="button" id="kf-remove" disabled>選んだ打点を消す</button>
+          <button type="button" id="kf-put">いまの時刻に打点を置く</button>
+        </div>
+        <p class="muted small" id="kf-keys"></p>
+        <p class="warn" id="kf-warning" hidden></p>
+      </section>
+
+      <section class="card">
+        <h2>3. 出ている絵（本体へ差す形）</h2>
+        <p class="muted">
+          本体の <code>renderer.ts</code> は <code>clip.opacity</code> のような<strong>素の数</strong>を
+          そのまま使っています。ここは同じ式（<code>compose.ts</code>＝<code>fitRect()</code> と
+          <code>fadeEnvelope()</code> の写し）に <code>sampleClipValue()</code> を差した形で、
+          <strong>差し方が合っているかは値だけ見ても分かりません</strong>
+          （値が正しくても、差す場所を間違えれば絵だけが違う）。
+        </p>
+        <div class="preview">
+          <div class="frame">
+            <canvas id="kf-preview" width="270" height="480"></canvas>
+          </div>
+          <div class="preview-side">
+            <dl class="stats" id="kf-values"></dl>
+            <div class="controls">
+              <label>
+                フェードイン <output id="out-fade-in"></output>
+                <input type="range" id="kf-fade-in" min="0" max="2" step="0.05" value="0" />
+              </label>
+              <label>
+                フェードアウト <output id="out-fade-out"></output>
+                <input type="range" id="kf-fade-out" min="0" max="2" step="0.05" value="0" />
+              </label>
+              <label class="check">
+                <input type="checkbox" id="kf-fade-on" checked />
+                フェードも掛ける
+                <small>
+                  <strong>打点とフェードは掛け算で重なります</strong>（打点 0.5 × フェード 0.5 = 0.25）。
+                  どちらかを打点で置き換えるかは別の判断なので、ここでは両方残して見比べられるようにしてあります
+                </small>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <input type="range" id="kf-time" min="0" max="1" step="0.001" value="0" />
+          <output id="out-time">0.00s</output>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>4. 編集して、打点が付いてくるか見る</h2>
+        <p class="muted">
+          本体の操作（<code>src/model/ops.ts</code> の写し）を当てます。<strong>打点の付け替えは
+          1 行も書いていません</strong>——それで期待どおりになるのが 9/27 の結論で、ここはその確かめです。
+          ずれは <code>lab:keyframe:probe</code> と同じ物差し（1 コマずつ、期待との差の最大）で、
+          <strong>この素材が期待している形</strong>（<span id="kf-intent"></span>）に対して測っています。
+        </p>
+        <div class="row" id="kf-ops"></div>
+        <div class="row">
+          <button type="button" id="kf-reset">編集を元に戻す</button>
+          <span class="muted small" id="kf-log">まだ何も当てていません。</span>
+        </div>
+        <dl class="stats" id="kf-score"></dl>
+        <p class="muted small">
+          <strong>3 通りを並べて出しているのは、既定が「勝っている」ことを目で見るため。</strong>
+          いま選んでいる時間軸だけを出すと、0 が「正しい」のか「そもそもずれない素材」なのかが読めません。
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>5. セルフテスト</h2>
+        <p class="muted">
+          合成した値で計算そのものを確かめます。素材が無くても、壊れていないことがここで分かります。
+          コマンドライン（<code>npm run lab:test</code>）が見ているものと同じです。
+        </p>
+        <button type="button" id="run-tests">テストを実行</button>
+        <ul class="tests" id="test-results"></ul>
+      </section>
+    </main>
+
+    <script type="module" src="./src/demo.ts"></script>
+  </body>
+</html>
