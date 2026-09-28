@@ -93,6 +93,77 @@ export const TEXT_PRESETS: TextPreset[] = [
   },
   {
     /**
+     * テレビ番組で使われている形。**内側が黒、外側が白**で、外を少し細くする。
+     * 調べた作例はどれもこの組み方で、太さの比は 5:4 前後に収まっていた。
+     * 見出し（幅いっぱい）と同じ縁で、字幕の大きさにしたもの。
+     */
+    key: 'tv',
+    label: 'テレビ風',
+    text: {
+      ...DEFAULT_TEXT,
+      fontFamily: FONT_OPTIONS[4].value,
+      fontSize: 92,
+      weight: 400,
+      color: '#ffffff',
+      strokeColor: '#000000',
+      strokeWidth: 10,
+      strokeColor2: '#ffffff',
+      strokeWidth2: 8,
+      shadow: 0,
+      shadowY: 0,
+      maxWidth: 0.92,
+      animation: 'pop',
+    },
+  },
+  {
+    /**
+     * 縁を使わず、下に敷いた帯（ざぶとん）に読ませる仕事を渡す形。
+     * 縁と立体は「バラエティ系」の作法で、落ち着いた画では嫌われる。
+     * そちらでは、ざぶとんか落ち影を使う。
+     */
+    key: 'zabuton',
+    label: 'ざぶとん',
+    text: {
+      ...DEFAULT_TEXT,
+      fontFamily: FONT_OPTIONS[4].value,
+      fontSize: 72,
+      weight: 400,
+      color: '#ffffff',
+      strokeWidth: 0,
+      strokeWidth2: 0,
+      bgColor: '#000000',
+      bgOpacity: 0.62,
+      shadow: 0,
+      shadowY: 0,
+      maxWidth: 0.86,
+      animation: 'fade',
+    },
+  },
+  {
+    /**
+     * 立体。ぼかさない影を真下へ落として、板が浮いているように見せる。
+     * 鮮やかな文字色 + 縁 + 立体は、バラエティ系でいちばんよく見る組み合わせ。
+     */
+    key: 'solid',
+    label: '立体',
+    text: {
+      ...DEFAULT_TEXT,
+      fontFamily: FONT_OPTIONS[4].value,
+      fontSize: 100,
+      weight: 400,
+      color: '#ffd43b',
+      strokeColor: '#1a1a1a',
+      strokeWidth: 12,
+      strokeWidth2: 0,
+      // ぼかし 0 のまま下へずらすと、輪郭のはっきりした影になる＝厚みに見える。
+      shadow: 0,
+      shadowY: 16,
+      maxWidth: 0.92,
+      animation: 'bounce',
+    },
+  },
+  {
+    /**
      * 見出し。改行は自分で決めて、横幅いっぱいになる大きさは機械に出させる。
      * 「タイトル・飾り」なので、字幕なしで書き出しても残る。
      */

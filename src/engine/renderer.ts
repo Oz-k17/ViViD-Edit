@@ -411,10 +411,15 @@ interface TextAnim {
   offsetX: number;
   offsetY: number;
   visibleChars: number | null;
+  /**
+   * 左から何割まで見えているか（0〜1）。null なら切り取らない。
+   * タイプライターと違って**文字の途中でも切る**ので、字の形が端から現れる。
+   */
+  reveal: number | null;
 }
 
 function textAnimation(text: TextProps, local: number, duration: number): TextAnim {
-  const anim: TextAnim = { alpha: 1, scale: 1, offsetX: 0, offsetY: 0, visibleChars: null };
+  const anim: TextAnim = { alpha: 1, scale: 1, offsetX: 0, offsetY: 0, visibleChars: null, reveal: null };
   const inDur = Math.max(0.05, Math.min(text.animationDuration, duration / 2));
   const outDur = Math.min(0.25, duration / 2);
   const tIn = Math.max(0, Math.min(1, local / inDur));
@@ -455,6 +460,21 @@ function textAnimation(text: TextProps, local: number, duration: number): TextAn
       anim.offsetX = (1 - ease) * -220;
       anim.alpha = Math.min(1, tIn * 1.6, tOut * 2);
       break;
+    case 'wipe':
+      // 端から現れる。文字そのものは動かさないので、字幕として読みやすい。
+      anim.reveal = ease;
+      anim.alpha = Math.min(1, tOut * 2);
+      break;
+    case 'shake': {
+      // 強いツッコミ用。出たあと短く震えて、すぐ止まる。
+      // 止まらないと読めないので、揺れは入りの間だけ。
+      const decay = Math.max(0, 1 - tIn);
+      anim.offsetX = Math.sin(tIn * Math.PI * 14) * 26 * decay * decay;
+      anim.offsetY = Math.cos(tIn * Math.PI * 11) * 16 * decay * decay;
+      anim.scale = 1 + 0.06 * decay;
+      anim.alpha = Math.min(1, tIn * 6, tOut * 2);
+      break;
+    }
     case 'typewriter': {
       // 絵文字は1文字ぶんとして数える（トークン文字列の途中半端な位置で切れないように）。
       const chars = contentAtomCount(splitTextContent(text.content));
@@ -558,6 +578,16 @@ function drawTextClip(
   const cardHeight = frame ? bandHeight + blockHeight + cardInner * 2 : 0;
   // 帯のぶんだけ本文を下げる（帯の下の領域の中央に来る）。
   const bodyOffsetY = bandHeight / 2;
+
+  if (anim.reveal !== null) {
+    // 台紙ごと切る。縁や影がはみ出さないよう、塊より少し広めに取ってある。
+    const w = Math.max(blockWidth + padX * 2, cardWidth) + text.strokeWidth * 4;
+    const h = Math.max(blockHeight + padY * 2, cardHeight) + text.strokeWidth * 4 + text.shadow * 2;
+    ctx.beginPath();
+    ctx.rect(-w / 2, -h / 2, w * anim.reveal, h);
+    ctx.clip();
+  }
+
   if (frame) {
     drawCard(ctx, frame, -cardWidth / 2, -cardHeight / 2, cardWidth, cardHeight, bandHeight, headingSize, text.fontFamily);
   }
@@ -595,10 +625,11 @@ function drawTextClip(
         x += emojiSize;
         continue;
       }
-      if (text.shadow > 0) {
+      const shadowY = text.shadowY ?? text.shadow * 0.25;
+      if (text.shadow > 0 || shadowY > 0) {
         ctx.shadowColor = 'rgba(0,0,0,0.65)';
         ctx.shadowBlur = text.shadow;
-        ctx.shadowOffsetY = text.shadowY ?? text.shadow * 0.25;
+        ctx.shadowOffsetY = shadowY;
       }
       // 縁は外側から内側へ重ねる。canvas の線は輪郭の内外へ半分ずつ広がるので、
       // 外側の線は「内側の縁 + 外側の縁」の太さで引くと、内側の縁の外にちょうど残る。

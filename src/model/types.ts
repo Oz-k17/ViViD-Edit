@@ -90,7 +90,9 @@ export type TextAnimation =
   | 'slideRight'
   | 'zoom'
   | 'bounce'
-  | 'typewriter';
+  | 'typewriter'
+  | 'wipe'
+  | 'shake';
 
 /**
  * テロップの役割。字幕なし版を書き出すときに、消すものと残すものを分ける。
@@ -299,6 +301,8 @@ export const TEXT_ANIMATION_LABELS: Record<TextAnimation, string> = {
   zoom: 'ズーム',
   bounce: 'バウンス',
   typewriter: 'タイプライター',
+  wipe: 'ワイプ',
+  shake: 'ブレ',
 };
 
 /**
