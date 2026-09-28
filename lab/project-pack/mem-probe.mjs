@@ -15,7 +15,8 @@
  */
 
 const [, , indexArg, mode] = process.argv;
-const { layoutPack, realizePack } = await import('./src/container.ts');
+const { attachDigests, layoutPack, realizePack } = await import('./src/container.ts');
+const { digestOf } = await import('./src/digest.ts');
 const { buildJsonPack } = await import('./src/json-pack.ts');
 const { memoryBodies, scenarioAt } = await import('./src/scenarios.ts');
 
@@ -29,12 +30,21 @@ let held;
 if (mode === 'json') {
   held = (await buildJsonPack(s.project, s.assets, bodies, toBase64)).text;
 } else if (mode === 'pack') {
-  const layout = layoutPack(s.project, s.assets, bodies);
+  const layout = layoutPack(s.project, s.assets, bodies, { digests: 'none' });
   held = await realizePack(layout, bodies);
+} else if (mode === 'digest-each') {
+  // **1 本ずつ読んで、その場で捨てる。** 山はいちばん大きい素材 1 本ぶんで止まるはず。
+  const layout = layoutPack(s.project, s.assets, bodies, { digests: 'header' });
+  held = (await attachDigests(layout, bodies)).order.map((b) => b.hash);
+} else if (mode === 'digest-whole') {
+  // ファイル全体で 1 つの値にする形（＝繋げてから渡す）。README が「利点が消える」と
+  // 書いていたのはこちら。**素材ごとと並べて初めて、消えるのがどちらかが分かる。**
+  const all = Buffer.concat([...s.bodies.values()].map((b) => Buffer.from(b)));
+  held = [await digestOf(new Uint8Array(all.buffer, all.byteOffset, all.byteLength))];
 }
 
 // 捨てられないように触っておく（触らないと最適化で消える余地を残す）。
-const keep = mode === 'json' ? held.length : mode === 'pack' ? held.length : s.bodies.size;
+const keep = held === undefined ? s.bodies.size : held.length;
 console.log(
   JSON.stringify({
     // 引き継いだ床を引いた「このプロセス自身が積んだ山」。

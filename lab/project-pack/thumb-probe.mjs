@@ -29,7 +29,15 @@ import { mkdir, open, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const { layoutPack, openPack, readThumb, thumbRanges, PACK_PREAMBLE } = await import('./src/container.ts');
+const { layoutPack: layoutAny, openPack, readThumb, thumbRanges, PACK_PREAMBLE } = await import('./src/container.ts');
+
+/**
+ * ここも**ハッシュを入れない形**で測る（既定は `header`）。
+ * 見ているのは絵の置き所なので、見出しにハッシュを混ぜると
+ * 「見出しが太る／細る」の話が 2 つ重なって読めなくなる。
+ */
+const layoutPack = (project, assets, bodies, options = {}) =>
+  layoutAny(project, assets, bodies, { digests: 'none', ...options });
 const { splitDataUrl, toDataUrl } = await import('./src/thumbs.ts');
 const { memoryBodies, thumbScenario } = await import('./src/scenarios.ts');
 

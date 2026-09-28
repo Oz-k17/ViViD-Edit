@@ -32,9 +32,19 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-const { layoutPack, openPack, readBody, readerFromBytes, realizePack, PACK_PREAMBLE } = await import(
+const { layoutPack: layoutAny, openPack, readBody, readerFromBytes, realizePack, PACK_PREAMBLE } = await import(
   './src/container.ts'
 );
+
+/**
+ * ここは**ハッシュを入れない形**で測る（既定は `header`）。
+ *
+ * この段の表は「JSON に埋める 対 二進」を並べるためのもので、2026-09-28 の 1 回目に測った。
+ * ハッシュを混ぜると大きさも時間もその表と比べられなくなる。
+ * ハッシュの費用（書く段が 2.4 倍になる）は `npm run lab:pack:digest` が別に出す。
+ */
+const layoutPack = (project, assets, bodies, options = {}) =>
+  layoutAny(project, assets, bodies, { digests: 'none', ...options });
 const { base64Length, buildJsonPack, jsonPackBody, parseJsonPack } = await import('./src/json-pack.ts');
 const { planPack } = await import('./src/plan.ts');
 const { memoryBodies, scenarioCount, scenarios } = await import('./src/scenarios.ts');

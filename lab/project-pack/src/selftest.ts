@@ -11,6 +11,7 @@
  */
 
 import {
+  attachDigests,
   locateBody,
   layoutPack,
   openPack,
@@ -20,8 +21,10 @@ import {
   readThumb,
   realizePack,
   thumbRanges,
+  verifyPack,
   type PackHeader,
 } from './container.ts';
+import { digestOf, digestToText } from './digest.ts';
 import { decodeBase64, toDataUrl } from './thumbs.ts';
 import { base64Length, buildJsonPack, jsonPackBody, parseJsonPack } from './json-pack.ts';
 import { planPack } from './plan.ts';
@@ -125,8 +128,26 @@ function baseHeader(over: Partial<PackHeader> = {}): PackHeader {
     thumbPlacement: 'inline',
     thumbBytes: 0,
     thumbs: [],
+    digestPlacement: 'none',
+    digestBytes: 0,
     ...over,
   };
+}
+
+/**
+ * ハッシュを入れない形で組む。
+ *
+ * 既定は `header`（入れる）だが、**ハッシュの話をしていない検算はそちらを使わない。**
+ * 9/28（2 回目）までと同じ形のファイルを組んで、見出しのバイト数や位置の検算を
+ * 前の回と同じ数字で読めるようにするため。ハッシュそのものの検算は下に別で置いてある。
+ */
+function layoutPlain(
+  project: Parameters<typeof layoutPack>[0],
+  assets: Parameters<typeof layoutPack>[1],
+  bodies: Parameters<typeof layoutPack>[2],
+  options: Parameters<typeof layoutPack>[3] = {},
+) {
+  return layoutPack(project, assets, bodies, { digests: 'none', ...options });
 }
 
 async function threw(work: () => Promise<unknown>): Promise<string | null> {
@@ -228,8 +249,8 @@ export async function runSelfTest(): Promise<Result[]> {
     const bodies = memoryBodies(
       new Map([['z', pseudoBytes(300, 1)], ['a', pseudoBytes(100, 2)], ['m', pseudoBytes(200, 3)]]),
     );
-    const one = layoutPack(makeProject([clip('z'), clip('a'), clip('m')]), assetMap(metas), bodies);
-    const two = layoutPack(makeProject([clip('m'), clip('z'), clip('a')]), assetMap(metas), bodies);
+    const one = layoutPlain(makeProject([clip('z'), clip('a'), clip('m')]), assetMap(metas), bodies);
+    const two = layoutPlain(makeProject([clip('m'), clip('z'), clip('a')]), assetMap(metas), bodies);
     const order = (l: typeof one) => l.order.map((o) => `${o.id}@${o.offset}`).join(' ');
     add(
       order(one) === order(two),
@@ -245,7 +266,7 @@ export async function runSelfTest(): Promise<Result[]> {
     const raw = new Map([['v', pseudoBytes(4096, 7)], ['w', pseudoBytes(1234, 8)]]);
     const bodies = memoryBodies(raw);
     const project = makeProject([clip('v'), clip('w')]);
-    const layout = layoutPack(project, assetMap(metas), bodies);
+    const layout = layoutPlain(project, assetMap(metas), bodies);
     const file = concat(await realizePack(layout, bodies));
 
     add(
@@ -275,7 +296,7 @@ export async function runSelfTest(): Promise<Result[]> {
     const metas = [meta({ id: 'jp', name: '打ち合わせ_本編_最終版.mp4', folder: '素材／撮影' })];
     const raw = new Map([['jp', pseudoBytes(777, 9)]]);
     const bodies = memoryBodies(raw);
-    const layout = layoutPack(makeProject([clip('jp')]), assetMap(metas), bodies);
+    const layout = layoutPlain(makeProject([clip('jp')]), assetMap(metas), bodies);
     const json = JSON.stringify(layout.header);
     const charLen = json.length;
     const byteLen = new TextEncoder().encode(json).length;
@@ -295,7 +316,7 @@ export async function runSelfTest(): Promise<Result[]> {
     const metas = [meta({ id: 'z0', name: '空.wav', kind: 'audio' }), meta({ id: 'z1' })];
     const raw = new Map([['z0', new Uint8Array(0)], ['z1', pseudoBytes(16, 4)]]);
     const bodies = memoryBodies(raw);
-    const layout = layoutPack(makeProject([clip('z0'), clip('z1')]), assetMap(metas), bodies);
+    const layout = layoutPlain(makeProject([clip('z0'), clip('z1')]), assetMap(metas), bodies);
     const file = concat(await realizePack(layout, bodies));
     const reader = readerFromBytes(file);
     const opened = await openPack(reader);
@@ -312,7 +333,7 @@ export async function runSelfTest(): Promise<Result[]> {
     const metas = Array.from({ length: 8 }, (_, i) => meta({ id: `c${i}` }));
     const raw = new Map(metas.map((m, i) => [m.id, pseudoBytes(256 * 1024, i + 1)]));
     const bodies = memoryBodies(raw);
-    const layout = layoutPack(makeProject(metas.map((m) => clip(m.id))), assetMap(metas), bodies);
+    const layout = layoutPlain(makeProject(metas.map((m) => clip(m.id))), assetMap(metas), bodies);
     const file = concat(await realizePack(layout, bodies));
     const reader = countingReader(file);
     const opened = await openPack(reader);
@@ -331,7 +352,7 @@ export async function runSelfTest(): Promise<Result[]> {
     const metas = [meta({ id: 'off' })];
     const raw = new Map([['off', pseudoBytes(333, 11)]]);
     const bodies = memoryBodies(raw);
-    const layout = layoutPack(makeProject([clip('off')]), assetMap(metas), bodies);
+    const layout = layoutPlain(makeProject([clip('off')]), assetMap(metas), bodies);
     const file = concat(await realizePack(layout, bodies));
     const padded = new Uint8Array(64 + file.length);
     padded.set(file, 64);
@@ -438,7 +459,7 @@ export async function runSelfTest(): Promise<Result[]> {
     for (const placement of ['inline', 'section', 'scattered'] as const) {
       const a = meta({ id: 't1', name: 'サムネ付き.mp4', thumbnail: url });
       const bodies = memoryBodies(new Map([['t1', pseudoBytes(80, 22)]]));
-      const layout = layoutPack(makeProject([clip('t1')]), assetMap([a]), bodies, { thumbs: placement });
+      const layout = layoutPlain(makeProject([clip('t1')]), assetMap([a]), bodies, { thumbs: placement });
       const reader = readerFromBytes(concat(await realizePack(layout, bodies)));
       const opened = await openPack(reader);
       const pulled = await readThumb(reader, opened, 't1');
@@ -452,8 +473,8 @@ export async function runSelfTest(): Promise<Result[]> {
     const pic = pseudoBytes(3000, 23);
     const a = meta({ id: 't2', thumbnail: toDataUrl('image/jpeg', pic) });
     const bodies = memoryBodies(new Map([['t2', pseudoBytes(80, 24)]]));
-    const inline = layoutPack(makeProject([clip('t2')]), assetMap([a]), bodies, { thumbs: 'inline' });
-    const section = layoutPack(makeProject([clip('t2')]), assetMap([a]), bodies, { thumbs: 'section' });
+    const inline = layoutPlain(makeProject([clip('t2')]), assetMap([a]), bodies, { thumbs: 'inline' });
+    const section = layoutPlain(makeProject([clip('t2')]), assetMap([a]), bodies, { thumbs: 'section' });
     add(
       section.prefix.length < inline.prefix.length - 3900 && section.totalBytes < inline.totalBytes,
       '追い出すと見出しが絵のぶん細くなり、ファイル全体も base64 のぶん縮む',
@@ -474,7 +495,7 @@ export async function runSelfTest(): Promise<Result[]> {
       meta({ id: 'p5', name: '正しい.mp4', thumbnail: toDataUrl('image/png', pseudoBytes(90, 25)) }),
     ];
     const bodies = memoryBodies(new Map(metas.map((m, i) => [m.id, pseudoBytes(16, 30 + i)])));
-    const layout = layoutPack(makeProject(metas.map((m) => clip(m.id))), assetMap(metas), bodies, {
+    const layout = layoutPlain(makeProject(metas.map((m) => clip(m.id))), assetMap(metas), bodies, {
       thumbs: 'section',
     });
     const reader = readerFromBytes(concat(await realizePack(layout, bodies)));
@@ -500,7 +521,7 @@ export async function runSelfTest(): Promise<Result[]> {
     const project = makeProject(metas.map((m) => clip(m.id)));
     const counts: Record<string, number> = {};
     for (const placement of ['section', 'scattered'] as const) {
-      const layout = layoutPack(project, assetMap(metas), bodies, { thumbs: placement });
+      const layout = layoutPlain(project, assetMap(metas), bodies, { thumbs: placement });
       const opened = await openPack(readerFromBytes(concat(await realizePack(layout, bodies))));
       counts[placement] = thumbRanges(opened).length;
     }
@@ -518,7 +539,7 @@ export async function runSelfTest(): Promise<Result[]> {
       meta({ id: `r${i}`, thumbnail: toDataUrl('image/jpeg', pseudoBytes(200, 60 + i)) }),
     );
     const bodies = memoryBodies(new Map(metas.map((m, i) => [m.id, pseudoBytes(20_000, 70 + i)])));
-    const layout = layoutPack(makeProject(metas.map((m) => clip(m.id))), assetMap(metas), bodies, {
+    const layout = layoutPlain(makeProject(metas.map((m) => clip(m.id))), assetMap(metas), bodies, {
       thumbs: 'section',
     });
     const reader = countingReader(concat(await realizePack(layout, bodies)));
@@ -590,7 +611,7 @@ export async function runSelfTest(): Promise<Result[]> {
     const a = meta({ id: 'n0', thumbnail: '' });
     const bodies = memoryBodies(new Map([['n0', pseudoBytes(64, 82)]]));
     const made = ['section', 'scattered'].map((placement) =>
-      layoutPack(makeProject([clip('n0')]), assetMap([a]), bodies, { thumbs: placement as 'section' }),
+      layoutPlain(makeProject([clip('n0')]), assetMap([a]), bodies, { thumbs: placement as 'section' }),
     );
     // 違うのは**置き所を書いた言葉の字数だけ**（section 7 文字 / scattered 9 文字）。
     // ぴったり 2 バイトで済んでいれば、ほかは 1 バイトも動いていないと言える。
@@ -610,7 +631,7 @@ export async function runSelfTest(): Promise<Result[]> {
     const a = meta({ id: 'jp', name, thumbnail: toDataUrl('image/jpeg', pseudoBytes(500, 83)) });
     const body = pseudoBytes(77, 84);
     const bodies = memoryBodies(new Map([['jp', body]]));
-    const layout = layoutPack(makeProject([clip('jp')]), assetMap([a]), bodies, { thumbs: 'section' });
+    const layout = layoutPlain(makeProject([clip('jp')]), assetMap([a]), bodies, { thumbs: 'section' });
     const reader = readerFromBytes(concat(await realizePack(layout, bodies)));
     const opened = await openPack(reader);
     const got = await readBody(reader, opened, 'jp');
@@ -626,7 +647,7 @@ export async function runSelfTest(): Promise<Result[]> {
     // 0 バイトの絵。長さ 0 は「無い」ではなく「空」なので、落とさず 0 バイトで返す。
     const a = meta({ id: 'z', thumbnail: 'data:image/jpeg;base64,' });
     const bodies = memoryBodies(new Map([['z', pseudoBytes(8, 85)]]));
-    const layout = layoutPack(makeProject([clip('z')]), assetMap([a]), bodies, { thumbs: 'section' });
+    const layout = layoutPlain(makeProject([clip('z')]), assetMap([a]), bodies, { thumbs: 'section' });
     const reader = readerFromBytes(concat(await realizePack(layout, bodies)));
     const opened = await openPack(reader);
     const pic = await readThumb(reader, opened, 'z');
@@ -691,7 +712,7 @@ export async function runSelfTest(): Promise<Result[]> {
     const bodies = memoryBodies(new Map([['w', pseudoBytes(100, 88)]]));
     const project = makeProject([clip('w')]);
     const made = (placement: 'inline' | 'section' | 'scattered') =>
-      layoutPack(project, assetMap([a]), bodies, { thumbs: placement });
+      layoutPlain(project, assetMap([a]), bodies, { thumbs: placement });
     add(
       made('section').thumbParts.length === 1 &&
         made('scattered').thumbParts.length === 0 &&
@@ -699,6 +720,338 @@ export async function runSelfTest(): Promise<Result[]> {
         made('scattered').parts.length === 2,
       'thumbParts は section のときだけ中身を持つ（散らすときは parts しか正しくない）',
       `section ${made('section').thumbParts.length} / scattered ${made('scattered').thumbParts.length} / parts ${made('scattered').parts.length}`,
+    );
+  }
+
+
+  // ===== 壊れを見つける値（2026-09-28・3 回目） =====
+
+  /** ハッシュを入れた形で 1 本組む（`digests` の既定は `header`）。 */
+  async function packWithDigests(
+    over: Partial<PackAssetMeta>[] = [{ id: 'd0' }],
+    options: Parameters<typeof layoutPack>[3] = {},
+  ) {
+    const metas = over.map((o, i) => meta({ id: o.id ?? `d${i}`, ...o }));
+    const map = new Map(metas.map((m, i) => [m.id, pseudoBytes(600 + i * 200, i + 21)]));
+    const bodies = memoryBodies(map);
+    const project = makeProject(metas.map((m) => clip(m.id)));
+    const layout = await attachDigests(layoutPack(project, assetMap(metas), bodies, options), bodies);
+    const file = concat(await realizePack(layout, bodies));
+    return { metas, bodies, project, layout, file, map };
+  }
+
+  {
+    const { layout } = await packWithDigests([{ id: 'd0' }, { id: 'd1' }]);
+    add(
+      layout.header.digestPlacement === 'header' && layout.order.every((b) => typeof b.hash === 'string'),
+      '既定はハッシュを入れる（置き所は見出しの中）',
+      `${layout.header.digestPlacement} / ${layout.order.map((b) => (b.hash ?? '').slice(0, 6)).join(' ')}`,
+    );
+  }
+
+  {
+    // **今日の穴がここ。** `realizePack` を「実体でなければ絵」の形で書いていたので、
+    // ハッシュの欠片の所に実体が丸ごと入って、ファイルが 2 倍に膨らんでいた。
+    // 長さを突き合わせる検算が無かったから、往復の検算は全部通ったまま気づけなかった。
+    const rows: string[] = [];
+    let ok = true;
+    for (const digests of ['none', 'header', 'section'] as const) {
+      const { layout, file } = await packWithDigests([{ id: 'd0' }, { id: 'd1' }], { digests });
+      if (file.length !== layout.totalBytes) ok = false;
+      rows.push(`${digests} ${file.length}/${layout.totalBytes}`);
+    }
+    add(ok, '書き出した長さが、読まずに出した見込み（totalBytes）とぴったり合う', rows.join(' / '));
+  }
+
+  {
+    const metas = [meta({ id: 'p0' }), meta({ id: 'p1' })];
+    const map = new Map(metas.map((m, i) => [m.id, pseudoBytes(500 + i * 100, i + 31)]));
+    const bodies = memoryBodies(map);
+    const project = makeProject(metas.map((m) => clip(m.id)));
+    const before = layoutPack(project, assetMap(metas), bodies, { digests: 'header' });
+    const offsets = before.order.map((b) => b.offset).join(',');
+    // **読んでいないことは、足す前に見る**（足す段は読むのが仕事）。
+    const readsBeforeAttach = bodies.reads.length;
+    const after = await attachDigests(before, bodies);
+    add(
+      after.order.map((b) => b.offset).join(',') === offsets && after.prefix.length > before.prefix.length,
+      'ハッシュを後から足しても、実体の位置は 1 つも動かない（見出しが伸びるだけ）',
+      `位置 ${offsets} / 見出し ${before.prefix.length} → ${after.prefix.length} B`,
+    );
+    add(
+      readsBeforeAttach === 0 && bodies.reads.length === 2,
+      'ハッシュを入れる約束をしても、計画の段では実体を読まない（読むのは足す段だけ）',
+      `計画のあと ${readsBeforeAttach} 本 / 足したあと ${bodies.reads.length} 本`,
+    );
+  }
+
+  {
+    // 2 回通しても同じファイルになること（`section` で 2 回通すと域が 2 つ並ぶ形になる）。
+    const rows: string[] = [];
+    let ok = true;
+    for (const digests of ['header', 'section'] as const) {
+      const { layout, bodies } = await packWithDigests([{ id: 'd0' }, { id: 'd1' }], { digests });
+      const twice = await attachDigests(layout, bodies);
+      const file = concat(await realizePack(twice, bodies));
+      if (file.length !== twice.totalBytes) ok = false;
+      rows.push(`${digests} ${file.length}/${twice.totalBytes}`);
+    }
+    add(ok, 'ハッシュを 2 回足しても同じファイルになる（域が 2 つ並ばない）', rows.join(' / '));
+  }
+
+  {
+    const { file, metas } = await packWithDigests([{ id: 'd0' }, { id: 'd1' }]);
+    const reader = readerFromBytes(file);
+    const opened = await openPack(reader);
+    const report = await verifyPack(reader, opened);
+    add(
+      report.entries.length === 2 && report.entries.every((e) => e.state === 'ok') && report.mismatch.length === 0,
+      '書いてすぐ読み直したら、全部の実体が ok',
+      `読んだ ${report.bytesRead} B / ${metas.length} 本`,
+    );
+  }
+
+  {
+    const { file } = await packWithDigests([{ id: 'd0' }, { id: 'd1' }]);
+    const broken = Uint8Array.from(file);
+    broken[broken.length - 10] ^= 0x01; // 最後の実体の中を 1 ビットだけ裏返す
+    const reader = readerFromBytes(broken);
+    const opened = await openPack(reader);
+    const report = await verifyPack(reader, opened);
+    add(
+      report.mismatch.length === 1 && opened.outOfRange.length === 0,
+      '1 ビット化けただけの実体を見つける（長さも位置も辻褄が合っている）',
+      `違う ${report.mismatch.length} 本 / 位置は ${opened.outOfRange.length} 本`,
+    );
+    add(
+      report.entries.filter((e) => e.state === 'ok').length === 1,
+      '化けていない実体は ok のまま（1 つ壊れても全部を疑わない）',
+    );
+  }
+
+  {
+    // 同じ長さの実体を入れ替える。**長さでは絶対に分からない壊れ方。**
+    const metas = [meta({ id: 's0' }), meta({ id: 's1' })];
+    const map = new Map([
+      ['s0', pseudoBytes(400, 41)],
+      ['s1', pseudoBytes(400, 42)],
+    ]);
+    const bodies = memoryBodies(map);
+    const project = makeProject(metas.map((m) => clip(m.id)));
+    const layout = await attachDigests(layoutPack(project, assetMap(metas), bodies), bodies);
+    const file = concat(await realizePack(layout, bodies));
+    const swapped = Uint8Array.from(file);
+    const base = file.length - 800;
+    swapped.set(file.subarray(base + 400, base + 800), base);
+    swapped.set(file.subarray(base, base + 400), base + 400);
+    const reader = readerFromBytes(swapped);
+    const opened = await openPack(reader);
+    const report = await verifyPack(reader, opened);
+    add(
+      report.mismatch.length === 2,
+      '同じ長さの実体が入れ替わったのを見つける（ファイルの長さは 1 バイトも違わない）',
+      `違う ${report.mismatch.length} 本 / 長さ ${file.length} = ${swapped.length}`,
+    );
+  }
+
+  {
+    // README 6.4 が「長さは通るので気づけない」と書いた形。域が**長い側**へずれると
+    // 絵は域の中に収まったままなので、9/28（2 回目）に入れた門を素通りする。
+    // **実体は 3 本置く。** ずれると末尾の 1 本は範囲外で落ちるので、
+    // 2 本残らないと「抜き取りのほうが読む量が少ない」を確かめられない
+    // （最初 2 本で書いて、残り 1 本では差が出ずに FAIL した）。
+    const metas = [300, 600, 900].map((_, i) =>
+      meta({ id: `g${i}`, thumbnail: toDataUrl('image/jpeg', pseudoBytes(200, 51 + i)) }),
+    );
+    const map = new Map(metas.map((m, i) => [m.id, pseudoBytes([300, 600, 900][i], 53 + i)]));
+    const bodies = memoryBodies(map);
+    const project = makeProject(metas.map((m) => clip(m.id)));
+    const layout = await attachDigests(
+      layoutPack(project, assetMap(metas), bodies, { thumbs: 'section' }),
+      bodies,
+    );
+    const file = concat(await realizePack(layout, bodies));
+    // 域を 1 バイト長く名乗らせる（絵は域に収まったままなので門は通る）。
+    const shifted = packWith(
+      { ...layout.header, thumbBytes: layout.header.thumbBytes + 1 },
+      file.subarray(layout.prefix.length),
+    );
+    const reader = readerFromBytes(shifted);
+    const opened = await openPack(reader);
+    const report = await verifyPack(reader, opened);
+    const one = await verifyPack(reader, opened, { sample: 1 });
+    add(
+      report.mismatch.length > 0,
+      'サムネイル域が長い側へ 1 バイトずれたのを見つける（門は通ってしまう形）',
+      `違う ${report.mismatch.length} / ${report.entries.length} 本 + 範囲外 ${opened.outOfRange.length} 本`,
+    );
+    add(
+      one.mismatch.length === 1 && one.bytesRead < report.bytesRead,
+      '域のずれは、いちばん小さい実体 1 本を抜き取るだけで見つかる',
+      `抜き取り ${one.bytesRead} B 対 全部 ${report.bytesRead} B`,
+    );
+  }
+
+  {
+    const { file } = await packWithDigests([{ id: 'd0' }, { id: 'd1' }], { digests: 'none' });
+    const reader = readerFromBytes(file);
+    const opened = await openPack(reader);
+    const report = await verifyPack(reader, opened);
+    add(
+      report.unknown.length === 2 && report.mismatch.length === 0 && report.bytesRead === 0,
+      'ハッシュ無しで書いたファイルは「分からない」（壊れていることにしない・読みもしない）',
+      `分からない ${report.unknown.length} 本 / 読んだ ${report.bytesRead} B`,
+    );
+  }
+
+  {
+    const a = meta({ id: 'z0', name: '空.mp4' });
+    const b = meta({ id: 'z1', name: '中身あり.mp4' });
+    const map = new Map([
+      ['z0', new Uint8Array(0)],
+      ['z1', pseudoBytes(500, 61)],
+    ]);
+    const bodies = memoryBodies(map);
+    const layout = await attachDigests(
+      layoutPack(makeProject([clip('z0'), clip('z1')]), assetMap([a, b]), bodies),
+      bodies,
+    );
+    const reader = readerFromBytes(concat(await realizePack(layout, bodies)));
+    const opened = await openPack(reader);
+    const all = await verifyPack(reader, opened);
+    const one = await verifyPack(reader, opened, { sample: 1 });
+    add(
+      all.entries.every((e) => e.state === 'ok'),
+      '0 バイトの実体も ok として通る（空は壊れではない）',
+    );
+    add(
+      one.entries.length === 1 && one.entries[0].id === 'z1',
+      '抜き取りは 0 バイトの実体を選ばない（位置がずれていても必ず合ってしまうので）',
+      `選んだ ${one.entries[0]?.id} / 読んだ ${one.bytesRead} B`,
+    );
+  }
+
+  {
+    const { layout, file } = await packWithDigests([{ id: 'd0' }, { id: 'd1' }], { digests: 'section' });
+    const reader = readerFromBytes(file);
+    const opened = await openPack(reader);
+    const report = await verifyPack(reader, opened);
+    add(
+      opened.header.digestBytes === 64 && report.entries.every((e) => e.state === 'ok'),
+      'section でも往復する（域は 32 バイト × 実体の数）',
+      `域 ${opened.header.digestBytes} B / 見出し ${layout.prefix.length - PACK_PREAMBLE} B`,
+    );
+    add(
+      report.bytesRead === 600 + 800 + 64,
+      '確かめるのに読むのは、実体とハッシュ域だけ（見出しは数えない）',
+      `${report.bytesRead} B`,
+    );
+  }
+
+  {
+    const { layout } = await packWithDigests([{ id: 'd0' }], { digests: 'section' });
+    const headerHash = (await packWithDigests([{ id: 'd0' }], { digests: 'header' })).layout.order[0].hash;
+    add(
+      digestToText(layout.digestParts[0]) === headerHash,
+      'section の域に置いた値と、見出しに書いた値は同じ（置き所で中身は変わらない）',
+      `${headerHash?.slice(0, 12)}…`,
+    );
+  }
+
+  {
+    const msgs: string[] = [];
+    for (const digestBytes of [40, -32, 1.5, null]) {
+      const msg = await threw(() =>
+        openPack(
+          readerFromBytes(
+            packWith(baseHeader({ digestPlacement: 'section', digestBytes: digestBytes as number }), pseudoBytes(200)),
+          ),
+        ),
+      );
+      msgs.push(String(digestBytes));
+      if (!msg?.includes('ハッシュ域')) msgs.push(`× ${msg}`);
+    }
+    add(
+      msgs.every((m) => !m.startsWith('×')),
+      'ハッシュ域の長さが 32 の倍数でない／負／小数なら断る（0 へ丸めて進めない）',
+      `断った: ${msgs.join(' ')}`,
+    );
+  }
+
+  {
+    const msg = await threw(() =>
+      openPack(readerFromBytes(packWith(baseHeader({ digestPlacement: 'section', digestBytes: 320 }), pseudoBytes(64)))),
+    );
+    add(
+      msg !== null && msg.includes('はみ出し'),
+      '宣言ぶんのハッシュ域が入っていないファイルは断る（途中で切れている）',
+      msg ?? '',
+    );
+  }
+
+  {
+    // 位置の合わない実体を落としても、残りのハッシュの番号がずれないこと。
+    // `section` の域は**見出しに書いてあった順**なので、落とした後の並びで数えると 1 つずれる。
+    const metas = [meta({ id: 'i0' }), meta({ id: 'i1', name: '範囲外.mp4' }), meta({ id: 'i2' })];
+    const map = new Map([
+      ['i0', pseudoBytes(300, 71)],
+      ['i1', pseudoBytes(300, 72)],
+      ['i2', pseudoBytes(300, 73)],
+    ]);
+    const bodies = memoryBodies(map);
+    const layout = await attachDigests(
+      layoutPack(makeProject(metas.map((m) => clip(m.id))), assetMap(metas), bodies, { digests: 'section' }),
+      bodies,
+    );
+    const file = concat(await realizePack(layout, bodies));
+    // 2 本目だけを範囲の外へ追い出す（そこは落ちて、1 本目と 3 本目は残る）。
+    const lying = layout.header.bodies.map((b) => (b.id === 'i1' ? { ...b, offset: 1 << 28 } : b));
+    const reader = readerFromBytes(
+      packWith({ ...layout.header, bodies: lying }, file.subarray(layout.prefix.length)),
+    );
+    const opened = await openPack(reader);
+    const report = await verifyPack(reader, opened);
+    add(
+      opened.outOfRange.length === 1 && report.entries.length === 2 && report.entries.every((e) => e.state === 'ok'),
+      '範囲外の実体を落としても、残りのハッシュの番号がずれない（落とす前の並びで数える）',
+      `落ち ${opened.outOfRange.join('・')} / 残り ${report.entries.map((e) => e.state).join('・')}`,
+    );
+  }
+
+  {
+    const metas = [meta({ id: 'f0' })];
+    const bodies = memoryBodies(new Map([['f0', pseudoBytes(100, 81)]]));
+    const layout = layoutPack(makeProject([clip('f0')]), assetMap(metas), bodies);
+    const msg = await threw(() => realizePack(layout, bodies));
+    add(
+      msg !== null && msg.includes('attachDigests'),
+      'ハッシュを入れる約束のまま計算せずに書こうとしたら断る（空の域を書くと全部が「違う」になる）',
+      msg ?? '',
+    );
+  }
+
+  {
+    // 切り出した実体（`subarray`）でも同じ値が出ること。ファイルから読んだ実体は
+    // 大きな buffer の一部を指す形で来るので、**範囲の外まで混ぜて数えると全部 mismatch になる。**
+    const whole = pseudoBytes(1000, 91);
+    const part = whole.subarray(100, 400);
+    const copy = Uint8Array.from(part);
+    add((await digestOf(part)) === (await digestOf(copy)), '切り出した実体でも同じハッシュになる（範囲の外を混ぜない）');
+  }
+
+  {
+    const a = meta({ id: 'j0', name: '日本語の名前の素材.mp4' });
+    const bodies = memoryBodies(new Map([['j0', pseudoBytes(300, 101)]]));
+    const layout = await attachDigests(layoutPack(makeProject([clip('j0')]), assetMap([a]), bodies), bodies);
+    const file = concat(await realizePack(layout, bodies));
+    const broken = Uint8Array.from(file);
+    broken[broken.length - 5] ^= 0xff;
+    const reader = readerFromBytes(broken);
+    const report = await verifyPack(reader, await openPack(reader));
+    add(
+      report.mismatch[0] === '日本語の名前の素材.mp4',
+      '中身が違った素材は、id ではなく人が読める名前で出す',
+      report.mismatch.join('・'),
     );
   }
 

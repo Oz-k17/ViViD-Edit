@@ -2,11 +2,12 @@
  * **持ち出しファイルの並べ方（二進の入れ物）。**
  *
  * ```
- * [0,8)            "VIVIDPK1"           目印
- * [8,12)           uint32LE             見出しの**バイト**長 H
- * [12,12+H)        見出し（UTF-8 の JSON）
- * [12+H, 12+H+T)   サムネイル域（長さ T。`thumbs: 'section'` のときだけ。既定は T=0）
- * [12+H+T, …)      実体。見出しの bodies の順に、隙間なく並べる
+ * [0,8)              "VIVIDPK1"         目印
+ * [8,12)             uint32LE           見出しの**バイト**長 H
+ * [12,12+H)          見出し（UTF-8 の JSON）
+ * [12+H, 12+H+D)     ハッシュ域（長さ D。`digests: 'section'` のときだけ。既定は D=0）
+ * [12+H+D, +T)       サムネイル域（長さ T。`thumbs: 'section'` のときだけ。既定は T=0）
+ * [12+H+D+T, …)      実体。見出しの bodies の順に、隙間なく並べる
  * ```
  *
  * サムネイル域を挟める理由と、挟む／挟まないの数字は `thumbs.ts` と `README.md` に書いた。
@@ -34,8 +35,18 @@
  * 見出しの長さと位置が切り離せるので、1 回で決まる。
  */
 
+import {
+  cheapestFirst,
+  digestBodies,
+  digestToText,
+  DIGEST_BYTES,
+  verifyBodies,
+  type DigestPlacement,
+  type VerifyReport,
+  type VerifyTarget,
+} from './digest.ts';
 import { embedded, planPack, type PackPlan, type PlanOptions } from './plan.ts';
-import { splitDataUrl, type PackThumbEntry, type ThumbPlacement } from './thumbs.ts';
+import { decodeBase64, splitDataUrl, type PackThumbEntry, type ThumbPlacement } from './thumbs.ts';
 import { PackError, type BodySource, type PackAssetMeta, type PackProject, type PackReader } from './types.ts';
 
 export const PACK_MAGIC = 'VIVIDPK1';
@@ -51,6 +62,23 @@ export interface PackBodyEntry {
   id: string;
   offset: number;
   length: number;
+  /**
+   * 中身のハッシュ（`digests: 'header'` のときだけ。`digest.ts`）。
+   *
+   * **位置と違って、これは無くても読める。** 無いファイルは「壊れている」ではなく
+   * 「確かめられない」なので、`verifyPack` では `unknown` になる。
+   */
+  hash?: string;
+  /**
+   * ハッシュ域の何番目に自分のハッシュがあるか（`digests: 'section'` のときだけ）。
+   *
+   * **ファイルには書かない。`openPack` が数えて入れる**（書くと見出しが太るだけ。
+   * 実測で素材 1000 個の見出しが 14.5KB 膨らんだ）。
+   * 域は**見出しに書いてあった順**に 32 バイトずつ並んでいるので、
+   * 位置の合わない実体を落とした後の並びで数えると 1 つずれる。
+   * だから数えるのは落とす前の並びで。
+   */
+  digestAt?: number;
 }
 
 export interface PackHeader {
@@ -76,6 +104,14 @@ export interface PackHeader {
   thumbBytes: number;
   /** 追い出したサムネイルの在り処。`inline` では空。 */
   thumbs: PackThumbEntry[];
+  /**
+   * ハッシュの置き所（`digest.ts`）。**サムネイルと同じ理由で、見て分かるように書いておく。**
+   * 「ハッシュ域の長さが 0 かどうか」から察させると、実体が 0 個の `section` と
+   * `none` が同じ形になってしまう。
+   */
+  digestPlacement: DigestPlacement;
+  /** ハッシュ域の長さ（32 × 実体の数）。`section` 以外では 0。 */
+  digestBytes: number;
 }
 
 /**
@@ -95,6 +131,20 @@ export interface PackLayout {
    * data URL 文字列なので、剥がした生バイトは 4 分の 3 に縮んだ写しになる。
    */
   thumbParts: Uint8Array[];
+  /**
+   * ハッシュ域の中身（`digests: 'section'` のときだけ。見出しの bodies と同じ順）。
+   * `attachDigests` を通すまでは空。
+   */
+  digestParts: Uint8Array[];
+  /**
+   * ハッシュを実際に計算して入れ終わったか。
+   *
+   * **`layoutPack` は実体を読まない**という決まりがあるので、ハッシュはここでは出せない
+   * （読まないと出せない）。それでも域の長さ（32 × 実体の数）は読まずに決まるので、
+   * 場所だけ先に空けて `attachDigests` で埋める形にした。
+   * 埋め忘れたまま書くと**全部が「中身が違う」になる**ので、`realizePack` が断る。
+   */
+  digestsAttached: boolean;
   /** 実体をこの順に繋げる。 */
   order: PackBodyEntry[];
   /**
@@ -109,8 +159,9 @@ export interface PackLayout {
   plan: PackPlan;
 }
 
-/** 前置きの後ろに並ぶもの 1 つ。サムネイルは中身を持ち、実体は長さだけ持つ。 */
+/** 前置きの後ろに並ぶもの 1 つ。ハッシュとサムネイルは中身を持ち、実体は長さだけ持つ。 */
 export type PackPart =
+  | { kind: 'digest'; id: string; bytes: Uint8Array }
   | { kind: 'thumb'; id: string; bytes: Uint8Array }
   | { kind: 'body'; id: string; length: number };
 
@@ -132,6 +183,11 @@ export interface LayoutOptions extends PlanOptions {
    * `inline` は「いまの本体の形」として比べるために残してある。
    */
   thumbs?: ThumbPlacement;
+  /**
+   * ハッシュの置き所（`digest.ts`）。**既定は `header`**（2026-09-28・3 回目に測って決めた）。
+   * `none` は 9/28（2 回目）までの形として、`section` は比べる相手として残してある。
+   */
+  digests?: DigestPlacement;
 }
 
 /**
@@ -207,6 +263,16 @@ export function layoutPack(
   }
 
   const thumbBytes = placement === 'section' ? thumbs.reduce((sum, t) => sum + t.length, 0) : 0;
+  // **ハッシュ域の長さは、実体を 1 バイトも読まずに決まる**（32 × 実体の数）。
+  // 中身が決まるのは `attachDigests` だが、長さがここで決まるので
+  // サムネイル域も実体の位置も動かない。不動点が出てこないのは
+  // 「位置は域の先頭からの相対」という決まりのおかげ（このファイルの頭の注）。
+  const digests: DigestPlacement = options.digests ?? 'header';
+  const digestBytes = digests === 'section' ? DIGEST_BYTES * order.length : 0;
+  // **番号はファイルに書かない。** 域は見出しの `bodies` と同じ順なので、
+  // 何番目かは読む側が数えれば分かる（`openPack`）。最初は書いていたが、
+  // 測ったら素材 1000 個で見出しが 14.5KB 太っていた——**「見出しから追い出す」ために
+  // 足した形が、見出しを太らせていた。**
   const header: PackHeader = {
     app: 'vivid-edit',
     pack: PACK_VERSION,
@@ -218,6 +284,8 @@ export function layoutPack(
     thumbPlacement: placement,
     thumbBytes,
     thumbs,
+    digestPlacement: digests,
+    digestBytes,
   };
 
   const { prefix } = encodeHeader(header);
@@ -229,7 +297,74 @@ export function layoutPack(
     placement === 'section'
       ? parts.filter((p): p is Extract<PackPart, { kind: 'thumb' }> => p.kind === 'thumb').map((p) => p.bytes)
       : [];
-  return { header, prefix, thumbParts, order, parts, totalBytes: prefix.length + after, plan };
+  return {
+    header,
+    prefix,
+    thumbParts,
+    digestParts: [],
+    // ハッシュを持たない形は、この時点でもう書ける。
+    digestsAttached: digests === 'none',
+    order,
+    parts,
+    totalBytes: prefix.length + digestBytes + after,
+    plan,
+  };
+}
+
+/**
+ * ハッシュを計算して並べ方に入れる。**ここで初めて実体を読む**（1 本ずつ、読んだら捨てる）。
+ *
+ * `layoutPack` と分けてあるのは、あちらの「実体を 1 バイトも読まない」を守るため。
+ * 画面に「このファイルは何 MB になります」を出すのは `layoutPack` の仕事で、
+ * そこにハッシュの費用（96MB で 0.3 秒）を混ぜたくない。
+ *
+ * **`header` なら、埋めても位置は 1 つも動かない**（見出しが伸びるだけで、
+ * 実体の位置は実体域の先頭からの相対なので）。`section` は長さが先に空いている。
+ */
+export async function attachDigests(layout: PackLayout, bodies: BodySource): Promise<PackLayout> {
+  const placement = layout.header.digestPlacement;
+  // 2 回通しても同じ結果になるようにする。`section` で 2 回通すと
+  // **域が 2 つ並んだファイル**になり、位置が全部ずれる（長さの辻褄だけ合わない形）。
+  if (placement === 'none' || layout.digestsAttached) return layout;
+
+  const hashes = await digestBodies(
+    layout.order.map((b) => b.id),
+    bodies,
+  );
+
+  if (placement === 'header') {
+    const order = layout.order.map((b) => ({ ...b, hash: hashes.get(b.id) }));
+    const header = { ...layout.header, bodies: order };
+    const { prefix } = encodeHeader(header);
+    const after = layout.parts.reduce((sum, p) => sum + (p.kind === 'body' ? p.length : p.bytes.length), 0);
+    return {
+      ...layout,
+      header,
+      prefix,
+      order,
+      digestsAttached: true,
+      totalBytes: prefix.length + after,
+    };
+  }
+
+  // `section`: 生の 32 バイトを見出しの bodies の順に並べて、前置きの直後に置く。
+  // base64 にしないのは、域に置くなら 1.333 倍がそのまま損になるから（サムネイルと同じ話）。
+  const digestParts = layout.order.map((b) => decodeDigest(hashes.get(b.id)!));
+  return {
+    ...layout,
+    digestParts,
+    digestsAttached: true,
+    parts: [...layout.order.map((b, i) => ({ kind: 'digest' as const, id: b.id, bytes: digestParts[i] })), ...layout.parts],
+  };
+}
+
+/** base64 の 44 文字を生の 32 バイトへ。`section` に置くときだけ通る。 */
+function decodeDigest(text: string): Uint8Array {
+  const bytes = decodeBase64(text);
+  if (!bytes || bytes.length !== DIGEST_BYTES) {
+    throw new PackError('ハッシュの形が合いません（作り方の間違いです）。');
+  }
+  return bytes;
 }
 
 /**
@@ -238,9 +373,19 @@ export function layoutPack(
  * 本物は `new Blob([layout.prefix, ...実体の Blob])` で済ませる。
  */
 export async function realizePack(layout: PackLayout, bodies: BodySource): Promise<Uint8Array[]> {
+  // **埋め忘れたまま書かせない。** 空けただけのハッシュ域を書くと、
+  // 開いた側では「全部の実体の中身が違う」になる。壊れていないのに壊れて見えるのが
+  // いちばん悪いので、ここで止める（`attachDigests` を通し忘れたときに必ず踏む）。
+  if (!layout.digestsAttached) {
+    throw new PackError('ハッシュを入れる約束のまま、計算せずに書こうとしています（attachDigests が要ります）。');
+  }
   const out: Uint8Array[] = [layout.prefix];
   for (const part of layout.parts) {
-    out.push(part.kind === 'thumb' ? part.bytes : await bodies.bytes(part.id));
+    // **`kind` を並べて書く。** ここを「実体でなければ絵」の形（`kind === 'thumb' ? … : 実体`）で
+    // 書いていたら、3 つ目（ハッシュ）を足したとたんハッシュの所に**実体が丸ごと**入った
+    // （測って気づいた。ファイルが 67MB → 130MB に膨らんだ）。
+    // 中身を持つものが 2 種類になったので、取り違えても長さの辻褄は合ってしまう。
+    out.push(part.kind === 'body' ? await bodies.bytes(part.id) : part.bytes);
   }
   return out;
 }
@@ -258,6 +403,8 @@ export interface OpenedPack {
   header: PackHeader;
   /** 実体域の先頭のファイル内位置。 */
   bodyBase: number;
+  /** ハッシュ域の先頭のファイル内位置（`section` 以外では長さ 0 の域を指す）。 */
+  digestBase: number;
   /** サムネイル域の先頭のファイル内位置（`section` 以外では実体域と同じ所を指す）。 */
   thumbBase: number;
   /**
@@ -324,7 +471,28 @@ export async function openPack(reader: PackReader): Promise<OpenedPack> {
     throw new PackError('プロジェクトの中身が壊れています（トラックがありません）。');
   }
 
-  const thumbBase = PACK_PREAMBLE + headerBytes;
+  const digestBase = PACK_PREAMBLE + headerBytes;
+  const digestPlacement: DigestPlacement =
+    header.digestPlacement === 'header' || header.digestPlacement === 'section' ? header.digestPlacement : 'none';
+  /**
+   * ハッシュ域の長さ。
+   *
+   * **サムネイル域とまったく同じ理由で、丸めて先へ進めない**（この値も実体域の頭を決める）。
+   * 加えて中身が 32 バイトの固定長なので、**32 で割れない長さは形からして嘘**だと分かる。
+   * ここで断れば、ずれたハッシュを読んで「全部の中身が違う」と言い出すのを防げる。
+   */
+  let digestBytes = 0;
+  if (digestPlacement === 'section') {
+    const declared = header.digestBytes;
+    if (!Number.isSafeInteger(declared) || (declared as number) < 0 || (declared as number) % DIGEST_BYTES !== 0) {
+      throw new PackError('ハッシュ域の長さが読めません（ファイルが壊れています）。');
+    }
+    digestBytes = declared as number;
+    if (digestBase + digestBytes > reader.size) {
+      throw new PackError('ハッシュ域がファイルの外へはみ出しています（途中で切れている可能性があります）。');
+    }
+  }
+  const thumbBase = digestBase + digestBytes;
   const placement: ThumbPlacement =
     header.thumbPlacement === 'section' || header.thumbPlacement === 'scattered' ? header.thumbPlacement : 'inline';
   /**
@@ -372,12 +540,21 @@ export async function openPack(reader: PackReader): Promise<OpenedPack> {
 
   const bodies: PackBodyEntry[] = [];
   const outOfRange: string[] = [];
-  for (const entry of Array.isArray(header.bodies) ? header.bodies : []) {
+  const declared = Array.isArray(header.bodies) ? header.bodies : [];
+  for (const [at, entry] of declared.entries()) {
     if (typeof entry?.id !== 'string' || !fits(entry, available)) {
       outOfRange.push(nameOf.get(entry?.id) ?? String(entry?.id ?? '(名前なし)'));
       continue;
     }
-    bodies.push({ id: entry.id, offset: entry.offset, length: entry.length });
+    bodies.push({
+      id: entry.id,
+      offset: entry.offset,
+      length: entry.length,
+      // ハッシュは「無くても読める」ので、形が違えば黙って捨てる（`unknown` になるだけ）。
+      ...(digestPlacement === 'header' && typeof entry.hash === 'string' ? { hash: entry.hash } : {}),
+      // **番号は落とす前の並びで数える**（`digestAt` の注）。
+      ...(digestPlacement === 'section' ? { digestAt: at } : {}),
+    });
   }
 
   // サムネイルの在り処は、置き所によって何を 0 とした相対かが変わる。
@@ -413,9 +590,12 @@ export async function openPack(reader: PackReader): Promise<OpenedPack> {
       thumbPlacement: placement,
       thumbBytes,
       thumbs,
+      digestPlacement,
+      digestBytes,
     },
     bodyBase,
     thumbBase,
+    digestBase,
     outOfRange,
     thumbsOutOfRange,
   };
@@ -480,4 +660,63 @@ export async function readThumb(
   if (!at) return null;
   const entry = opened.header.thumbs.find((t) => t.id === id)!;
   return { bytes: await reader.read(at.start, at.end), type: entry.type };
+}
+
+export interface VerifyOptions {
+  /** 確かめる素材を選ぶ。省くと全部。 */
+  ids?: string[];
+  /**
+   * **抜き取りの本数。** 読む量の小さい順にこの数だけ確かめる。
+   *
+   * 全部を確かめる必要が無い場合があるので付けてある。域の長さがずれた壊れ方
+   * （`README.md` の 6.4 が心配していた形）は実体の位置を**全部**同じだけずらすので、
+   * **いちばん小さい実体 1 本でも見つかる**（測った——README の 7.4）。
+   * 逆に「1 本だけ中身が化けた」はその 1 本を引かないと見つからないので、
+   * **抜き取りで見つかるのは「ずれ」だけ**。ここを混ぜて読まないこと。
+   */
+  sample?: number;
+}
+
+/**
+ * 実体の中身が、書いたときと同じかを確かめる。
+ *
+ * `section` のときだけ、ここでハッシュ域を 1 回読む（`header` なら見出しに入っている）。
+ * 実体は**1 本ずつ読んで捨てる**ので、山はいちばん大きい素材 1 本ぶんで止まる（`digest.ts`）。
+ */
+export async function verifyPack(
+  reader: PackReader,
+  opened: OpenedPack,
+  options: VerifyOptions = {},
+): Promise<VerifyReport> {
+  const nameOf = new Map(opened.header.assets.map((a) => [a.id, a.name]));
+  let sectionBytesRead = 0;
+  let section: Uint8Array | null = null;
+  if (opened.header.digestPlacement === 'section' && opened.header.digestBytes > 0) {
+    section = await reader.read(opened.digestBase, opened.digestBase + opened.header.digestBytes);
+    sectionBytesRead = opened.header.digestBytes;
+  }
+
+  const wanted = options.ids ? new Set(options.ids) : null;
+  let targets: VerifyTarget[] = [];
+  for (const entry of opened.header.bodies) {
+    if (wanted && !wanted.has(entry.id)) continue;
+    const at = locateBody(opened, entry.id);
+    if (!at) continue;
+    let hash = entry.hash;
+    if (section && entry.digestAt !== undefined) {
+      const from = entry.digestAt * DIGEST_BYTES;
+      // 域が短くて自分のぶんが入っていないときは「分からない」に倒す。
+      // 域の長さそのものは `openPack` が形（32 の倍数・ファイルに収まる）で見ている。
+      if (from + DIGEST_BYTES <= section.length) {
+        hash = digestToText(section.subarray(from, from + DIGEST_BYTES));
+      }
+    }
+    targets.push({ id: entry.id, name: nameOf.get(entry.id) ?? entry.id, start: at.start, end: at.end, hash });
+  }
+
+  if (options.sample !== undefined) targets = cheapestFirst(targets).slice(0, Math.max(0, options.sample));
+
+  const report = await verifyBodies(reader, targets);
+  // ハッシュ域を読んだぶんも足して返す（「確かめるのに何バイト読んだか」を濁さない）。
+  return { ...report, bytesRead: report.bytesRead + sectionBytesRead };
 }
