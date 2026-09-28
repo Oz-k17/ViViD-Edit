@@ -93,34 +93,6 @@ export const TEXT_PRESETS: TextPreset[] = [
   },
   {
     /**
-     * 切り抜きの本文。白の文字に黒の縁ひとつ、影は下へ。
-     *
-     * 縁を「白 → 黒」と二重に巻くと、文字のまわりに均等な輪ができて、
-     * どの切り抜きでも同じ顔になる。縁を黒ひとつに減らし、影を真下へずらすと
-     * 輪が崩れて、人が置いた字に見える。
-     *
-     * 色は既定では付けない。二人だから二色、をやめて、
-     * **見せ場の行だけ色を付ける**（＝話者の色。相手は白のまま）。
-     */
-    key: 'clip',
-    label: '切り抜き',
-    text: {
-      ...DEFAULT_TEXT,
-      fontFamily: FONT_OPTIONS[4].value,
-      fontSize: 112,
-      weight: 400,
-      color: '#ffffff',
-      strokeColor: '#000000',
-      strokeWidth: 12,
-      strokeWidth2: 0,
-      shadow: 14,
-      shadowY: 8,
-      maxWidth: 0.94,
-      animation: 'pop',
-    },
-  },
-  {
-    /**
      * 見出し。改行は自分で決めて、横幅いっぱいになる大きさは機械に出させる。
      * 「タイトル・飾り」なので、字幕なしで書き出しても残る。
      */

@@ -993,12 +993,7 @@ function CardFrameSection({
  * 迷った行（1 番目と 2 番目の差が小さい行）は数えて伝える。黙って片方へ倒すと、
  * どこを見直せばよいか分からなくなる。
  */
-/**
- * 話者の色。**片方は白のまま**にしてある。
- * 二人に二色を振ると、どちらの行も同じだけ目立って見せ場が決まらない。
- * 色が付いた行だけが浮くので、そちらが主役になる。
- */
-const SPEAKER_DEFAULT_COLORS: Record<string, string> = { '1': '#ffffff', '2': '#5cd6ff' };
+const SPEAKER_DEFAULT_COLORS: Record<string, string> = { '1': '#5cd6ff', '2': '#c084fc' };
 /** これより差が小さい行は「迷った」として数える。 */
 const UNSURE_MARGIN = 0.03;
 
