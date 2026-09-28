@@ -168,3 +168,76 @@ export function scenarioAt(index: number): Scenario {
 export function scenarios(): Scenario[] {
   return SPECS.map((spec) => build(...spec));
 }
+
+/**
+ * サムネイルの置き所を測るための構成。**素材の数を振るためだけにある。**
+ *
+ * 上の `SPECS` と分けてあるのは、あちらが「実体の大きさ」を測る形だから。
+ * ここで効くのは**素材が何個あるか**で、実体 1 つの大きさはむしろ小さく置きたい
+ * （1000 個 × 12MB ＝ 12GB を実際に並べずに、散らばり方だけを見たい）。
+ *
+ * サムネイルの長さは `lab:pack:thumbsize` で実測した幅（2.3〜6.4KB）を、
+ * 素材ごとに順に当てて散らす。**全部を同じ長さにすると、位置の計算が
+ * 掛け算で合ってしまって、足し算の取り違えが検算に出てこない。**
+ */
+export function thumbScenario(
+  count: number,
+  { bodyBytes = 64 * 1024, thumbBytes = [2399, 3868, 5372, 6576], refEvery = 0 } = {},
+): Scenario {
+  const metas: PackAssetMeta[] = [];
+  const bodies = new Map<string, Uint8Array>();
+  const clips: PackClip[] = [];
+  let raw = 0;
+
+  for (let i = 0; i < count; i += 1) {
+    // id は**桁を揃えて**置く。`plan.ts` は id の昇順に詰めるので、
+    // 桁が揃っていないと `a10` が `a2` より前に来て、並びが人の期待とずれる。
+    const id = `a${String(i).padStart(6, '0')}`;
+    const isRef = refEvery > 0 && i % refEvery === 0;
+    const thumbLen = thumbBytes[i % thumbBytes.length];
+    metas.push({
+      id,
+      name: `素材${i}.mp4`,
+      kind: 'video',
+      duration: 12,
+      width: 1080,
+      height: 1920,
+      // 本体の `snapshot()` が返すのと同じ形の文字列。中身は測るのに要らないので乱数。
+      thumbnail: `data:image/jpeg;base64,${base64Of(pseudoBytes(thumbLen, i + 7))}`,
+      size: bodyBytes,
+      folder: '未分類',
+      createdAt: 1_700_000_000_000 + i,
+      ...(isRef ? { src: `media/素材${i}.mp4` } : {}),
+    });
+    if (!isRef) {
+      bodies.set(id, pseudoBytes(bodyBytes, i + 1));
+      raw += bodyBytes;
+    }
+    clips.push(clip(id));
+  }
+
+  return {
+    name: `素材 ${count} 個`,
+    note: `実体 ${(bodyBytes / 1024).toFixed(0)}KB × ${count}`,
+    project: makeProject(clips, `素材 ${count} 個`),
+    assets: assetMap(metas),
+    bodies,
+    rawBytes: raw,
+  };
+}
+
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+/** 素材を組むためだけの base64。判断には関わらないので、素直な実装で足りる。 */
+function base64Of(bytes: Uint8Array): string {
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i];
+    const b = i + 1 < bytes.length ? bytes[i + 1] : 0;
+    const c = i + 2 < bytes.length ? bytes[i + 2] : 0;
+    out += B64[a >> 2] + B64[((a & 3) << 4) | (b >> 4)];
+    out += i + 1 < bytes.length ? B64[((b & 15) << 2) | (c >> 6)] : '=';
+    out += i + 2 < bytes.length ? B64[c & 63] : '=';
+  }
+  return out;
+}

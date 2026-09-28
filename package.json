@@ -58,7 +58,9 @@
     "lab:keyframe:demo": "vite lab/keyframe",
     "lab:keyframe:uitest": "node lab/keyframe/uitest.mjs",
     "lab:export:audio": "node lab/export-cost/audio.mjs",
-    "lab:pack": "node lab/project-pack/bench.mjs"
+    "lab:pack": "node lab/project-pack/bench.mjs",
+    "lab:pack:thumbsize": "node lab/project-pack/thumb-size.mjs",
+    "lab:pack:thumbs": "node lab/project-pack/thumb-probe.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.48.0",

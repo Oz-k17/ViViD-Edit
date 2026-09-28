@@ -349,9 +349,9 @@ console.log('\n## 6. 見出しはどこまで大きくなるか\n');
   console.log(`素材 ${s.assets.size} 個で見出し ${layout.prefix.length - PACK_PREAMBLE} バイト`);
   console.log(`1 素材あたり約 ${Math.round((layout.prefix.length - PACK_PREAMBLE) / s.assets.size)} バイト`);
   console.log(`（実体 ${plan.entries.filter((e) => e.disposition === 'embed').length} 個 / 参照 ${plan.entries.filter((e) => e.disposition === 'ref').length} 個）`);
-  console.log('\nサムネイル（`thumbnail` の data URL）を入れると 1 素材 10〜20KB 増える。');
-  console.log('見出しは開くとき必ず全部読むので、素材 1000 個なら見出しだけで 20MB。');
-  console.log('そこが重くなるなら、サムネイルも実体と同じく後ろへ回す（次の回の題材）。');
+  console.log('\n（ここにサムネイルは入っていない。2026-09-28・2 回目に見出しの外へ出した——');
+  console.log('本体と同じ規則で焼くと 1 枚 2.3〜6.4KB あり、素材 1000 個で見出しが 6.2MB になる。');
+  console.log('置き所とその数字は `npm run lab:pack:thumbs` と `npm run lab:pack:thumbsize`）。');
 }
 
 console.log('');

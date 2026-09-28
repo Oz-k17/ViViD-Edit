@@ -17,9 +17,12 @@ import {
   PACK_PREAMBLE,
   readBody,
   readerFromBytes,
+  readThumb,
   realizePack,
+  thumbRanges,
   type PackHeader,
 } from './container.ts';
+import { decodeBase64, toDataUrl } from './thumbs.ts';
 import { base64Length, buildJsonPack, jsonPackBody, parseJsonPack } from './json-pack.ts';
 import { planPack } from './plan.ts';
 import { assetMap, clip, makeProject, memoryBodies, meta, pseudoBytes } from './scenarios.ts';
@@ -119,6 +122,9 @@ function baseHeader(over: Partial<PackHeader> = {}): PackHeader {
     assets: [],
     bodies: [],
     localOnly: [],
+    thumbPlacement: 'inline',
+    thumbBytes: 0,
+    thumbs: [],
     ...over,
   };
 }
@@ -419,6 +425,280 @@ export async function runSelfTest(): Promise<Result[]> {
       a.header.bodies.length === 1 && b.header.bodies.length === 0,
       '実体域の末尾ぴったりは通し、1 バイト越えたら落とす',
       `ぴったり ${a.header.bodies.length} 個 / 1 バイト越え ${b.header.bodies.length} 個`,
+    );
+  }
+
+  // ===== サムネイルの置き所（2026-09-28・2 回目） =====
+
+  {
+    // 往復。**3 通りとも、元の data URL と 1 文字も違わずに戻ること。**
+    // ここが合わないと、見出しを細くした代わりに絵が化ける。
+    const pic = pseudoBytes(300, 21);
+    const url = toDataUrl('image/jpeg', pic);
+    for (const placement of ['inline', 'section', 'scattered'] as const) {
+      const a = meta({ id: 't1', name: 'サムネ付き.mp4', thumbnail: url });
+      const bodies = memoryBodies(new Map([['t1', pseudoBytes(80, 22)]]));
+      const layout = layoutPack(makeProject([clip('t1')]), assetMap([a]), bodies, { thumbs: placement });
+      const reader = readerFromBytes(concat(await realizePack(layout, bodies)));
+      const opened = await openPack(reader);
+      const pulled = await readThumb(reader, opened, 't1');
+      const got = pulled ? toDataUrl(pulled.type, pulled.bytes) : opened.header.assets[0].thumbnail;
+      add(got === url, `${placement}: サムネイルが元の data URL のまま戻る`, `${got.length} 文字`);
+    }
+  }
+
+  {
+    // 追い出したぶんだけ見出しが細くなり、**base64 の 1.333 倍もそこで落ちる。**
+    const pic = pseudoBytes(3000, 23);
+    const a = meta({ id: 't2', thumbnail: toDataUrl('image/jpeg', pic) });
+    const bodies = memoryBodies(new Map([['t2', pseudoBytes(80, 24)]]));
+    const inline = layoutPack(makeProject([clip('t2')]), assetMap([a]), bodies, { thumbs: 'inline' });
+    const section = layoutPack(makeProject([clip('t2')]), assetMap([a]), bodies, { thumbs: 'section' });
+    add(
+      section.prefix.length < inline.prefix.length - 3900 && section.totalBytes < inline.totalBytes,
+      '追い出すと見出しが絵のぶん細くなり、ファイル全体も base64 のぶん縮む',
+      `見出し ${inline.prefix.length} → ${section.prefix.length} B / 全体 ${inline.totalBytes} → ${section.totalBytes} B`,
+    );
+  }
+
+  {
+    // **剥がせないものは追い出さない。** 空文字（音の素材）・外部 URL・壊れた base64。
+    // ここで黙って落とすと、開いた側でサムネイルだけ消える。
+    const metas = [
+      meta({ id: 'p0', name: '音.wav', kind: 'audio', thumbnail: '' }),
+      meta({ id: 'p1', name: '外.mp4', thumbnail: 'https://example.test/a.jpg' }),
+      meta({ id: 'p2', name: '壊れ.mp4', thumbnail: 'data:image/jpeg;base64,@@@@' }),
+      meta({ id: 'p3', name: '素の.mp4', thumbnail: 'data:image/svg+xml,<svg/>' }),
+      // 種類が書いていないもの。剥がせはするが、戻すと別の data URL になるので追い出さない。
+      meta({ id: 'p4', name: '種類なし.mp4', thumbnail: 'data:;base64,QUJD' }),
+      meta({ id: 'p5', name: '正しい.mp4', thumbnail: toDataUrl('image/png', pseudoBytes(90, 25)) }),
+    ];
+    const bodies = memoryBodies(new Map(metas.map((m, i) => [m.id, pseudoBytes(16, 30 + i)])));
+    const layout = layoutPack(makeProject(metas.map((m) => clip(m.id))), assetMap(metas), bodies, {
+      thumbs: 'section',
+    });
+    const reader = readerFromBytes(concat(await realizePack(layout, bodies)));
+    const opened = await openPack(reader);
+    const kept = opened.header.assets.filter((x) => x.thumbnail);
+    add(
+      opened.header.thumbs.length === 1 &&
+        opened.header.thumbs[0].id === 'p5' &&
+        opened.header.thumbs[0].type === 'image/png' &&
+        kept.map((x) => x.id).join(',') === 'p1,p2,p3,p4',
+      '剥がせないサムネイルは見出しに残す（空・外部 URL・壊れた base64・素の data URL・種類なし）',
+      `追い出し ${opened.header.thumbs.length} 枚 / 見出しに残り ${kept.length} 枚`,
+    );
+  }
+
+  {
+    // **ここが置き所を決めた理由そのもの。** 一覧を出すのに読む範囲が、
+    // `section` では 1 本に繋がり、`scattered` では素材の数だけに割れる。
+    const metas = Array.from({ length: 5 }, (_, i) =>
+      meta({ id: `s${i}`, thumbnail: toDataUrl('image/jpeg', pseudoBytes(120 + i, 40 + i)) }),
+    );
+    const bodies = memoryBodies(new Map(metas.map((m, i) => [m.id, pseudoBytes(5000, 50 + i)])));
+    const project = makeProject(metas.map((m) => clip(m.id)));
+    const counts: Record<string, number> = {};
+    for (const placement of ['section', 'scattered'] as const) {
+      const layout = layoutPack(project, assetMap(metas), bodies, { thumbs: placement });
+      const opened = await openPack(readerFromBytes(concat(await realizePack(layout, bodies))));
+      counts[placement] = thumbRanges(opened).length;
+    }
+    add(
+      counts.section === 1 && counts.scattered === 5,
+      'まとめて置けば一覧は 1 回で読める。実体に混ぜると素材の数だけ読む',
+      `section ${counts.section} 回 / scattered ${counts.scattered} 回`,
+    );
+  }
+
+  {
+    // 一覧を出すのに、**実体を 1 バイトも読んでいない**こと。
+    // `section` の値打ちはここで、読んだ量が絵の合計を越えたら意味が無い。
+    const metas = Array.from({ length: 4 }, (_, i) =>
+      meta({ id: `r${i}`, thumbnail: toDataUrl('image/jpeg', pseudoBytes(200, 60 + i)) }),
+    );
+    const bodies = memoryBodies(new Map(metas.map((m, i) => [m.id, pseudoBytes(20_000, 70 + i)])));
+    const layout = layoutPack(makeProject(metas.map((m) => clip(m.id))), assetMap(metas), bodies, {
+      thumbs: 'section',
+    });
+    const reader = countingReader(concat(await realizePack(layout, bodies)));
+    const opened = await openPack(reader);
+    const before = reader.bytesRead;
+    for (const range of thumbRanges(opened)) await reader.read(range.start, range.end);
+    const forList = reader.bytesRead - before;
+    add(
+      forList === 800 && reader.bytesRead < 80_000,
+      '一覧を出すのに読むのは絵の合計ぶんだけ（実体 80KB には触れない）',
+      `絵に ${forList} B / 全部で ${reader.bytesRead} B（ファイルは ${reader.size} B）`,
+    );
+  }
+
+  {
+    // 境界値。**`section` では、域の末尾ぴったりは通し、1 バイトでも越えたら断る。**
+    // ほかの嘘（実体の位置・`scattered` の絵）と違って、ここだけは「その 1 つを落とす」で
+    // 済まない——サムネイル域の長さは実体域の先頭そのものなので、短い側へずれると
+    // 実体の位置も長さも辻褄が合ったまま**中身だけが別物**になる。長さは通るので気づけない。
+    const area = pseudoBytes(40, 80);
+    const fit = baseHeader({
+      assets: [meta({ id: 'f' })],
+      thumbPlacement: 'section',
+      thumbBytes: 40,
+      thumbs: [{ id: 'f', offset: 10, length: 30, type: 'image/jpeg' }],
+    });
+    const over = baseHeader({
+      assets: [meta({ id: 'o' })],
+      thumbPlacement: 'section',
+      thumbBytes: 40,
+      thumbs: [{ id: 'o', offset: 10, length: 31, type: 'image/jpeg' }],
+    });
+    const a = await openPack(readerFromBytes(packWith(fit, area)));
+    const msg = await threw(() => openPack(readerFromBytes(packWith(over, area))));
+    add(
+      a.header.thumbs.length === 1 && msg !== null && msg.includes('サムネイル域'),
+      'サムネイル域は、末尾ぴったりは通し 1 バイト越えたら断る（実体が全部ずれるので）',
+      `ぴったり ${a.header.thumbs.length} 枚 / 越え: ${msg ?? '断らなかった'}`,
+    );
+  }
+
+  {
+    // **同じ嘘でも `scattered` では落とすだけ。** あちらの絵は実体域に居るので、
+    // 1 枚が範囲外でもずれるのはその絵だけ。断ると、開けたはずのファイルを閉ざすことになる。
+    const body = pseudoBytes(40, 81);
+    const liar = baseHeader({
+      assets: [meta({ id: 'x', name: '範囲外の絵.mp4' }), meta({ id: 'y' })],
+      thumbPlacement: 'scattered',
+      thumbBytes: 0,
+      thumbs: [
+        { id: 'x', offset: 10, length: 999, type: 'image/jpeg' },
+        { id: 'y', offset: 0, length: 10, type: 'image/jpeg' },
+      ],
+      bodies: [{ id: 'y', offset: 10, length: 30 }],
+    });
+    const opened = await openPack(readerFromBytes(packWith(liar, body)));
+    add(
+      opened.header.thumbs.length === 1 &&
+        opened.thumbsOutOfRange.join('') === '範囲外の絵.mp4' &&
+        opened.outOfRange.length === 0,
+      'scattered の範囲外の絵は、その 1 枚だけ落として名前を出す（実体とは別の列で）',
+      `絵の落ち: ${opened.thumbsOutOfRange.join('・')} / 実体の落ち: ${opened.outOfRange.length} 個`,
+    );
+  }
+
+  {
+    // 絵が 1 枚も無い `section` と `scattered` は、ファイルとしては同じ形になる。
+    // **置き所を見出しに書いておかないとここで見分けが付かない**ので、書いてあることを確かめる。
+    const a = meta({ id: 'n0', thumbnail: '' });
+    const bodies = memoryBodies(new Map([['n0', pseudoBytes(64, 82)]]));
+    const made = ['section', 'scattered'].map((placement) =>
+      layoutPack(makeProject([clip('n0')]), assetMap([a]), bodies, { thumbs: placement as 'section' }),
+    );
+    // 違うのは**置き所を書いた言葉の字数だけ**（section 7 文字 / scattered 9 文字）。
+    // ぴったり 2 バイトで済んでいれば、ほかは 1 バイトも動いていないと言える。
+    add(
+      made[0].header.thumbPlacement === 'section' &&
+        made[1].header.thumbPlacement === 'scattered' &&
+        made[1].totalBytes - made[0].totalBytes === 2,
+      '絵が 1 枚も無ければ、2 つの置き所の違いは見出しに書いた言葉の 2 バイトだけ',
+      `${made[0].totalBytes} B / ${made[1].totalBytes} B`,
+    );
+  }
+
+  {
+    // 日本語の名前は実体の側で 1 度踏んだ穴（文字数とバイト数のずれ）。
+    // サムネイル域が挟まると**前置きが伸びる**ので、同じ穴をもう一度踏まないか確かめる。
+    const name = 'あいうえお'.repeat(40) + '.mp4';
+    const a = meta({ id: 'jp', name, thumbnail: toDataUrl('image/jpeg', pseudoBytes(500, 83)) });
+    const body = pseudoBytes(77, 84);
+    const bodies = memoryBodies(new Map([['jp', body]]));
+    const layout = layoutPack(makeProject([clip('jp')]), assetMap([a]), bodies, { thumbs: 'section' });
+    const reader = readerFromBytes(concat(await realizePack(layout, bodies)));
+    const opened = await openPack(reader);
+    const got = await readBody(reader, opened, 'jp');
+    const pic = await readThumb(reader, opened, 'jp');
+    add(
+      !!got && same(got, body) && !!pic && pic.bytes.length === 500 && opened.header.assets[0].name === name,
+      '素材名が日本語でも、サムネイル域を挟んだ実体の頭がずれない',
+      `名前 ${name.length} 文字 / 実体 ${got?.length ?? 0} B / 絵 ${pic?.bytes.length ?? 0} B`,
+    );
+  }
+
+  {
+    // 0 バイトの絵。長さ 0 は「無い」ではなく「空」なので、落とさず 0 バイトで返す。
+    const a = meta({ id: 'z', thumbnail: 'data:image/jpeg;base64,' });
+    const bodies = memoryBodies(new Map([['z', pseudoBytes(8, 85)]]));
+    const layout = layoutPack(makeProject([clip('z')]), assetMap([a]), bodies, { thumbs: 'section' });
+    const reader = readerFromBytes(concat(await realizePack(layout, bodies)));
+    const opened = await openPack(reader);
+    const pic = await readThumb(reader, opened, 'z');
+    add(
+      !!pic && pic.bytes.length === 0 && thumbRanges(opened).length === 0,
+      '0 バイトの絵は落とさず 0 バイトで返す（読む範囲には数えない）',
+      `${pic?.bytes.length ?? -1} B / 読む範囲 ${thumbRanges(opened).length} 本`,
+    );
+  }
+
+  {
+    // 壊れた base64 を `decodeBase64` が**黙って通さない**こと。
+    // `atob` に任せると実装によっては何かを返すので、ここは自前で数えている。
+    const bad = ['@@@@', 'AA', 'AAAAA', 'A===', 'AB=C'];
+    const good = ['', 'AA==', 'AAA=', 'AAAA'];
+    add(
+      bad.every((t) => decodeBase64(t) === null) && good.every((t) => decodeBase64(t) !== null),
+      '壊れた base64 は null にする（長さ・詰め物・使えない字）',
+      `駄目 ${bad.join(' ')} / よい ${good.map((g) => g || '(空)').join(' ')}`,
+    );
+  }
+
+  {
+    // 途中で切れたファイル。**サムネイル域が宣言ぶん入っていなければ断る。**
+    // ここを 0 に丸めて開くと、実体域の先頭が絵の頭を指したまま読み進めてしまう。
+    const cut = baseHeader({
+      assets: [meta({ id: 'c' })],
+      thumbPlacement: 'section',
+      thumbBytes: 1000,
+      thumbs: [{ id: 'c', offset: 0, length: 1000, type: 'image/jpeg' }],
+    });
+    const msg = await threw(() => openPack(readerFromBytes(packWith(cut, pseudoBytes(20, 86)))));
+    add(
+      msg !== null && msg.includes('サムネイル域') && msg.includes('はみ出し'),
+      '宣言ぶんのサムネイル域が入っていないファイルは断る（途中で切れている）',
+      msg ?? '断らなかった',
+    );
+  }
+
+  {
+    // 域の長さが**数でない・負**のときも断る。ここを 0 へ丸めて先へ進めると、
+    // 実体の位置が全部ずれたまま辻褄が合ってしまう（絵が 1 枚も無ければ気づく手がかりも無い）。
+    const cases: unknown[] = ['40', -8, 1.5, null];
+    const msgs: string[] = [];
+    for (const bad of cases) {
+      const header = { ...baseHeader({ assets: [meta({ id: 'b' })], thumbPlacement: 'section' }), thumbBytes: bad };
+      const msg = await threw(() => openPack(readerFromBytes(packWith(header, pseudoBytes(40, 89)))));
+      if (msg !== null && msg.includes('読めません')) msgs.push(String(bad));
+    }
+    add(
+      msgs.length === cases.length,
+      'サムネイル域の長さが数でない／負／小数なら断る（0 へ丸めて進めない）',
+      `断った: ${msgs.join(' ')}`,
+    );
+  }
+
+  {
+    // `thumbParts` は**`section` のときだけ**中身を持つ。
+    // `scattered` でここに絵が並ぶと、書き出す側が
+    // `[prefix, ...thumbParts, ...実体]` と繋いで位置が全部ずれたファイルを作る。
+    const a = meta({ id: 'w', thumbnail: toDataUrl('image/jpeg', pseudoBytes(64, 87)) });
+    const bodies = memoryBodies(new Map([['w', pseudoBytes(100, 88)]]));
+    const project = makeProject([clip('w')]);
+    const made = (placement: 'inline' | 'section' | 'scattered') =>
+      layoutPack(project, assetMap([a]), bodies, { thumbs: placement });
+    add(
+      made('section').thumbParts.length === 1 &&
+        made('scattered').thumbParts.length === 0 &&
+        made('inline').thumbParts.length === 0 &&
+        made('scattered').parts.length === 2,
+      'thumbParts は section のときだけ中身を持つ（散らすときは parts しか正しくない）',
+      `section ${made('section').thumbParts.length} / scattered ${made('scattered').thumbParts.length} / parts ${made('scattered').parts.length}`,
     );
   }
 
