@@ -5,6 +5,7 @@ import { defaultCrop } from '../../engine/renderer';
 import { FONT_OPTIONS, LOOK_PRESETS, SPEED_PRESETS, TEXT_PRESETS } from '../../presets';
 import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
+import { buildThreeBand } from '../../model/threeBand';
 import {
   ASPECT_PRESETS,
   DEFAULT_BG_BLUR,
@@ -361,12 +362,60 @@ function PropsTab({ clip }: { clip: Clip }) {
           )}
 
           <hr />
+          <ThreeBandSection clip={clip} />
+
+          <hr />
           <CropSection clip={clip} />
 
           <hr />
           <TransitionControls clip={clip} />
         </>
       )}
+    </>
+  );
+}
+
+/**
+ * 「上に見出し・中に本編・下に顔」の 3 分割へ組み直す入口。
+ *
+ * 横長の配信をそのまま縦に入れると絵が小さくなる。見せたい所を 2 か所取り出して
+ * 縦に積むと、同じ画面で本編も表情も見える。帯の高さは黄金比で決める。
+ *
+ * 切り出す位置は素材によって違うので、ここでは中心から取るだけにして、
+ * そのあと各クリップのクロップでつまんで合わせてもらう。
+ */
+function ThreeBandSection({ clip }: { clip: Clip }) {
+  const { sequence, apply, setSelection } = useEditor();
+  const asset = mediaRegistry.get(clip.mediaId);
+
+  const build = (withTitle: boolean) => {
+    const media = { width: asset?.width || sequence.width, height: asset?.height || sequence.height };
+    const titleStyle = TEXT_PRESETS.find((preset) => preset.key === 'title')?.text;
+    apply((seq) =>
+      buildThreeBand(seq, clip, media, {
+        titleStyle: withTitle ? titleStyle : undefined,
+        titleText: withTitle ? '見出しを入れる' : undefined,
+      }),
+    );
+    setSelection([]);
+  };
+
+  return (
+    <>
+      <Field label="画面構成" hint="このクリップを 3 本に置き換えます">
+        <div className="chip-row wrap">
+          <button type="button" className="chip" onClick={() => build(true)}>
+            3分割に組む（見出しつき）
+          </button>
+          <button type="button" className="chip" onClick={() => build(false)}>
+            3分割に組む
+          </button>
+        </div>
+      </Field>
+      <p className="muted small">
+        上＝ぼかした背景と見出し、中＝本編、下＝顔のアップ。
+        切り出す場所は中心から取るので、置いたあと各クリップのクロップで合わせてください。
+      </p>
     </>
   );
 }

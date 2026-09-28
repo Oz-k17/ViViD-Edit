@@ -9,7 +9,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
-    "test:text": "node scripts/text-selftest.mjs",
+    "test:model": "node --import ./scripts/ts-resolve-register.mjs scripts/model-selftest.mjs",
     "bundle": "npm run build && npm run lab:build && node scripts/sync-bundles.mjs",
     "lab": "vite lab/auto-cut",
     "lab:build": "vite build lab/auto-cut",
