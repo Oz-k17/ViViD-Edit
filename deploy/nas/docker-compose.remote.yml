@@ -37,7 +37,7 @@ services:
       - |
         set -e
         rm -rf /srv/app/* /srv/conf/* /tmp/src
-        git clone --depth 1 --branch claude/short-form-video-editor-o8oabn https://github.com/Oz-k17/discord-calendar-bot /tmp/src
+        git clone --depth 1 https://github.com/Oz-k17/vivid-edit /tmp/src
         cp -r /tmp/src/docs/. /srv/app/
         cp /tmp/src/deploy/nas/nginx.conf /srv/conf/default.conf
         echo 'アプリと設定を展開しました'
