@@ -42,6 +42,7 @@ export const DEFAULT_TEXT: TextProps = {
   strokeWidth2: 0,
   fit: 'wrap',
   role: 'caption',
+  frame: null,
 };
 
 export function baseClip(kind: ClipKind, trackId: string): Clip {

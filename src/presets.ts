@@ -1,5 +1,5 @@
 import { DEFAULT_TEXT } from './model/factory';
-import type { TextProps } from './model/types';
+import { DEFAULT_TEXT_FRAME, type TextProps } from './model/types';
 
 export const FONT_OPTIONS = [
   { value: '"Noto Sans JP", system-ui, sans-serif', label: 'Noto Sans JP（標準）' },
@@ -112,6 +112,34 @@ export const TEXT_PRESETS: TextPreset[] = [
       fit: 'shrink',
       role: 'design',
       animation: 'none',
+    },
+  },
+  {
+    /**
+     * 視聴者のコメントなどを札にして見せる形。
+     * 台紙があるぶん、文字だけより「引用している」ことがはっきりする。
+     * 「タイトル・飾り」なので、字幕なしで書き出しても残る。
+     */
+    key: 'card',
+    label: 'コメントカード',
+    text: {
+      ...DEFAULT_TEXT,
+      fontFamily: FONT_OPTIONS[4].value,
+      fontSize: 64,
+      weight: 700,
+      color: '#1f2937',
+      strokeWidth: 0,
+      strokeWidth2: 0,
+      shadow: 0,
+      maxWidth: 0.68,
+      role: 'design',
+      animation: 'pop',
+      frame: {
+        ...DEFAULT_TEXT_FRAME,
+        heading: 'コメント',
+        iconLeft: 'message-circle',
+        iconRight: 'languages',
+      },
     },
   },
   {

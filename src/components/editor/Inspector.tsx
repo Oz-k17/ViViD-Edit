@@ -6,10 +6,12 @@ import { FONT_OPTIONS, LOOK_PRESETS, SPEED_PRESETS, TEXT_PRESETS } from '../../p
 import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
 import { buildThreeBand } from '../../model/threeBand';
+import { CARD_ICON_LABELS, CARD_ICON_NAMES } from '../../engine/cardIcons';
 import {
   ASPECT_PRESETS,
   DEFAULT_BG_BLUR,
   EFFECT_META,
+  DEFAULT_TEXT_FRAME,
   TEXT_ANIMATION_LABELS,
   TEXT_FIT_LABELS,
   TEXT_ROLE_LABELS,
@@ -23,6 +25,7 @@ import {
   type TextAlign,
   type TextAnimation,
   type TextFit,
+  type TextFrame,
   type TextProps,
   type TextRole,
   type TransitionType,
@@ -758,6 +761,9 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
         />
       </Field>
 
+      <hr />
+      <CardFrameSection text={text} set={set} />
+
       <div className="chip-row">
         <button type="button" className="chip" onClick={() => patch({ x: 0, y: -0.32 })}>
           上
@@ -847,6 +853,117 @@ function EmojiTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curs
       <p className="muted small">
         タップすると、テキストタブで最後にカーソルがあった位置に挿入されます。挿入後は普通の文字と同じく選択・削除・並べ替えができます。
       </p>
+    </>
+  );
+}
+
+/**
+ * テロップの後ろに敷く台紙。
+ *
+ * 「視聴者のコメントを札にして見せる」ような、文字だけでは足りない見せ方のためのもの。
+ * 見出しの帯と、その左右に置く印まで含めて 1 つの部品として扱う。
+ */
+function CardFrameSection({
+  text,
+  set,
+}: {
+  text: TextProps;
+  set: (changes: Partial<TextProps>, key?: string) => void;
+}) {
+  const frame = text.frame ?? null;
+  const patchFrame = (changes: Partial<TextFrame>, key?: string) =>
+    set({ frame: { ...(frame ?? DEFAULT_TEXT_FRAME), ...changes } }, key);
+
+  const iconOptions = (
+    <>
+      <option value="">なし</option>
+      {CARD_ICON_NAMES.map((name) => (
+        <option key={name} value={name}>
+          {CARD_ICON_LABELS[name]}
+        </option>
+      ))}
+    </>
+  );
+
+  return (
+    <>
+      <Toggle
+        label="台紙を敷く（コメントカード）"
+        checked={frame !== null}
+        onChange={(on) => set({ frame: on ? { ...DEFAULT_TEXT_FRAME } : null })}
+      />
+      {frame && (
+        <>
+          <Field label="見出し" hint="空にすると帯を出さない">
+            <input
+              type="text"
+              value={frame.heading}
+              placeholder="コメント"
+              onChange={(e) => patchFrame({ heading: e.target.value })}
+            />
+          </Field>
+          <div className="two-col">
+            <Field label="左の印">
+              <select value={frame.iconLeft ?? ''} onChange={(e) => patchFrame({ iconLeft: e.target.value || null })}>
+                {iconOptions}
+              </select>
+            </Field>
+            <Field label="右の印">
+              <select value={frame.iconRight ?? ''} onChange={(e) => patchFrame({ iconRight: e.target.value || null })}>
+                {iconOptions}
+              </select>
+            </Field>
+            <Field label="台紙の色">
+              <ColorInput value={frame.background} onChange={(background) => patchFrame({ background }, 'cardBg')} />
+            </Field>
+            <Field label="枠の色">
+              <ColorInput value={frame.borderColor} onChange={(borderColor) => patchFrame({ borderColor }, 'cardBorder')} />
+            </Field>
+            <Field label="帯の色">
+              <ColorInput
+                value={frame.headingBackground}
+                onChange={(headingBackground) => patchFrame({ headingBackground }, 'cardBand')}
+              />
+            </Field>
+            <Field label="見出しの色">
+              <ColorInput value={frame.headingColor} onChange={(headingColor) => patchFrame({ headingColor }, 'cardHead')} />
+            </Field>
+            <Field label="枠の太さ">
+              <Slider
+                value={frame.borderWidth}
+                min={0}
+                max={24}
+                step={1}
+                onChange={(borderWidth) => patchFrame({ borderWidth }, 'cardBw')}
+                format={(v) => v.toFixed(0)}
+              />
+            </Field>
+            <Field label="角の丸み">
+              <Slider
+                value={frame.radius}
+                min={0}
+                max={80}
+                step={1}
+                onChange={(radius) => patchFrame({ radius }, 'cardRadius')}
+                format={(v) => v.toFixed(0)}
+              />
+            </Field>
+            <Field label="影">
+              <Slider
+                value={frame.shadow}
+                min={0}
+                max={60}
+                step={1}
+                onChange={(shadow) => patchFrame({ shadow }, 'cardShadow')}
+                format={(v) => v.toFixed(0)}
+              />
+            </Field>
+          </div>
+          <p className="muted small">
+            台紙の大きさは本文に合わせて決まります。幅は「折り返し幅」で調整してください。
+          </p>
+        </>
+      )}
     </>
   );
 }

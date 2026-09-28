@@ -101,6 +101,48 @@ export type TextRole = 'caption' | 'design';
 /** 幅の合わせ方。'wrap' は幅で折り返す、'shrink' は改行を守って文字を縮める。 */
 export type TextFit = 'wrap' | 'shrink';
 
+/**
+ * テロップの後ろに敷く台紙。
+ *
+ * 「視聴者のコメントを札にして見せる」ような、文字だけでは足りない見せ方のためのもの。
+ * 別の種類のクリップにせず、テロップの装いとして持たせている。こうしておくと
+ * 置き場所・入場の動き・字幕なし版での扱いが、ふつうのテロップとそのまま同じになる。
+ *
+ * 印（アイコン）の名前は `engine/cardIcons.ts` のもの。ここで型を絞らないのは、
+ * データの層（このファイル）が描画の層に依存しないようにするため。
+ */
+export interface TextFrame {
+  /** 台紙の色。 */
+  background: string;
+  /** 枠の色と太さ（プロジェクト幅 1080 を基準にした px）。 */
+  borderColor: string;
+  borderWidth: number;
+  /** 角の丸み。 */
+  radius: number;
+  /** 見出しの帯。空文字なら帯そのものを出さない。 */
+  heading: string;
+  headingColor: string;
+  headingBackground: string;
+  /** 見出しの左右に置く印。null なら置かない。 */
+  iconLeft: string | null;
+  iconRight: string | null;
+  /** 台紙の影。 */
+  shadow: number;
+}
+
+export const DEFAULT_TEXT_FRAME: TextFrame = {
+  background: '#ffffff',
+  borderColor: '#9146ff',
+  borderWidth: 6,
+  radius: 28,
+  heading: '',
+  headingColor: '#5b21b6',
+  headingBackground: '#ede9fe',
+  iconLeft: null,
+  iconRight: null,
+  shadow: 24,
+};
+
 export interface TextProps {
   content: string;
   fontFamily: string;
@@ -131,6 +173,8 @@ export interface TextProps {
   fit?: TextFit;
   /** 既定は 'caption'。未定義でも同じ。 */
   role?: TextRole;
+  /** 台紙。null / 未定義なら文字だけを描く。 */
+  frame?: TextFrame | null;
 }
 
 export type ClipKind = 'video' | 'image' | 'audio' | 'text';

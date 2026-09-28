@@ -21,6 +21,7 @@ import {
   type Track,
 } from '../model/types';
 import { wrapJapanese } from './linebreak';
+import { drawCardIcon } from './cardIcons';
 
 export interface Rect {
   x: number;
@@ -548,6 +549,19 @@ function drawTextClip(
   const padX = fontSize * 0.34;
   const padY = fontSize * 0.2;
 
+  // 台紙。文字の塊の大きさが決まってから、その外側へ敷く。
+  const frame = text.frame ?? null;
+  const cardInner = fontSize * 0.55;
+  const headingSize = fontSize * 0.46;
+  const bandHeight = frame && frame.heading ? headingSize * 2.3 : 0;
+  const cardWidth = frame ? blockWidth + cardInner * 2 : 0;
+  const cardHeight = frame ? bandHeight + blockHeight + cardInner * 2 : 0;
+  // 帯のぶんだけ本文を下げる（帯の下の領域の中央に来る）。
+  const bodyOffsetY = bandHeight / 2;
+  if (frame) {
+    drawCard(ctx, frame, -cardWidth / 2, -cardHeight / 2, cardWidth, cardHeight, bandHeight, headingSize, text.fontFamily);
+  }
+
   if (text.bgOpacity > 0) {
     ctx.save();
     ctx.globalAlpha = alpha * text.bgOpacity;
@@ -570,7 +584,7 @@ function drawTextClip(
   ctx.textAlign = 'left';
 
   lines.forEach((line, i) => {
-    const y = -blockHeight / 2 + i * lineHeight + lineHeight / 2;
+    const y = -blockHeight / 2 + bodyOffsetY + i * lineHeight + lineHeight / 2;
     const w = widths[i];
     let x = text.align === 'left' ? -blockWidth / 2 : text.align === 'right' ? blockWidth / 2 - w : -w / 2;
 
@@ -612,12 +626,73 @@ function drawTextClip(
 
   ctx.restore();
 
-  bounds.set(clip.id, {
-    x: cx - (blockWidth + padX * 2) / 2,
-    y: cy - (blockHeight + padY) / 2,
-    w: blockWidth + padX * 2,
-    h: blockHeight + padY,
-  });
+  // 掴める範囲。台紙があるならその大きさ、無ければ文字の塊。
+  const boundsW = frame ? cardWidth : blockWidth + padX * 2;
+  const boundsH = frame ? cardHeight : blockHeight + padY;
+  bounds.set(clip.id, { x: cx - boundsW / 2, y: cy - boundsH / 2, w: boundsW, h: boundsH });
+}
+
+/**
+ * 台紙を引く。角の丸い板・見出しの帯・枠・見出しの文字と印、の順に重ねる。
+ * 帯は板の丸みからはみ出さないよう、板の形で切り抜いてから塗る。
+ */
+function drawCard(
+  ctx: CanvasRenderingContext2D,
+  frame: NonNullable<TextProps['frame']>,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  bandHeight: number,
+  headingSize: number,
+  fontFamily: string,
+) {
+  ctx.save();
+
+  if (frame.shadow > 0) {
+    ctx.shadowColor = 'rgba(0,0,0,0.38)';
+    ctx.shadowBlur = frame.shadow;
+    ctx.shadowOffsetY = frame.shadow * 0.3;
+  }
+  ctx.fillStyle = frame.background;
+  roundRect(ctx, x, y, w, h, frame.radius);
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+
+  if (bandHeight > 0) {
+    ctx.save();
+    roundRect(ctx, x, y, w, h, frame.radius);
+    ctx.clip();
+    ctx.fillStyle = frame.headingBackground;
+    ctx.fillRect(x, y, w, bandHeight);
+    ctx.restore();
+  }
+
+  if (frame.borderWidth > 0) {
+    const half = frame.borderWidth / 2;
+    ctx.strokeStyle = frame.borderColor;
+    ctx.lineWidth = frame.borderWidth;
+    roundRect(ctx, x + half, y + half, w - frame.borderWidth, h - frame.borderWidth, Math.max(0, frame.radius - half));
+    ctx.stroke();
+  }
+
+  if (frame.heading && bandHeight > 0) {
+    const midY = y + bandHeight / 2;
+    const iconSize = headingSize * 1.3;
+    const inset = headingSize * 1.1;
+    ctx.font = `700 ${headingSize}px ${fontFamily}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = frame.headingColor;
+    ctx.fillText(frame.heading, x + w / 2, midY);
+    // 印の線の太さは 24 の枠での値。帯の文字と同じくらいの重さに見えるところ。
+    if (frame.iconLeft) drawCardIcon(ctx, frame.iconLeft, x + inset, midY, iconSize, frame.headingColor, 2.2);
+    if (frame.iconRight) drawCardIcon(ctx, frame.iconRight, x + w - inset, midY, iconSize, frame.headingColor, 2.2);
+  }
+
+  ctx.restore();
 }
 
 // ---------- ガイド ----------
