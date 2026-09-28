@@ -175,6 +175,11 @@ export interface TextProps {
   role?: TextRole;
   /** 台紙。null / 未定義なら文字だけを描く。 */
   frame?: TextFrame | null;
+  /**
+   * 誰のセリフか。話者ごとに色を変えるときの覚え書きで、描画には使わない
+   *（色は `color` に入る）。手本として印を付けた行も、これで覚えておく。
+   */
+  speaker?: string | null;
 }
 
 export type ClipKind = 'video' | 'image' | 'audio' | 'text';
@@ -261,6 +266,10 @@ export const TRANSITION_META: Record<TransitionType, { label: string }> = {
   wipe: { label: 'ワイプ' },
   flash: { label: 'フラッシュ' },
 };
+
+/** 話者の名札。いまは 2 人まで。 */
+export const SPEAKERS = ['1', '2'] as const;
+export type SpeakerId = (typeof SPEAKERS)[number];
 
 export const TEXT_ROLE_LABELS: Record<TextRole, string> = {
   caption: '字幕（話している言葉）',

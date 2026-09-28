@@ -203,7 +203,7 @@ async function assetBlob(mediaId: string): Promise<Blob | null> {
  * 以前は 2 だけに頼っていたが、これは端末やファイルによっては映像が読めても失敗することが
  * あり、しかも失敗しても例外を握りつぶして「音の無い動画」が黙って出来上がっていた。
  */
-async function decodeAssetAudio(mediaId: string): Promise<AudioBuffer | null> {
+export async function decodeAssetAudio(mediaId: string): Promise<AudioBuffer | null> {
   const blob = await assetBlob(mediaId);
   if (!blob) return null;
 

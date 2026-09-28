@@ -174,6 +174,120 @@ eq('空文字', wrap('', 10), ['']);
   check('見出しは字幕なし版でも残る', title.text.role === 'design');
 }
 
+// ---- 声の指紋で話者を見分けられるか ----
+{
+  const { voicePrint, similarity, pickSpeaker } = await import('../src/engine/voiceprint.ts');
+
+  const SR = 24000;
+  /** 種を固定した乱数。毎回同じ音になるので、数字がそのまま比べられる。 */
+  const rng = (seed) => () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+
+  /**
+   * 声のつもりの音を作る。基本の高さの倍音を、フォルマント（声道の共鳴）の
+   * 形で重みづけして足す。息継ぎを入れ、高さもゆっくり揺らす。
+   */
+  function synth({ f0, formants, seconds, seed, gain = 0.5 }) {
+    const rand = rng(seed);
+    const n = Math.floor(SR * seconds);
+    const out = new Float32Array(n);
+    const harmonics = Math.min(40, Math.floor(SR / 2 / f0));
+    const phase = new Float64Array(harmonics + 1);
+    let jitter = 0;
+    for (let i = 0; i < n; i += 1) {
+      const t = i / SR;
+      // 0.28 秒ごとに音節、そのうち 0.06 秒は息継ぎ
+      const inSyllable = (t % 0.28) < 0.22;
+      const env = inSyllable ? 0.35 + 0.65 * Math.sin((Math.PI * (t % 0.28)) / 0.22) : 0;
+      if (i % 200 === 0) jitter = (rand() - 0.5) * 0.06;
+      const f = f0 * (1 + jitter);
+      let sample = 0;
+      for (let h = 1; h <= harmonics; h += 1) {
+        const hz = f * h;
+        let amp = 1 / h; // 声帯の音は高い倍音ほど弱い
+        let shape = 0.02;
+        for (const F of formants) shape += 1 / (1 + Math.pow((hz - F) / 110, 2));
+        amp *= shape;
+        phase[h] += (2 * Math.PI * hz) / SR;
+        sample += amp * Math.sin(phase[h]);
+      }
+      out[i] = gain * env * sample * 0.08 + (rand() - 0.5) * 0.002;
+    }
+    return out;
+  }
+
+  const A = { f0: 208, formants: [720, 1280, 2800] }; // 高めの声
+  const B = { f0: 116, formants: [500, 1500, 2400] }; // 低めの声
+
+  const printOf = (spec, seed, gain) => voicePrint(synth({ ...spec, seconds: 1.6, seed, gain }), SR);
+
+  const anchorA = printOf(A, 1);
+  const anchorB = printOf(B, 2);
+  check('手本の指紋が取れる', !!anchorA && !!anchorB);
+  check('高さを当てられる（高い声）', Math.abs(anchorA.pitch - A.f0) / A.f0 < 0.08, `${anchorA.pitch.toFixed(1)}Hz`);
+  check('高さを当てられる（低い声）', Math.abs(anchorB.pitch - B.f0) / B.f0 < 0.08, `${anchorB.pitch.toFixed(1)}Hz`);
+
+  const anchors = [{ id: 'A', print: anchorA }, { id: 'B', print: anchorB }];
+  let right = 0;
+  let total = 0;
+  const margins = [];
+  for (let i = 0; i < 6; i += 1) {
+    for (const [name, spec] of [['A', A], ['B', B]]) {
+      const print = printOf(spec, 100 + i * 7 + (name === 'A' ? 0 : 3));
+      const decision = pickSpeaker(print, anchors);
+      total += 1;
+      if (decision.id === name) right += 1;
+      margins.push(decision.margin);
+    }
+  }
+  check('12 区間すべてを正しく振り分ける', right === total, `${right} / ${total}`);
+  const worst = Math.min(...margins);
+  check('いちばん迷った所でも差がある', worst > 0.02, `いちばん小さい差 ${worst.toFixed(3)}`);
+
+  // 同じ人どうしは、違う人どうしより必ず近いこと
+  const a2 = printOf(A, 31);
+  const b2 = printOf(B, 32);
+  check('同じ人どうしのほうが近い（高い声）', similarity(anchorA, a2) > similarity(anchorA, b2),
+    `${similarity(anchorA, a2).toFixed(3)} 対 ${similarity(anchorA, b2).toFixed(3)}`);
+  check('同じ人どうしのほうが近い（低い声）', similarity(anchorB, b2) > similarity(anchorB, a2),
+    `${similarity(anchorB, b2).toFixed(3)} 対 ${similarity(anchorB, a2).toFixed(3)}`);
+
+  // 録りの音量で結論が変わらないこと（マイクの近さで振り分けが変わると使えない）
+  const quiet = printOf(A, 55, 0.08);
+  const loud = printOf(A, 55, 1.0);
+  check('小さく録っても同じ人と判る', pickSpeaker(quiet, anchors).id === 'A');
+  check('大きく録っても同じ人と判る', pickSpeaker(loud, anchors).id === 'A');
+
+  // ここからが本番。声の高さがほとんど同じ 2 人（音色だけが手がかり）。
+  {
+    const C = { f0: 190, formants: [700, 1150, 2700] };
+    const D = { f0: 196, formants: [560, 1750, 2500] };
+    const ac = printOf(C, 201);
+    const ad = printOf(D, 202);
+    const pair = [{ id: 'C', print: ac }, { id: 'D', print: ad }];
+    let ok2 = 0;
+    let n2 = 0;
+    const m2 = [];
+    for (let i = 0; i < 6; i += 1) {
+      for (const [name, spec] of [['C', C], ['D', D]]) {
+        const decision = pickSpeaker(printOf(spec, 300 + i * 11 + (name === 'C' ? 0 : 5)), pair);
+        n2 += 1;
+        if (decision.id === name) ok2 += 1;
+        m2.push(decision.margin);
+      }
+    }
+    check('高さが近い 2 人でも振り分けられる', ok2 === n2, `${ok2} / ${n2}`);
+    check(
+      '高さが近いと差は小さくなる',
+      Math.min(...m2) < worst,
+      `いちばん小さい差 ${Math.min(...m2).toFixed(3)}（高さが違うときは ${worst.toFixed(3)}）`,
+    );
+  }
+
+  // 声の出ていない所からは指紋を作らない（間や無音で判定してしまわないこと）
+  check('無音からは指紋を作らない', voicePrint(new Float32Array(SR), SR) === null);
+  check('短すぎる区間からは作らない', voicePrint(new Float32Array(200), SR) === null);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

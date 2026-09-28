@@ -7,11 +7,13 @@ import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
 import { buildThreeBand } from '../../model/threeBand';
 import { CARD_ICON_LABELS, CARD_ICON_NAMES } from '../../engine/cardIcons';
+import { sortSpeakers } from '../../engine/speakerSort';
 import {
   ASPECT_PRESETS,
   DEFAULT_BG_BLUR,
   EFFECT_META,
   DEFAULT_TEXT_FRAME,
+  SPEAKERS,
   TEXT_ANIMATION_LABELS,
   TEXT_FIT_LABELS,
   TEXT_ROLE_LABELS,
@@ -762,6 +764,9 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
       </Field>
 
       <hr />
+      <SpeakerSection text={text} set={set} />
+
+      <hr />
       <CardFrameSection text={text} set={set} />
 
       <div className="chip-row">
@@ -964,6 +969,109 @@ function CardFrameSection({
           </p>
         </>
       )}
+    </>
+  );
+}
+
+/**
+ * 話者ごとの色分け。
+ *
+ * 手順書と同じ組み立て。**人が「この行はこの人」と手本を 2 つ示し、
+ * 残りを声の近さで振り分ける**。手本無しに 2 つへ割る手は、手順書自身が
+ * 「両者が同じ側に寄る」と書いているので採らない。
+ *
+ * 迷った行（1 番目と 2 番目の差が小さい行）は数えて伝える。黙って片方へ倒すと、
+ * どこを見直せばよいか分からなくなる。
+ */
+const SPEAKER_DEFAULT_COLORS: Record<string, string> = { '1': '#5cd6ff', '2': '#c084fc' };
+/** これより差が小さい行は「迷った」として数える。 */
+const UNSURE_MARGIN = 0.03;
+
+function SpeakerSection({ text, set }: { text: TextProps; set: (changes: Partial<TextProps>, key?: string) => void }) {
+  const { sequence, apply } = useEditor();
+  const [colors, setColors] = useState(SPEAKER_DEFAULT_COLORS);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const captions = sequence.clips.filter((c) => c.kind === 'text' && (c.text?.role ?? 'caption') === 'caption');
+  const anchorFor = (speaker: string) => captions.find((c) => c.text?.speaker === speaker) ?? null;
+  const ready = SPEAKERS.every((s) => anchorFor(s) !== null);
+
+  const run = async () => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const anchors = SPEAKERS.map((speaker) => ({ clipId: anchorFor(speaker)!.id, speaker: String(speaker) }));
+      const anchorIds = new Set(anchors.map((a) => a.clipId));
+      const targets = captions.filter((c) => !anchorIds.has(c.id));
+      const { results, anchorsUsed, missing } = await sortSpeakers(sequence, { anchors, targets });
+
+      if (anchorsUsed.length < 2) {
+        setNote(`手本の声を取り出せませんでした（話者 ${missing.join('・')}）。声の出ている行を手本にしてください。`);
+        return;
+      }
+
+      const decided = new Map(results.filter((r) => r.decision).map((r) => [r.clipId, r.decision!]));
+      apply((seq) => ({
+        ...seq,
+        clips: seq.clips.map((c) => {
+          if (c.kind !== 'text' || !c.text) return c;
+          // 手本そのものにも色を当てる（見比べられるように）。
+          const own = anchors.find((a) => a.clipId === c.id);
+          if (own) return { ...c, text: { ...c.text, color: colors[own.speaker] ?? c.text.color } };
+          const decision = decided.get(c.id);
+          if (!decision) return c;
+          return { ...c, text: { ...c.text, speaker: decision.id, color: colors[decision.id] ?? c.text.color } };
+        }),
+      }));
+
+      const unsure = [...decided.values()].filter((d) => d.margin < UNSURE_MARGIN).length;
+      const skipped = results.length - decided.size;
+      setNote(
+        `${decided.size} 行を振り分けました。` +
+          (unsure ? `うち ${unsure} 行は迷っています（見直してください）。` : '') +
+          (skipped ? `${skipped} 行は声が見つからず、そのままにしました。` : ''),
+      );
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : '振り分けに失敗しました');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <Field label="話者" hint="2 人ぶん印を付けると、残りを声で振り分けられます">
+        <Segmented<string>
+          value={text.speaker ?? ''}
+          options={[{ value: '', label: 'なし' }, ...SPEAKERS.map((s) => ({ value: String(s), label: `話者${s}` }))]}
+          onChange={(speaker) => set({ speaker: speaker || null })}
+        />
+      </Field>
+      <div className="two-col">
+        {SPEAKERS.map((speaker) => (
+          <Field key={speaker} label={`話者${speaker} の色`} hint={anchorFor(speaker) ? '手本あり' : '手本なし'}>
+            <ColorInput
+              value={colors[speaker] ?? '#ffffff'}
+              onChange={(value) => setColors((prev) => ({ ...prev, [speaker]: value }))}
+            />
+          </Field>
+        ))}
+      </div>
+      <button type="button" className="wide" disabled={!ready || busy} onClick={() => void run()}>
+        {busy ? '声を調べています…' : '残りを声で振り分けて色を付ける'}
+      </button>
+      {!ready && (
+        <p className="muted small">
+          まず「話者1」「話者2」の行をそれぞれ 1 つずつ選んで、上の「話者」で印を付けてください。
+          その 2 行を手本にして、残りを振り分けます。
+        </p>
+      )}
+      {note && <p className="muted small">{note}</p>}
+      <p className="muted small">
+        声の高さと音色で判断します。同じ人でもささやくと外れることがあるので、
+        迷った行として数えたものは目で確かめてください。
+      </p>
     </>
   );
 }
