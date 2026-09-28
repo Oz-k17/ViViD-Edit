@@ -598,7 +598,7 @@ function drawTextClip(
       if (text.shadow > 0) {
         ctx.shadowColor = 'rgba(0,0,0,0.65)';
         ctx.shadowBlur = text.shadow;
-        ctx.shadowOffsetY = text.shadow * 0.25;
+        ctx.shadowOffsetY = text.shadowY ?? text.shadow * 0.25;
       }
       // 縁は外側から内側へ重ねる。canvas の線は輪郭の内外へ半分ずつ広がるので、
       // 外側の線は「内側の縁 + 外側の縁」の太さで引くと、内側の縁の外にちょうど残る。

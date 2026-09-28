@@ -169,6 +169,13 @@ export interface TextProps {
    */
   strokeColor2?: string;
   strokeWidth2?: number;
+  /**
+   * 影を下へずらす量（px）。
+   * 縁と影が同じ中心に揃っていると、文字のまわりに均等な輪ができて
+   * 「機械が付けた縁」に見える。下へずらすと、板に置いた影に見える。
+   * 未定義のときは影のぼかしの 1/4（＝これまでの見た目）。
+   */
+  shadowY?: number;
   /** 既定は 'wrap'。未定義でも同じ。 */
   fit?: TextFit;
   /** 既定は 'caption'。未定義でも同じ。 */

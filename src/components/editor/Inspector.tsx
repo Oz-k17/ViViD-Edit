@@ -701,6 +701,16 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
         <Field label="影">
           <Slider value={text.shadow} min={0} max={40} step={1} onChange={(shadow) => set({ shadow }, 'shadow')} format={(v) => v.toFixed(0)} />
         </Field>
+        <Field label="影を下へ" hint="縁と影の中心をずらす">
+          <Slider
+            value={text.shadowY ?? text.shadow * 0.25}
+            min={0}
+            max={24}
+            step={1}
+            onChange={(shadowY) => set({ shadowY }, 'shadowY')}
+            format={(v) => v.toFixed(0)}
+          />
+        </Field>
         <Field label="背景色">
           <ColorInput value={text.bgColor} onChange={(bgColor) => set({ bgColor }, 'bgColor')} />
         </Field>
@@ -983,7 +993,12 @@ function CardFrameSection({
  * 迷った行（1 番目と 2 番目の差が小さい行）は数えて伝える。黙って片方へ倒すと、
  * どこを見直せばよいか分からなくなる。
  */
-const SPEAKER_DEFAULT_COLORS: Record<string, string> = { '1': '#5cd6ff', '2': '#c084fc' };
+/**
+ * 話者の色。**片方は白のまま**にしてある。
+ * 二人に二色を振ると、どちらの行も同じだけ目立って見せ場が決まらない。
+ * 色が付いた行だけが浮くので、そちらが主役になる。
+ */
+const SPEAKER_DEFAULT_COLORS: Record<string, string> = { '1': '#ffffff', '2': '#5cd6ff' };
 /** これより差が小さい行は「迷った」として数える。 */
 const UNSURE_MARGIN = 0.03;
 

@@ -8,7 +8,7 @@
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23b7d0a8'/%3E%3Cpath d='M4 5v6M7 3v10M10 6v4M13 4v8' stroke='%23101114' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E"
     />
-    <script defer src="./assets/index-BiIxyzUe.js"></script>
+    <script defer src="./assets/index-5qUVkvfo.js"></script>
   </head>
   <body>
     <header class="head">
@@ -139,7 +139,107 @@
       </section>
 
       <section class="card">
-        <h2>3. セルフテスト</h2>
+        <h2>3. ラウドネス（音の大きさ）を揃える</h2>
+        <p class="muted">
+          上で読み込んだ素材の大きさを LUFS で測り、配信先の基準へ揃える倍率を出します。
+          ピークで合わせても揃わないのは、人が感じる大きさが瞬間の高さではなく一定時間の平均で決まるためです。
+        </p>
+
+        <div class="controls">
+          <label>
+            目標の大きさ <output id="out-target"></output>
+            <input type="range" id="target-lufs" min="-24" max="-8" step="0.5" value="-14" />
+            <small>ショート動画の配信先はだいたい -14〜-16 LUFS。ここより大きく出しても向こうで下げられる</small>
+          </label>
+          <label>
+            真のピークの天井 <output id="out-ceiling"></output>
+            <input type="range" id="ceiling-db" min="-3" max="0" step="0.1" value="-1" />
+            <small>0 にしないのは、変換先の符号化で標本の間が少し膨らむため</small>
+          </label>
+          <label>
+            <span><input type="checkbox" id="use-limiter" checked /> リミッタで山を均す</span>
+            <small>倍率ひとつでは、声の入った素材の 3 分の 1 が天井に当たって目標へ届かない</small>
+          </label>
+          <label>
+            リミッタの先読み <output id="out-lookahead"></output>
+            <input type="range" id="lookahead-ms" min="1" max="20" step="1" value="10" />
+            <small>この半分より周期の長い音（＝低い音）は歪む。10ms で 50Hz まで守れる</small>
+          </label>
+        </div>
+
+        <dl class="stats" id="loudness-stats"></dl>
+        <p class="warn" id="loudness-warning" hidden></p>
+
+        <div class="row">
+          <button type="button" id="play-loud-before" disabled>元のまま再生</button>
+          <button type="button" id="play-loud-after" disabled>揃えたあとを再生</button>
+          <button type="button" id="stop-loud" disabled>停止</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>4. クリップごとの音量を揃える</h2>
+        <p class="muted">
+          別撮りのカットを並べると、1 本ごとにマイクとの距離も録音レベルも違います。
+          <strong>全体の倍率をいくら正しく決めても、カットが変わるたびに音量が跳ねるのはそのままです。</strong>
+          ここで先に互いを揃えてから、上の「3.」で全体を目標へ合わせます。
+        </p>
+
+        <label class="file">
+          素材を<strong>複数</strong>選ぶ（1 本 1 クリップとして扱います）
+          <input type="file" id="clip-files" accept="audio/*,video/*" multiple />
+        </label>
+        <p class="status" id="clip-status">まだ読み込んでいません。</p>
+
+        <div class="controls">
+          <label>
+            何に合わせるか
+            <select id="clip-reference">
+              <option value="median" selected>尺で重みを付けた中央値</option>
+              <option value="mean">尺で重みを付けた平均</option>
+              <option value="loudest">いちばん大きいクリップ</option>
+            </select>
+            <small>平均は大きい外れ値 1 本で動く（静かな外れ値ではない。README を参照）</small>
+          </label>
+          <label>
+            上げてよい上限 <output id="out-clip-boost"></output>
+            <input type="range" id="clip-boost" min="0" max="36" step="1" value="12" />
+            <small>持ち上げると部屋鳴りもヒスも一緒に上がる。声の入っていないクリップはここで止まる</small>
+          </label>
+          <label>
+            下げてよい上限 <output id="out-clip-cut"></output>
+            <input type="range" id="clip-cut" min="0" max="36" step="1" value="24" />
+            <small>下げる側に代価は無いので、上げる側より広く取ってある</small>
+          </label>
+          <label>
+            <span><input type="checkbox" id="clip-use-cut" checked /> 自動カットを通してから並べる</span>
+            <small>「1.」の設定でカットし、かけらには<strong>その素材ぶんの同じ倍率</strong>を当てる（<code>attachClipGains()</code>）</small>
+          </label>
+        </div>
+
+        <dl class="stats" id="clip-stats"></dl>
+        <p class="warn" id="clip-warning" hidden></p>
+
+        <div class="row">
+          <button type="button" id="play-clips-before" disabled>揃えずに通しで再生</button>
+          <button type="button" id="play-clips-after" disabled>揃えてから通しで再生</button>
+          <button type="button" id="stop-clips" disabled>停止</button>
+        </div>
+
+        <details>
+          <summary>クリップごとの倍率と、タイムラインの並び</summary>
+          <p class="muted">
+            上が <code>planClipMatch()</code> の結果、下が <code>toClipEdits()</code> →
+            <code>attachClipGains()</code> に通した並びです。
+            <strong>同じ素材から出たかけらには、必ず同じ倍率が付きます。</strong>
+            かけらごとに揃えると、切れ目のたびに部屋の音が段になるためです。
+          </p>
+          <pre id="clip-list">—</pre>
+        </details>
+      </section>
+
+      <section class="card">
+        <h2>5. セルフテスト</h2>
         <p class="muted">
           合成した波形で計算そのものを確かめます。素材が無くても、壊れていないことがここで分かります。
         </p>
