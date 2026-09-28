@@ -38,6 +38,10 @@ export const DEFAULT_TEXT: TextProps = {
   maxWidth: 0.82,
   animation: 'pop',
   animationDuration: 0.4,
+  strokeColor2: '#000000',
+  strokeWidth2: 0,
+  fit: 'wrap',
+  role: 'caption',
 };
 
 export function baseClip(kind: ClipKind, trackId: string): Clip {

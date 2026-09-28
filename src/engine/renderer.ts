@@ -20,6 +20,7 @@ import {
   type TextProps,
   type Track,
 } from '../model/types';
+import { wrapJapanese } from './linebreak';
 
 export interface Rect {
   x: number;
@@ -367,17 +368,16 @@ function wrapContent(
       w = ctx.measureText(word).width;
     }
     if (width === 0 && w > maxWidth) {
-      // 単語1つで折り返し幅を超える → 文字単位で折る（日本語など単語区切りが無い場合）。
-      let chunk = '';
-      for (const ch of word) {
-        if (chunk !== '' && ctx.measureText(chunk + ch).width > maxWidth) {
-          place({ text: chunk }, ctx.measureText(chunk).width);
-          breakLine();
-          chunk = '';
-        }
-        chunk += ch;
-      }
-      if (chunk) place({ text: chunk }, ctx.measureText(chunk).width);
+      // 単語1つで折り返し幅を超える（日本語など単語区切りが無い場合）。
+      // 幅だけで切ると語の途中で切れるので、意味の切れ目を見て折る。
+      const parts = wrapJapanese(word, {
+        measure: (str) => ctx.measureText(str).width,
+        maxWidth,
+      });
+      parts.forEach((part, i) => {
+        if (i > 0) breakLine();
+        place({ text: part }, ctx.measureText(part).width);
+      });
       return;
     }
     place({ text: word }, w);
@@ -501,16 +501,37 @@ function drawTextClip(
 
   const allSegments = splitTextContent(text.content);
   const segments = anim.visibleChars === null ? allSegments : truncateAtoms(allSegments, anim.visibleChars);
-  const fontSize = text.fontSize * (clip.scale || 1);
-  // 絵文字は正方形の枠として、だいたい大文字1文字ぶんの見た目の大きさに合わせる。
-  const emojiSize = fontSize * 1.05;
+  const limitWidth = sequence.width * text.maxWidth;
+  // 古い保存ファイルにはこの項目が無いので、既定に倒して読む。
+  const shrinkToWidth = (text.fit ?? 'wrap') === 'shrink';
 
   ctx.save();
-  ctx.font = `${text.weight} ${fontSize}px ${text.fontFamily}`;
   if (supportsLetterSpacing) ctx.letterSpacing = `${text.letterSpacing}px`;
   ctx.textBaseline = 'middle';
 
-  const lines = wrapContent(ctx, segments.length ? segments : [{ text: ' ' }], sequence.width * text.maxWidth, emojiSize);
+  const useSegments = segments.length ? segments : [{ text: ' ' }];
+  const setFont = (size: number) => {
+    ctx.font = `${text.weight} ${size}px ${text.fontFamily}`;
+  };
+
+  let fontSize = text.fontSize * (clip.scale || 1);
+  // 絵文字は正方形の枠として、だいたい大文字1文字ぶんの見た目の大きさに合わせる。
+  let emojiSize = fontSize * 1.05;
+  setFont(fontSize);
+  // 「縮めて合わせる」ときは幅で折り返さない。行は書いた改行のとおりにする。
+  let lines = wrapContent(ctx, useSegments, shrinkToWidth ? Infinity : limitWidth, emojiSize);
+
+  if (shrinkToWidth) {
+    // 見出しの作法。行の分け方は人が決め、横幅いっぱいになる大きさを機械が出す。
+    // 指定した大きさは上限として扱い、超えるときだけ縮める。
+    const widest = Math.max(1, ...lines.map((line) => lineWidth(ctx, line, emojiSize)));
+    if (widest > limitWidth) {
+      fontSize = Math.max(4, (fontSize * limitWidth) / widest);
+      emojiSize = fontSize * 1.05;
+      setFont(fontSize);
+      lines = wrapContent(ctx, useSegments, Infinity, emojiSize);
+    }
+  }
   const lineHeight = fontSize * text.lineHeight;
   const blockHeight = lineHeight * lines.length;
   const widths = lines.map((line) => lineWidth(ctx, line, emojiSize));
@@ -564,6 +585,17 @@ function drawTextClip(
         ctx.shadowColor = 'rgba(0,0,0,0.65)';
         ctx.shadowBlur = text.shadow;
         ctx.shadowOffsetY = text.shadow * 0.25;
+      }
+      // 縁は外側から内側へ重ねる。canvas の線は輪郭の内外へ半分ずつ広がるので、
+      // 外側の線は「内側の縁 + 外側の縁」の太さで引くと、内側の縁の外にちょうど残る。
+      const outerWidth = text.strokeWidth2 ?? 0;
+      if (outerWidth > 0) {
+        ctx.strokeStyle = text.strokeColor2 ?? '#000000';
+        ctx.lineWidth = (text.strokeWidth + outerWidth) * 2;
+        ctx.strokeText(token.text, x, y);
+        // 影は外側の縁にだけ落とす（内側にも落とすと縁の中が濁る）。
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
       }
       if (text.strokeWidth > 0) {
         ctx.strokeStyle = text.strokeColor;

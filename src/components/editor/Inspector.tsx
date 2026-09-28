@@ -10,6 +10,8 @@ import {
   DEFAULT_BG_BLUR,
   EFFECT_META,
   TEXT_ANIMATION_LABELS,
+  TEXT_FIT_LABELS,
+  TEXT_ROLE_LABELS,
   TRANSITION_META,
   emojiToken,
   previewText,
@@ -19,7 +21,9 @@ import {
   type EffectType,
   type TextAlign,
   type TextAnimation,
+  type TextFit,
   type TextProps,
+  type TextRole,
   type TransitionType,
 } from '../../model/types';
 import { useApp } from '../../store/app';
@@ -627,6 +631,19 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
         <Field label="フチの太さ">
           <Slider value={text.strokeWidth} min={0} max={20} step={0.5} onChange={(strokeWidth) => set({ strokeWidth }, 'sw')} format={(v) => v.toFixed(1)} />
         </Field>
+        <Field label="外フチ色">
+          <ColorInput value={text.strokeColor2 ?? '#000000'} onChange={(strokeColor2) => set({ strokeColor2 }, 'strokeColor2')} />
+        </Field>
+        <Field label="外フチの太さ" hint="フチのさらに外側">
+          <Slider
+            value={text.strokeWidth2 ?? 0}
+            min={0}
+            max={20}
+            step={0.5}
+            onChange={(strokeWidth2) => set({ strokeWidth2 }, 'sw2')}
+            format={(v) => v.toFixed(1)}
+          />
+        </Field>
         <Field label="影">
           <Slider value={text.shadow} min={0} max={40} step={1} onChange={(shadow) => set({ shadow }, 'shadow')} format={(v) => v.toFixed(0)} />
         </Field>
@@ -676,6 +693,20 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
       </Field>
       <Field label="折り返し幅">
         <Slider value={text.maxWidth} min={0.2} max={1} onChange={(maxWidth) => set({ maxWidth }, 'mw')} format={(v) => `${Math.round(v * 100)}%`} />
+      </Field>
+      <Field label="幅の合わせ方" hint="縮める側は、改行した所でだけ行が変わる">
+        <Segmented<TextFit>
+          value={text.fit ?? 'wrap'}
+          options={(Object.keys(TEXT_FIT_LABELS) as TextFit[]).map((fit) => ({ value: fit, label: TEXT_FIT_LABELS[fit] }))}
+          onChange={(fit) => set({ fit })}
+        />
+      </Field>
+      <Field label="種類" hint="字幕なしで書き出すと「字幕」だけが消える">
+        <Segmented<TextRole>
+          value={text.role ?? 'caption'}
+          options={(Object.keys(TEXT_ROLE_LABELS) as TextRole[]).map((role) => ({ value: role, label: TEXT_ROLE_LABELS[role] }))}
+          onChange={(role) => set({ role })}
+        />
       </Field>
 
       <div className="chip-row">

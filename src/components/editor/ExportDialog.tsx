@@ -15,10 +15,11 @@ import {
 import { formatBytes } from '../../engine/media';
 import { player } from '../../engine/player';
 import { FPS_OPTIONS, sequenceDuration } from '../../model/ops';
+import { captionCount, withoutCaptions } from '../../model/captions';
 import { ASPECT_PRESETS, type AspectKey } from '../../model/types';
 import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
-import { Field, Segmented } from '../ui';
+import { Field, Segmented, Toggle } from '../ui';
 import { Icon } from '../Icon';
 
 const QUALITIES = [
@@ -97,6 +98,10 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const duration = sequenceDuration(sequence);
+  // 字幕あり / なしの 2 種類を作るための切り替え。消えるのは「種類＝字幕」だけで、
+  // タイトルや飾りは残る（どちらの版でも同じ見出しが乗っている状態にしたいため）。
+  const [withoutCaption, setWithoutCaption] = useState(false);
+  const captions = useMemo(() => captionCount(sequence), [sequence]);
   const supported = isExportSupported();
   const frameAccurate = isFrameAccurate();
   const embedded = isEmbeddedHost();
@@ -145,8 +150,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     updateSettings({ exportAspect: aspect, exportQuality: effectiveQuality, exportFormat: format });
     try {
       const output = await exporter.run(
-        project.name,
-        sequence,
+        withoutCaption ? `${project.name}_字幕なし` : project.name,
+        withoutCaption ? withoutCaptions(sequence) : sequence,
         player,
         { aspect, quality: effectiveQuality, fps, bitrate: effectiveBitrate, format },
         setProgress,
@@ -229,6 +234,15 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             value={String(fps)}
             options={FPS_OPTIONS.map((value) => ({ value: String(value), label: `${value}` }))}
             onChange={(value) => !running && setFps(Number(value))}
+          />
+        </Field>
+
+        <Field label="テロップ" hint={captions > 0 ? `字幕は ${captions} 本` : '字幕はまだ無い'}>
+          <Toggle
+            checked={withoutCaption}
+            disabled={running}
+            onChange={setWithoutCaption}
+            label="字幕を入れずに書き出す"
           />
         </Field>
 

@@ -92,6 +92,15 @@ export type TextAnimation =
   | 'bounce'
   | 'typewriter';
 
+/**
+ * テロップの役割。字幕なし版を書き出すときに、消すものと残すものを分ける。
+ * 既定は 'caption'（消える側）。タイトルや飾りは 'design' にして残す。
+ */
+export type TextRole = 'caption' | 'design';
+
+/** 幅の合わせ方。'wrap' は幅で折り返す、'shrink' は改行を守って文字を縮める。 */
+export type TextFit = 'wrap' | 'shrink';
+
 export interface TextProps {
   content: string;
   fontFamily: string;
@@ -111,6 +120,17 @@ export interface TextProps {
   maxWidth: number;
   animation: TextAnimation;
   animationDuration: number;
+  /**
+   * 外側の縁。内側（strokeColor）のさらに外に重ねる。
+   * 「本文の色 → 白 → 黒」のような 3 層の縁取りを作るために要る。
+   * 古い保存ファイルには無いので、読む側は未定義を 0 として扱うこと。
+   */
+  strokeColor2?: string;
+  strokeWidth2?: number;
+  /** 既定は 'wrap'。未定義でも同じ。 */
+  fit?: TextFit;
+  /** 既定は 'caption'。未定義でも同じ。 */
+  role?: TextRole;
 }
 
 export type ClipKind = 'video' | 'image' | 'audio' | 'text';
@@ -196,6 +216,16 @@ export const TRANSITION_META: Record<TransitionType, { label: string }> = {
   slide: { label: 'スライド' },
   wipe: { label: 'ワイプ' },
   flash: { label: 'フラッシュ' },
+};
+
+export const TEXT_ROLE_LABELS: Record<TextRole, string> = {
+  caption: '字幕（話している言葉）',
+  design: 'タイトル・飾り',
+};
+
+export const TEXT_FIT_LABELS: Record<TextFit, string> = {
+  wrap: '幅で折り返す',
+  shrink: '改行を守って縮める',
 };
 
 export const TEXT_ANIMATION_LABELS: Record<TextAnimation, string> = {

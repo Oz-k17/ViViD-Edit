@@ -70,6 +70,51 @@ export const TEXT_PRESETS: TextPreset[] = [
     },
   },
   {
+    /**
+     * 3 層の縁取り。内側から「文字の色 → 白 → 黒」。
+     * 話す人ごとに文字の色だけ変えると、誰のセリフかが色で分かる。
+     * 背景が明るくても暗くても読めるのは、白と黒を両方持っているため。
+     */
+    key: 'triple',
+    label: '3層フチ',
+    text: {
+      ...DEFAULT_TEXT,
+      fontFamily: FONT_OPTIONS[4].value,
+      fontSize: 112,
+      color: '#5cd6ff',
+      strokeColor: '#ffffff',
+      strokeWidth: 10,
+      strokeColor2: '#000000',
+      strokeWidth2: 10,
+      shadow: 0,
+      maxWidth: 0.94,
+      animation: 'pop',
+    },
+  },
+  {
+    /**
+     * 見出し。改行は自分で決めて、横幅いっぱいになる大きさは機械に出させる。
+     * 「タイトル・飾り」なので、字幕なしで書き出しても残る。
+     */
+    key: 'title',
+    label: '見出し（幅いっぱい）',
+    text: {
+      ...DEFAULT_TEXT,
+      fontFamily: FONT_OPTIONS[4].value,
+      fontSize: 140,
+      color: '#ffffff',
+      strokeColor: '#000000',
+      strokeWidth: 8,
+      strokeColor2: '#ffffff',
+      strokeWidth2: 6,
+      shadow: 0,
+      maxWidth: 0.88,
+      fit: 'shrink',
+      role: 'design',
+      animation: 'none',
+    },
+  },
+  {
     key: 'pop',
     label: 'ポップ',
     text: {
