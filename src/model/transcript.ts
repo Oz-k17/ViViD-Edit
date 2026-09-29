@@ -292,6 +292,100 @@ function splitByWords(cue: Cue, chunks: string[]): Cue[] {
   });
 }
 
+/**
+ * whisper が声の無い所で作りがちな、決まり文句。
+ *
+ * 音を渡す前に無音を落としてあれば大半は出ないが、
+ * 音楽や環境音が残った所からはまだ出る。中身が**これだけ**の行は落とす。
+ */
+const BOILERPLATE = [
+  'ご視聴ありがとうございました',
+  'ご清聴ありがとうございました',
+  '最後までご視聴いただきありがとうございます',
+  'ご視聴いただきありがとうございました',
+  'チャンネル登録お願いします',
+  'チャンネル登録よろしくお願いします',
+  '本日はご覧いただきありがとうございます',
+  'おやすみなさい',
+  '字幕視聴者',
+  'thanks for watching',
+  'thank you for watching',
+  'please subscribe',
+];
+
+/** 比べるために、飾りを落とす。 */
+function bare(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[\s。、．，,.!！?？…・「」『』()（）]/g, '');
+}
+
+/** 人が言える速さの上限（1 秒あたりの文字数）。これを超える行は、出どころが怪しい。 */
+const MAX_CHARS_PER_SECOND = 25;
+
+/** 同じ字がこれだけ続いたら、伸ばしではなく壊れた出力とみなす。 */
+const RUN_LIMIT = 6;
+
+export interface CleanResult {
+  cues: Cue[];
+  /** 決まり文句として落とした数。 */
+  boilerplate: number;
+  /** 同じ行の繰り返しとして落とした数。 */
+  repeated: number;
+  /** 速すぎる・字が続きすぎるとして落とした数。 */
+  garbled: number;
+}
+
+/**
+ * 幻の行を落とす。
+ *
+ * whisper は、聞き取れない所を**黙るのではなく埋めて**くる。
+ * 出てくるものには癖があるので、癖の分かっているものだけを落とす。
+ * 迷ったら残す。消しすぎるほうが、直すのに手間がかかる。
+ */
+export function dropHallucinations(input: Cue[]): CleanResult {
+  const cues: Cue[] = [];
+  let boilerplate = 0;
+  let repeated = 0;
+  let garbled = 0;
+
+  for (const cue of input) {
+    const text = cue.text.trim();
+    const plain = bare(text);
+    if (plain.length === 0) continue;
+
+    if (BOILERPLATE.some((phrase) => plain === bare(phrase))) {
+      boilerplate += 1;
+      continue;
+    }
+
+    // 同じ字が続きすぎる（「あああああああ」）。
+    if (new RegExp(`(.)\\1{${RUN_LIMIT - 1},}`, 'u').test(text)) {
+      garbled += 1;
+      continue;
+    }
+
+    // 言える速さを超えている。尺が取れていない行は判定しない。
+    const span = cue.end - cue.start;
+    if (span > 0.2 && plain.length / span > MAX_CHARS_PER_SECOND) {
+      garbled += 1;
+      continue;
+    }
+
+    // 直前と同じ本文が続く。1 つだけ残して、尺は繋げる。
+    const last = cues[cues.length - 1];
+    if (last && bare(last.text) === plain) {
+      last.end = Math.max(last.end, cue.end);
+      repeated += 1;
+      continue;
+    }
+
+    cues.push({ ...cue, text });
+  }
+
+  return { cues, boilerplate, repeated, garbled };
+}
+
 export interface ClipWindow {
   /** タイムライン上の開始位置。 */
   start: number;

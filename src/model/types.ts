@@ -48,6 +48,11 @@ export interface Effect {
   type: EffectType;
   /** 0〜1 の強さ。意味はエフェクトごとに解釈する。 */
   intensity: number;
+  /**
+   * 時間の効かせ方。無ければクリップ全体に一定で掛かる（古い保存ファイルと同じ）。
+   * 中身は `model/effects.ts` の `EffectTiming`。
+   */
+  timing?: import('./effects').EffectTiming | null;
 }
 
 export interface Crop {

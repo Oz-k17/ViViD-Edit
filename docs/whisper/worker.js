@@ -1,6 +1,6 @@
 const d = globalThis, a = (t) => d.postMessage(t);
 let n = null, r = null, c = "";
-async function i(t) {
+async function s(t) {
   n || (a({ type: "stage", stage: "library" }), n = await import(
     /* @vite-ignore */
     t.libraryUrl
@@ -18,7 +18,7 @@ async function i(t) {
       encoder_model: t.device === "webgpu" ? "fp16" : "fp32",
       decoder_model_merged: "q4"
     },
-    progress_callback: (s) => a({ type: "progress", progress: s })
+    progress_callback: (i) => a({ type: "progress", progress: i })
   }), c = o, a({ type: "ready", reused: !1 });
 }
 async function u(t) {
@@ -31,13 +31,18 @@ async function u(t) {
     return_timestamps: t.words ? "word" : !0,
     // 30 秒ずつに切って回す。継ぎ目で言葉が切れないよう、前後 5 秒を重ねる。
     chunk_length_s: 30,
-    stride_length_s: 5
+    stride_length_s: 5,
+    // 道を増やすと取り違えが減る。手順書の仕上げも 5 で回している。
+    num_beams: Math.max(1, t.beams),
+    // 直前の出力を次の手がかりにしない。ここを繋ぐと、いちど言葉を作り始めたとき
+    // それを手がかりにして延々と作り続ける（同じ行が何十も並ぶのはこれ）。
+    condition_on_previous_text: !1
   });
   a({ type: "result", text: e.text ?? "", chunks: e.chunks ?? [] });
 }
 d.addEventListener("message", (t) => {
   const e = t.data;
-  (e.type === "load" ? i(e) : u(e)).catch((o) => {
+  (e.type === "load" ? s(e) : u(e)).catch((o) => {
     a({ type: "error", message: o instanceof Error ? o.message : String(o) });
   });
 });

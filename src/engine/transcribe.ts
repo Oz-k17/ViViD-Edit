@@ -9,7 +9,8 @@
  * ここは必ず「使えません」を返す。取り込み（SRT / VTT / JSON）は今までどおり使える。
  */
 
-import { cuesFromSegments, cuesFromWords, type Cue, type ResultChunk } from '../model/transcript';
+import { cuesFromSegments, cuesFromWords, dropHallucinations, type CleanResult, type Cue, type ResultChunk } from '../model/transcript';
+import { condense, highpass, normalize, restoreTime, voiceSpans } from './speech';
 
 /** whisper 一式を置く場所（index.html から見た相対）。 */
 export const WHISPER_DIR = 'whisper/';
@@ -98,6 +99,10 @@ export interface TranscribeOptions {
   language?: string;
   /** 単語ごとの時刻も取る。行を割る位置が言った所と合うが、日本語では当てにならないこともある。 */
   words?: boolean;
+  /** 探す道の数。1 で速く、5 で丁寧に。 */
+  beams?: number;
+  /** 声の無い所を渡さない。既定は入り。 */
+  trimSilence?: boolean;
   /** transformers.js を手元に置いているか。置いていなければ CDN から取る。 */
   localLibrary?: boolean;
   /** モデルを手元に置いている場合の場所（`whisper/` からの相対）。 */
@@ -115,14 +120,44 @@ interface ProgressPayload {
   progress?: number;
 }
 
+export interface TranscribeResult {
+  cues: Cue[];
+  /** 声があると見なして渡した割合（0〜1）。 */
+  kept: number;
+  /** 落とした幻の行の内訳。 */
+  clean: Omit<CleanResult, 'cues'>;
+}
+
 /**
  * 1 本の音を文字にする。
+ *
+ * 渡す前に整える。**声の無い所を渡すと、whisper はそこを埋めてくる**ので、
+ * まずそこを落とす。戻ってきた行からは、癖の分かっている幻だけを落とす。
+ *
  * Worker は 1 回ごとに作って捨てる。読み込んだモデルは持ち越せないが、
  * ブラウザがファイルを覚えているので 2 回目以降は取り直しにならない。
  */
-export function transcribe(audio: Float32Array, options: TranscribeOptions): Promise<Cue[]> {
+export function transcribe(input: Float32Array, options: TranscribeOptions): Promise<TranscribeResult> {
   const base = baseUrl();
-  return new Promise<Cue[]>((resolve, reject) => {
+  const rate = 16000;
+
+  // 1) 低い所を落として、音量を揃える。
+  let audio = normalize(highpass(input, rate));
+  // 2) 声のある所だけを繋ぐ。落とした所のぶん時刻が詰まるので、戻す表を持っておく。
+  let map: { at: number; shift: number }[] = [{ at: 0, shift: 0 }];
+  let kept = 1;
+  if (options.trimSilence !== false) {
+    const spans = voiceSpans(audio, rate);
+    // 全部落ちるようなら、当てにせずそのまま渡す。
+    if (spans.length > 0) {
+      const packed = condense(audio, rate, spans);
+      audio = packed.audio;
+      map = packed.map;
+      kept = packed.kept;
+    }
+  }
+
+  return new Promise<TranscribeResult>((resolve, reject) => {
     let worker: Worker;
     try {
       worker = new Worker(new URL('worker.js', base).href, { type: 'module' });
@@ -152,17 +187,31 @@ export function transcribe(audio: Float32Array, options: TranscribeOptions): Pro
       }
       if (data.type === 'ready') {
         worker.postMessage(
-          { type: 'run', audio, language: options.language ?? 'ja', words: options.words === true },
+          {
+            type: 'run',
+            audio,
+            language: options.language ?? 'ja',
+            words: options.words === true,
+            beams: options.beams ?? 1,
+          },
           [audio.buffer],
         );
         return;
       }
       if (data.type === 'result') {
         const chunks = (data.chunks ?? []) as ResultChunk[];
-        const cues = options.words
+        const raw = options.words
           ? cuesFromWords(chunks, { maxChars: options.maxChars })
           : cuesFromSegments(chunks);
-        done(() => resolve(cues));
+        // 繋いだあとの時刻で返ってくるので、元の時刻へ戻す。
+        const moved = raw.map((cue) => ({
+          ...cue,
+          start: restoreTime(map, cue.start),
+          end: restoreTime(map, cue.end),
+          words: cue.words?.map((w) => ({ ...w, start: restoreTime(map, w.start), end: restoreTime(map, w.end) })),
+        }));
+        const { cues, ...clean } = dropHallucinations(moved);
+        done(() => resolve({ cues, kept, clean }));
         return;
       }
       if (data.type === 'error') {

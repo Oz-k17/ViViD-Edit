@@ -6,6 +6,7 @@
 
 import { CROP_CORNERS, CROP_HANDLES, handlePoint, handleRect, handleSizeFor, selectionRect, type CropHandle } from './crop';
 import { clipAtTime, previousAdjacent } from '../model/ops';
+import { effectIntensity } from '../model/effects';
 import {
   clipEnd,
   contentAtomCount,
@@ -62,11 +63,21 @@ export function fadeEnvelope(local: number, duration: number, fadeIn: number, fa
   return Math.max(0, Math.min(1, v));
 }
 
-export function effectFilter(effects: Effect[], pixelScale: number): string {
+/**
+ * その時刻のフィルタ文字列を組み立てる。
+ * `local` と `clipDuration` を渡すと、エフェクトごとの時間指定が効く
+ *（渡さなければ、これまでどおり掛けた強さのまま）。
+ */
+export function effectFilter(
+  effects: Effect[],
+  pixelScale: number,
+  local = 0,
+  clipDuration = 0,
+): string {
   if (effects.length === 0) return 'none';
   const parts: string[] = [];
   for (const effect of effects) {
-    const i = Math.max(0, Math.min(1, effect.intensity));
+    const i = Math.max(0, Math.min(1, effectIntensity(effect, local, clipDuration)));
     switch (effect.type) {
       case 'brightness':
         parts.push(`brightness(${(0.4 + i * 1.2).toFixed(3)})`);
@@ -237,7 +248,7 @@ function drawVisualClip(
       }
     }
 
-    ctx.filter = effectFilter(clip.effects, dc.pixelScale);
+    ctx.filter = effectFilter(clip.effects, dc.pixelScale, local, clip.duration);
 
     if (clip.crop.enabled && dc.cropTarget !== clip.id) {
       const dest = cropDestRect(dc.sequence, clip);

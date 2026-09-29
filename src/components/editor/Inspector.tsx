@@ -6,6 +6,7 @@ import { FONT_OPTIONS, LOOK_PRESETS, SPEED_PRESETS, TEXT_PRESETS } from '../../p
 import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
 import { buildThreeBand } from '../../model/threeBand';
+import { DEFAULT_EFFECT_TIMING, EFFECT_SHAPES, type EffectTiming } from '../../model/effects';
 import { buildCaptionClips, clipTimeline, parseTranscript, tidyCues } from '../../model/transcript';
 import { WHISPER_MODELS, checkWhisper, toMono16k, transcribe, type WhisperDevice, type WhisperSupport } from '../../engine/transcribe';
 import { decodeAssetAudio } from '../../engine/offline-export';
@@ -225,7 +226,7 @@ function TranscriptSection() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   /** 整えて置き、やったことをそのまま知らせる。取り込みでも文字起こしでも同じ道を通る。 */
-  const place = (cues: Parameters<typeof tidyCues>[0], label: string, shift = 0) => {
+  const place = (cues: Parameters<typeof tidyCues>[0], label: string, shift = 0, extra = '') => {
     const tidy = tidyCues(cues, { maxChars, offset: shift, extendShort });
     const style = TEXT_PRESETS.find((p) => p.key === preset)?.text;
     apply((seq) =>
@@ -239,7 +240,7 @@ function TranscriptSection() {
     if (tidy.split > 0) parts.push(`長い行を割って ${tidy.split} 行ぶん増えました`);
     if (tidy.extended > 0) parts.push(`短い行を ${tidy.extended} 行伸ばしました`);
     if (tidy.stillShort > 0) parts.push(`${tidy.stillShort} 行は次の行が近く、読める長さに届いていません`);
-    setNote(parts.join('。') + '。');
+    setNote(parts.join('。') + '。' + extra);
   };
 
   const load = async (file: File) => {
@@ -291,7 +292,13 @@ function TranscriptSection() {
       <button type="button" className="wide" onClick={() => fileRef.current?.click()}>
         書き起こしを選ぶ（SRT / VTT / JSON）
       </button>
-      <WhisperSection place={(cues) => place(cues, '文字起こし')} busy={busy} setBusy={setBusy} setNote={setNote} maxChars={maxChars} />
+      <WhisperSection
+        place={(cues, extra) => place(cues, '文字起こし', 0, extra)}
+        busy={busy}
+        setBusy={setBusy}
+        setNote={setNote}
+        maxChars={maxChars}
+      />
       {note && <p className="muted small">{note}</p>}
     </>
   );
@@ -310,7 +317,7 @@ function WhisperSection({
   setNote,
   maxChars,
 }: {
-  place: (cues: Parameters<typeof tidyCues>[0]) => void;
+  place: (cues: Parameters<typeof tidyCues>[0], extra?: string) => void;
   busy: boolean;
   setBusy: (v: boolean) => void;
   setNote: (v: string) => void;
@@ -321,6 +328,8 @@ function WhisperSection({
   const [modelId, setModelId] = useState<string>(WHISPER_MODELS[1].id);
   const [device, setDevice] = useState<WhisperDevice>('wasm');
   const [local, setLocal] = useState(false);
+  // 探す道を増やすと取り違えが減る。手順書の仕上げも 5 で回している。
+  const [careful, setCareful] = useState(false);
   const [sourceId, setSourceId] = useState<string>('');
 
   useEffect(() => {
@@ -357,10 +366,11 @@ function WhisperSection({
         return;
       }
       const audio = await toMono16k(buffer);
-      const cues = await transcribe(audio, {
+      const result = await transcribe(audio, {
         modelId,
         device,
         maxChars,
+        beams: careful ? 5 : 1,
         localLibrary: support.localLibrary,
         localModels: local ? 'models/' : null,
         localWasm: local ? 'ort/' : null,
@@ -376,11 +386,20 @@ function WhisperSection({
         },
         onProgress: (percent, file) => setNote(`モデルを読み込んでいます… ${percent.toFixed(0)}% ${file}`),
       });
-      if (cues.length === 0) {
-        setNote('言葉が見つかりませんでした。');
+      if (result.cues.length === 0) {
+        setNote('言葉が見つかりませんでした。声の入っている素材か確かめてください。');
         return;
       }
-      place(clipTimeline(cues, chosen));
+      // 何をどれだけ落としたかは出しておく。黙って捨てると、消えた言葉を探すことになる。
+      const dropped = result.clean.boilerplate + result.clean.repeated + result.clean.garbled;
+      const parts: string[] = [];
+      if (result.clean.boilerplate) parts.push(`決まり文句 ${result.clean.boilerplate}`);
+      if (result.clean.repeated) parts.push(`繰り返し ${result.clean.repeated}`);
+      if (result.clean.garbled) parts.push(`壊れた出力 ${result.clean.garbled}`);
+      const extra =
+        `声のある所は全体の ${Math.round(result.kept * 100)}%。` +
+        (dropped > 0 ? `幻とみて ${dropped} 行落としました（${parts.join(' / ')}）。` : '');
+      place(clipTimeline(result.cues, chosen), extra);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // 取りに行けなかったときは、どちらを取りに行って駄目だったのかまで言わないと直せない。
@@ -435,6 +454,11 @@ function WhisperSection({
       {!support.webgpu && device === 'webgpu' && (
         <p className="muted small">このブラウザでは GPU が使えません。CPU にしてください。</p>
       )}
+      <Toggle
+        label="丁寧に起こす（遅くなります）"
+        checked={careful}
+        onChange={setCareful}
+      />
       <Toggle label="手元に置いたモデルだけを使う（ネット無し）" checked={local} onChange={setLocal} />
       <button type="button" className="wide" disabled={busy || !chosen} onClick={() => void run()}>
         {busy ? '起こしています…' : '音から文字を起こす'}
@@ -899,11 +923,113 @@ function EffectsTab({ clip }: { clip: Clip }) {
                 }
                 format={(v) => `${Math.round(v * 100)}%`}
               />
+              <EffectTimingRow
+                effect={effect}
+                duration={clip.duration}
+                onChange={(timing) =>
+                  patch(
+                    { effects: clip.effects.map((e) => (e.id === effect.id ? { ...e, timing } : e)) },
+                    `fxt:${effect.id}`,
+                  )
+                }
+              />
             </li>
           ))}
         </ul>
       )}
     </>
+  );
+}
+
+/**
+ * 1 つのエフェクトを「いつ効かせるか」。
+ *
+ * 掛けたら最後まで掛かりっぱなし、だと作れないものが多い。
+ * 頭だけ寄る・決めの所で一瞬・ゆっくり入る、はどれも時間で変わる。
+ * よく使う形は押すだけにして、細かい所はそのあと数字で動かす。
+ */
+function EffectTimingRow({
+  effect,
+  duration,
+  onChange,
+}: {
+  effect: Effect;
+  duration: number;
+  onChange: (timing: EffectTiming | null) => void;
+}) {
+  const timing = effect.timing ?? null;
+  const set = (patch: Partial<EffectTiming>) => onChange({ ...(timing ?? DEFAULT_EFFECT_TIMING), ...patch });
+  const same = (a: EffectTiming, b: EffectTiming) =>
+    a.start === b.start && a.duration === b.duration && a.attack === b.attack && a.release === b.release;
+
+  return (
+    <div className="effect-timing">
+      <div className="chip-row wrap">
+        <button
+          type="button"
+          className={timing === null ? 'chip active' : 'chip'}
+          onClick={() => onChange(null)}
+          title="時間で変えない（クリップ全体に一定で掛かる）"
+        >
+          ずっと
+        </button>
+        {EFFECT_SHAPES.filter((shape) => shape.key !== 'always').map((shape) => (
+          <button
+            key={shape.key}
+            type="button"
+            className={timing && same(timing, shape.timing) ? 'chip active' : 'chip'}
+            onClick={() => onChange({ ...shape.timing })}
+            title={shape.hint}
+          >
+            {shape.label}
+          </button>
+        ))}
+      </div>
+      {timing && (
+        <div className="two-col">
+          <Field label="いつから" hint="秒">
+            <Slider
+              value={timing.start}
+              min={0}
+              max={Math.max(0.5, duration)}
+              step={0.05}
+              onChange={(start) => set({ start })}
+              format={(v) => v.toFixed(2)}
+            />
+          </Field>
+          <Field label="どれだけ" hint="0 で最後まで">
+            <Slider
+              value={timing.duration}
+              min={0}
+              max={Math.max(0.5, duration)}
+              step={0.05}
+              onChange={(d) => set({ duration: d })}
+              format={(v) => (v <= 0 ? '最後まで' : v.toFixed(2))}
+            />
+          </Field>
+          <Field label="立ち上がり" hint="秒">
+            <Slider
+              value={timing.attack}
+              min={0}
+              max={2}
+              step={0.02}
+              onChange={(attack) => set({ attack })}
+              format={(v) => v.toFixed(2)}
+            />
+          </Field>
+          <Field label="抜け" hint="秒">
+            <Slider
+              value={timing.release}
+              min={0}
+              max={2}
+              step={0.02}
+              onChange={(release) => set({ release })}
+              format={(v) => v.toFixed(2)}
+            />
+          </Field>
+        </div>
+      )}
+    </div>
   );
 }
 

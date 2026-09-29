@@ -491,6 +491,165 @@ eq('空文字', wrap('', 10), ['']);
   }
 }
 
+// ---- 文字起こしに渡す前の下ごしらえ ----
+{
+  const { voiceSpans, condense, restoreTime, normalize, highpass } = await import('../src/engine/speech.ts');
+  const SR = 16000;
+
+  /** 声のつもりの音（倍音つき）を、その区間だけ置いた波形を作る。 */
+  const make = (seconds, spans) => {
+    const out = new Float32Array(Math.round(seconds * SR));
+    for (const [from, to] of spans) {
+      for (let i = Math.round(from * SR); i < Math.round(to * SR) && i < out.length; i += 1) {
+        const t = i / SR;
+        out[i] = 0.5 * Math.sin(2 * Math.PI * 180 * t) + 0.2 * Math.sin(2 * Math.PI * 360 * t);
+      }
+    }
+    return out;
+  };
+
+  // 0–1 秒と 3–4 秒だけ声、あいだは無音
+  const audio = make(5, [[0, 1], [3, 4]]);
+  const spans = voiceSpans(audio, SR);
+  check('声のある所を 2 つ見つける', spans.length === 2, spans.map((s) => `${s.start.toFixed(2)}-${s.end.toFixed(2)}`).join(' '));
+  check('1 つ目はだいたい 0〜1 秒', spans[0].start <= 0.05 && Math.abs(spans[0].end - 1) < 0.3,
+    `${spans[0].start.toFixed(2)}-${spans[0].end.toFixed(2)}`);
+  check('2 つ目はだいたい 3〜4 秒', Math.abs(spans[1].start - 3) < 0.3 && Math.abs(spans[1].end - 4) < 0.3,
+    `${spans[1].start.toFixed(2)}-${spans[1].end.toFixed(2)}`);
+
+  // 短い息継ぎでは切らない
+  const breath = voiceSpans(make(3, [[0, 1], [1.15, 2.5]]), SR);
+  check('短い切れ目では切らない', breath.length === 1, `${breath.length} 区間`);
+
+  // 雑音のような一瞬は拾わない
+  const blip = voiceSpans(make(3, [[0, 1], [2.0, 2.05]]), SR);
+  check('一瞬の音は拾わない', blip.length === 1, `${blip.length} 区間`);
+
+  // 全部無音なら何も見つけない
+  check('無音からは何も見つけない', voiceSpans(new Float32Array(SR * 2), SR).length === 0);
+
+  // 繋いで、時刻を戻す
+  {
+    const packed = condense(audio, SR, spans);
+    check('繋ぐと短くなる', packed.audio.length < audio.length,
+      `${(packed.audio.length / SR).toFixed(2)} 秒 < ${(audio.length / SR).toFixed(2)} 秒`);
+    check('残した割合を返す', packed.kept > 0.3 && packed.kept < 0.8, packed.kept.toFixed(2));
+
+    // 繋いだあとの 0 秒は、元の 1 つ目の頭
+    check('頭の時刻はそのまま', Math.abs(restoreTime(packed.map, 0) - spans[0].start) < 1e-6);
+    // 2 つ目の頭（繋いだあと）は、元の 2 つ目の頭に戻る
+    const second = packed.map[1].at;
+    check('2 つ目の頭が元へ戻る', Math.abs(restoreTime(packed.map, second) - spans[1].start) < 1e-6,
+      `${restoreTime(packed.map, second).toFixed(2)} / ${spans[1].start.toFixed(2)}`);
+    // 戻した時刻は前後しない
+    let prev = -1;
+    let ordered = true;
+    for (let t = 0; t < packed.audio.length / SR; t += 0.05) {
+      const at = restoreTime(packed.map, t);
+      if (at < prev - 1e-9) ordered = false;
+      prev = at;
+    }
+    check('戻した時刻は前後しない', ordered);
+  }
+
+  // 音量を揃える
+  {
+    const quiet = new Float32Array(1000);
+    for (let i = 0; i < quiet.length; i += 1) quiet[i] = 0.02 * Math.sin(i / 5);
+    const loud = normalize(quiet);
+    const peak = Math.max(...Array.from(loud).map(Math.abs));
+    check('小さい音を持ち上げる', Math.abs(peak - 0.95) < 0.01, peak.toFixed(3));
+    // すでに大きいものは触らない
+    const already = new Float32Array([0.99, -0.99, 0.5]);
+    check('大きい音はそのまま', normalize(already) === already);
+  }
+
+  // 低い所を落とす
+  {
+    const n = SR;
+    const low = new Float32Array(n);
+    const mid = new Float32Array(n);
+    for (let i = 0; i < n; i += 1) {
+      low[i] = Math.sin((2 * Math.PI * 20 * i) / SR);
+      mid[i] = Math.sin((2 * Math.PI * 500 * i) / SR);
+    }
+    const rms = (a) => Math.sqrt(Array.from(a).reduce((s, v) => s + v * v, 0) / a.length);
+    const lowAfter = rms(highpass(low, SR)) / rms(low);
+    const midAfter = rms(highpass(mid, SR)) / rms(mid);
+    check('低い音は落ちる', lowAfter < 0.4, lowAfter.toFixed(3));
+    check('声の高さは残る', midAfter > 0.9, midAfter.toFixed(3));
+  }
+}
+
+// ---- 幻の行を落とす ----
+{
+  const { dropHallucinations } = await import('../src/model/transcript.ts');
+  const cue = (start, end, text) => ({ start, end, text, speaker: null });
+
+  const r = dropHallucinations([
+    cue(0, 2, '英語どこから喋れんの'),
+    cue(2, 4, 'ご視聴ありがとうございました'),
+    cue(4, 6, 'ご視聴ありがとうございました。'),
+    cue(6, 8, 'ペラペラペーニョ'),
+    cue(8, 10, 'ペラペラペーニョ'),
+    cue(10, 12, 'あああああああああ'),
+    cue(12, 12.5, 'これはどう考えても一息では言い切れない長さの文章である'),
+  ]);
+  eq('残った本文', r.cues.map((c) => c.text), ['英語どこから喋れんの', 'ペラペラペーニョ']);
+  check('決まり文句を 2 つ落とす', r.boilerplate === 2, String(r.boilerplate));
+  check('繰り返しを 1 つ落とす', r.repeated === 1, String(r.repeated));
+  check('壊れた出力を 2 つ落とす', r.garbled === 2, String(r.garbled));
+  check('繰り返しを畳んだぶん尺は伸びる', r.cues[1].end === 10, String(r.cues[1].end));
+
+  // 短い相槌や、正しく繰り返される言葉は落とさない
+  const keep = dropHallucinations([cue(0, 0.4, 'は?'), cue(1, 1.4, 'うそ'), cue(2, 2.4, 'は?')]);
+  check('離れた同じ相槌は残す', keep.cues.length === 3, `${keep.cues.length} 行`);
+  // 「そうそうそう」くらいは壊れた出力にしない
+  const three = dropHallucinations([cue(0, 1.5, 'そうそうそう')]);
+  check('三回続く言い回しは残す', three.cues.length === 1);
+}
+
+// ---- エフェクトを時間で効かせる ----
+{
+  const { effectAmount, effectIntensity, EFFECT_NEUTRAL, DEFAULT_EFFECT_TIMING } =
+    await import('../src/model/effects.ts');
+
+  const head = { start: 0, duration: 0.25, attack: 0, release: 0.2 };
+  check('区間の外は効かない', effectAmount(head, 0.5, 3) === 0 && effectAmount(head, -1, 3) === 0);
+  check('区間の頭では効いている', effectAmount(head, 0.01, 3) > 0.9, effectAmount(head, 0.01, 3).toFixed(2));
+  check('抜けの途中は中くらい', effectAmount(head, 0.15, 3) > 0.1 && effectAmount(head, 0.15, 3) < 0.9,
+    effectAmount(head, 0.15, 3).toFixed(2));
+  check('区間の終わりでは戻っている', effectAmount(head, 0.249, 3) < 0.1, effectAmount(head, 0.249, 3).toFixed(2));
+
+  // 長さ 0 は「最後まで」
+  const rest = { start: 1, duration: 0, attack: 0, release: 0 };
+  check('長さ 0 は最後まで', effectAmount(rest, 2.9, 3) === 1 && effectAmount(rest, 0.5, 3) === 0);
+
+  // 立ち上がりと抜けが区間を超えても、はみ出さない
+  const tight = { start: 0, duration: 0.2, attack: 1, release: 1 };
+  let inside = true;
+  for (let t = -0.5; t < 1; t += 0.01) {
+    const v = effectAmount(tight, t, 3);
+    if (v > 0 && (t <= 0 || t >= 0.2)) inside = false;
+    if (v < 0 || v > 1) inside = false;
+  }
+  check('立ち上がりと抜けは区間の内側に収まる', inside);
+
+  // 素通しの値へ戻る（明るさは 0 ではなく 0.5 が素通し）
+  const dark = { id: 'x', type: 'brightness', intensity: 0.1, timing: head };
+  check('効いていない所は素通しの値', Math.abs(effectIntensity(dark, 1.0, 3) - EFFECT_NEUTRAL.brightness) < 1e-9,
+    String(effectIntensity(dark, 1.0, 3)));
+  check('効いている所は掛けた値', Math.abs(effectIntensity(dark, 0.01, 3) - 0.1) < 0.02,
+    String(effectIntensity(dark, 0.01, 3)));
+
+  // 時間の指定が無ければ、これまでどおり
+  const plain = { id: 'y', type: 'blur', intensity: 0.4 };
+  check('指定が無ければ強さそのまま', effectIntensity(plain, 0, 3) === 0.4 && effectIntensity(plain, 2, 3) === 0.4);
+
+  // 既定の形は「頭だけ」
+  check('既定は頭で効く', effectAmount(DEFAULT_EFFECT_TIMING, 0.01, 3) > 0.9);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

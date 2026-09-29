@@ -32,6 +32,8 @@ export interface RunMessage {
   language: string;
   /** 単語ごとの時刻も取るか。取れると、行を割る位置が言った所と合う。 */
   words: boolean;
+  /** 探す道の数。多いほど丁寧だが遅い。1 で速く、5 で丁寧に。 */
+  beams: number;
 }
 
 export interface ResultChunk {
@@ -107,6 +109,11 @@ async function run(message: RunMessage): Promise<void> {
     // 30 秒ずつに切って回す。継ぎ目で言葉が切れないよう、前後 5 秒を重ねる。
     chunk_length_s: 30,
     stride_length_s: 5,
+    // 道を増やすと取り違えが減る。手順書の仕上げも 5 で回している。
+    num_beams: Math.max(1, message.beams),
+    // 直前の出力を次の手がかりにしない。ここを繋ぐと、いちど言葉を作り始めたとき
+    // それを手がかりにして延々と作り続ける（同じ行が何十も並ぶのはこれ）。
+    condition_on_previous_text: false,
   })) as { text?: string; chunks?: ResultChunk[] };
 
   post({ type: 'result', text: output.text ?? '', chunks: output.chunks ?? [] });

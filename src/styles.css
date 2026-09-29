@@ -1509,6 +1509,17 @@ hr {
   border-radius: 8px;
 }
 
+/* いつ効かせるか。強さのスライダーの下に、区切って置く。 */
+.effect-timing {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+}
+
+.effect-timing .two-col {
+  margin-top: 6px;
+}
+
 .effect-head {
   display: flex;
   align-items: center;
