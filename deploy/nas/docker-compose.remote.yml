@@ -19,6 +19,21 @@
 #   - cloudflared がトンネルを張れるか（こちらからは外へ出られないため）
 # どちらも失敗すればログにはっきり出ます。詰まったらログを見てください。
 
+#
+# ---- アプリを新しくするとき【重要】----
+# `app-fetch` は**一度終わったら、作り直さない限りもう走りません**。
+# `up -d` や再起動だけでは、ボリュームの中の古いアプリがそのまま残ります。
+# 直したはずのものが出ないときは、たいていこれです。
+#
+#   docker compose -f docker-compose.remote.yml up -d --force-recreate
+#
+# それでも変わらなければ、ボリュームごと捨てる（素材はバインドマウントなので消えません）:
+#
+#   docker compose -f docker-compose.remote.yml down -v
+#   docker compose -f docker-compose.remote.yml up -d
+#
+# 入れ替わったかどうかは、画面の「設定 → このアプリについて」の日時で分かります。
+
 services:
   # ① アプリを GitHub から取ってきて、置き場に展開する。
   #    毎回まっさらにしてから入れ直すので、コンテナを再起動すれば最新版になる。

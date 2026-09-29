@@ -26,6 +26,21 @@
 #     （中継が Range リクエストを素通しするかどうか。ここがいちばん怪しい）
 # どちらも失敗すればログにはっきり出ます。
 
+#
+# ---- アプリを新しくするとき【重要】----
+# `app-fetch` は**一度終わったら、作り直さない限りもう走りません**。
+# `up -d` や再起動だけでは、ボリュームの中の古いアプリがそのまま残ります。
+# 直したはずのものが出ないときは、たいていこれです。
+#
+#   docker compose -f docker-compose.ugreenlink.yml up -d --force-recreate
+#
+# それでも変わらなければ、ボリュームごと捨てる（素材はバインドマウントなので消えません）:
+#
+#   docker compose -f docker-compose.ugreenlink.yml down -v
+#   docker compose -f docker-compose.ugreenlink.yml up -d
+#
+# 入れ替わったかどうかは、画面の「設定 → このアプリについて」の日時で分かります。
+
 services:
   # アプリ本体と nginx 設定を GitHub から取ってきて、共有の置き場に広げる。
   # NAS 側に置くファイルを無くすためにこうしている。

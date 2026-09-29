@@ -15,6 +15,20 @@
 #   5. ブラウザで http://localhost:4193 を開く
 #   6. 片付け:          docker compose -f docker-compose.local.yml down -v
 #
+# ---- アプリを新しくするとき【重要】----
+# `app-fetch` は**一度終わったら、作り直さない限りもう走りません**。
+# `up -d` や再起動だけでは、ボリュームの中の古いアプリがそのまま残ります。
+# 直したはずのものが出ないときは、たいていこれです。
+#
+#   docker compose -f docker-compose.local.yml up -d --force-recreate
+#
+# それでも変わらなければ、ボリュームごと捨てる（素材はバインドマウントなので消えません）:
+#
+#   docker compose -f docker-compose.local.yml down -v
+#   docker compose -f docker-compose.local.yml up -d
+#
+# 入れ替わったかどうかは、画面の「設定 → このアプリについて」の日時で分かります。
+#
 # ---- ここで確かめられること / 確かめられないこと ----
 # 確かめられる:
 #   - GitHub からアプリを取ってこられるか（NAS でも同じ処理をします）
