@@ -62,6 +62,14 @@ const SNAP_RATIO = 0.012;
 
 export function PreviewStage() {
   const { sequence, selection, setSelection, apply, cropTarget, setCropTarget, cropRatio, setCropRatio } = useEditor();
+  /**
+   * 範囲指定中の手の役割。
+   * 'size' … いままでどおり。つまみで大きさ、内側で位置、外側で引き直し
+   * 'move' … **どこを押しても大きさを変えずに場所だけずらす**。
+   * 大きさが決まったあとは、位置だけ直したいことのほうが多い。そのとき
+   * つまみを避けて内側を狙う必要があると、枠が小さいほど当てにくくなる。
+   */
+  const [cropHand, setCropHand] = useState<'size' | 'move'>('size');
   const { settings } = useApp();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const boundsRef = useRef<Map<string, Rect>>(new Map());
@@ -130,6 +138,18 @@ export function PreviewStage() {
     const source = boundsRef.current.get(`cropsrc:${cropTarget}`);
     if (!clip || !source || source.w <= 0 || source.h <= 0) return false;
     const rect = selectionRect(source, clip.crop);
+
+    // 「場所だけ」では、つまみの上でも枠の外でも、掴んだ位置ごと引きずる。
+    if (cropHand === 'move') {
+      dragRef.current = {
+        kind: 'cropSelect',
+        id: cropTarget,
+        source,
+        drag: { mode: 'move', grabX: point.x, grabY: point.y, origin: rect },
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return true;
+    }
 
     let drag: CropDrag | null = null;
     for (const handle of CROP_HANDLES) {
@@ -292,14 +312,43 @@ export function PreviewStage() {
     dragRef.current = { kind: 'none' };
   };
 
-  // 範囲指定中は Esc / Enter で抜けられるようにする。
+  // 範囲指定に入り直したら「大きさ」から始める。
+  // 「場所だけ」のまま次のクリップへ移ると、枠を引き直せなくなって手が詰まる。
+  useEffect(() => setCropHand('size'), [cropTarget]);
+
+  /** 大きさを変えずに、切り抜く場所だけずらす。 */
+  const nudgeCrop = (dx: number, dy: number) => {
+    if (!cropTarget) return;
+    const source = boundsRef.current.get(`cropsrc:${cropTarget}`);
+    const clip = sequence.clips.find((c) => c.id === cropTarget);
+    if (!source || !clip) return;
+    setSelectionRect(cropTarget, source, moveCropRect(selectionRect(source, clip.crop), dx, dy, source));
+  };
+  // キーの受け口は貼り替えずに使い回すので、最新の手続きを置いておく。
+  const nudgeRef = useRef(nudgeCrop);
+  nudgeRef.current = nudgeCrop;
+
+  // 範囲指定中は Esc / Enter で抜け、矢印で 1 ドットずつ場所を直せるようにする。
   useEffect(() => {
     if (!cropTarget) return;
+    const arrows: Record<string, [number, number]> = {
+      ArrowLeft: [-1, 0],
+      ArrowRight: [1, 0],
+      ArrowUp: [0, -1],
+      ArrowDown: [0, 1],
+    };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' && event.key !== 'Enter') return;
+      const arrow = arrows[event.key];
+      if (event.key !== 'Escape' && event.key !== 'Enter' && !arrow) return;
       const target = event.target as HTMLElement | null;
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
       event.preventDefault();
+      if (arrow) {
+        // 押しっぱなしで動かすには 1 ドットでは遅い。Shift で 10 ドット。
+        const step = event.shiftKey ? 10 : 1;
+        nudgeRef.current(arrow[0] * step, arrow[1] * step);
+        return;
+      }
       setCropTarget(null);
     };
     window.addEventListener('keydown', onKey);
@@ -411,8 +460,29 @@ export function PreviewStage() {
             </div>
           </div>
           <div className="crop-hud-row">
+            <span className="crop-hud-label">手の役割</span>
+            <div className="crop-hud-ratios">
+              <button
+                type="button"
+                className={cropHand === 'size' ? 'chip active' : 'chip'}
+                onClick={() => setCropHand('size')}
+              >
+                大きさ
+              </button>
+              <button
+                type="button"
+                className={cropHand === 'move' ? 'chip active' : 'chip'}
+                onClick={() => setCropHand('move')}
+              >
+                場所だけ
+              </button>
+            </div>
+          </div>
+          <div className="crop-hud-row">
             <span>
-              なぞって範囲を決めます。つまみで大きさ、内側をドラッグで位置。端と中心には吸い付きます（Enter で完了）。
+              {cropHand === 'move'
+                ? '大きさはそのままで、どこを掴んでも場所だけずれます。矢印キーで 1 ドット、Shift で 10 ドット（Enter で完了）。'
+                : 'なぞって範囲を決めます。つまみで大きさ、内側をドラッグで位置。矢印キーでも場所を直せます（Enter で完了）。'}
             </span>
             <div className="crop-hud-actions">
               <button type="button" onClick={fillFrame}>

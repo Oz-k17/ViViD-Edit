@@ -463,7 +463,7 @@ function CropSection({ clip }: { clip: Clip }) {
           </button>
           <p className="muted small">
             {selecting
-              ? 'プレビューをなぞると、その範囲だけが残ります。8 つのつまみで大きさ、内側をドラッグで位置。比率はプレビュー下で固定できます。'
+              ? 'プレビューをなぞると、その範囲だけが残ります。大きさが決まったら、プレビュー下で「場所だけ」に切り替えると、大きさを変えずに切り抜く場所だけずらせます（矢印キーでも動きます）。'
               : '切り抜いた絵は、プレビュー上でドラッグして動かせます。四隅のつまみで大きさも変えられます（比率は保たれます）。'}
           </p>
           <button type="button" className="wide ghost" onClick={() => setShowNumbers((v) => !v)}>

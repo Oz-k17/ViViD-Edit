@@ -4,7 +4,7 @@
  * 描画は常に「シーケンス座標（例 1080x1920）」で計算し、出力解像度の差は ctx のスケールで吸収する。
  */
 
-import { CROP_CORNERS, CROP_HANDLES, handlePoint, handleRect, handleSize, selectionRect, type CropHandle } from './crop';
+import { CROP_CORNERS, CROP_HANDLES, handlePoint, handleRect, handleSizeFor, selectionRect, type CropHandle } from './crop';
 import { clipAtTime, previousAdjacent } from '../model/ops';
 import {
   clipEnd,
@@ -850,7 +850,8 @@ function drawHandles(
   color: string,
   handles: readonly CropHandle[] = CROP_HANDLES,
 ) {
-  const s = handleSize(sequence.width) * 0.6;
+  // 当たり判定と同じ縮み方をさせる。見えている大きさと掴める大きさがずれると迷う。
+  const s = handleSizeFor(sequence.width, rect) * 0.6;
   const thin = s * 0.36;
   ctx.save();
   ctx.fillStyle = color;

@@ -59,6 +59,17 @@ export function handleSize(sequenceWidth: number): number {
   return Math.max(24, sequenceWidth / 13);
 }
 
+/**
+ * その枠に合わせたつまみの大きさ。
+ *
+ * つまみを 8 つとも大きいままにすると、**小さい枠では中身がつまみで埋まる**。
+ * そうなると内側を掴めず、動かしたいだけなのに必ず大きさが変わってしまう。
+ * 枠の 1/3 を超えないところで止めて、真ん中は必ず掴めるようにする。
+ */
+export function handleSizeFor(sequenceWidth: number, rect: Rect): number {
+  return Math.max(12, Math.min(handleSize(sequenceWidth), rect.w / 3, rect.h / 3));
+}
+
 /** つまみを置く点（枠の角と辺の中央）。 */
 export function handlePoint(rect: Rect, handle: CropHandle): { x: number; y: number } {
   const x = has(handle, 'w') ? rect.x : has(handle, 'e') ? rect.x + rect.w : rect.x + rect.w / 2;
@@ -68,7 +79,7 @@ export function handlePoint(rect: Rect, handle: CropHandle): { x: number; y: num
 
 /** つまみの矩形。 */
 export function handleRect(sequenceWidth: number, rect: Rect, handle: CropHandle): Rect {
-  const s = handleSize(sequenceWidth);
+  const s = handleSizeFor(sequenceWidth, rect);
   const { x, y } = handlePoint(rect, handle);
   return { x: x - s / 2, y: y - s / 2, w: s, h: s };
 }

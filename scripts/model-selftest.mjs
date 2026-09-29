@@ -288,6 +288,39 @@ eq('空文字', wrap('', 10), ['']);
   check('短すぎる区間からは作らない', voicePrint(new Float32Array(200), SR) === null);
 }
 
+// ---- 切り抜き枠を掴むところ ----
+{
+  const { handleSize, handleSizeFor, handleRect, moveCropRect, CROP_HANDLES } = await import('../src/engine/crop.ts');
+  const W = 1080;
+  const source = { x: 0, y: 0, w: 1080, h: 1920 };
+
+  // 大きい枠では、つまみは今までどおりの大きさ
+  const big = { x: 100, y: 200, w: 800, h: 1200 };
+  check('大きい枠ではつまみの大きさは変わらない', handleSizeFor(W, big) === handleSize(W));
+
+  // 小さい枠では、つまみが枠の 1/3 を超えない
+  const small = { x: 400, y: 800, w: 120, h: 90 };
+  const s = handleSizeFor(W, small);
+  check('小さい枠ではつまみが縮む', s < handleSize(W), `${s.toFixed(1)} < ${handleSize(W).toFixed(1)}`);
+  check('つまみは枠の 1/3 まで', s <= small.h / 3 + 1e-9, `${s.toFixed(1)} <= ${(small.h / 3).toFixed(1)}`);
+
+  // 真ん中はどのつまみにも取られていない（＝掴んで動かせる）
+  const center = { x: small.x + small.w / 2, y: small.y + small.h / 2 };
+  const inside = (r, pt) => pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h;
+  const taken = CROP_HANDLES.filter((h) => inside(handleRect(W, small, h), center));
+  check('小さい枠でも真ん中は掴める', taken.length === 0, `取られているつまみ: ${taken.join(',') || 'なし'}`);
+
+  // 場所だけずらす＝大きさは変わらない
+  const moved = moveCropRect(small, 60, -40, source);
+  check('ずらしても大きさは変わらない', moved.w === small.w && moved.h === small.h);
+  check('ずらした量どおりに動く', moved.x === 460 && moved.y === 760, `${moved.x} / ${moved.y}`);
+
+  // 素材の外へは出ない
+  const pushed = moveCropRect(small, 9999, -9999, source);
+  check('右へ押しても素材の外へ出ない', pushed.x === source.w - small.w && pushed.y === 0, `${pushed.x} / ${pushed.y}`);
+  check('端まで行っても大きさは保つ', pushed.w === small.w && pushed.h === small.h);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;
