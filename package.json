@@ -65,7 +65,8 @@
     "lab:pack:digest": "node lab/project-pack/digest-probe.mjs",
     "lab:pack:edge": "node lab/project-pack/edge-probe.mjs",
     "whisper:build": "vite build --config vite.whisper.config.ts",
-    "whisper:pack": "node scripts/whisper-pack.mjs"
+    "whisper:pack": "node scripts/whisper-pack.mjs",
+    "autoedit": "node --import ./scripts/ts-resolve-register.mjs tools/autoedit/main.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.48.0",

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Inspector } from '../components/editor/Inspector';
 import { ExportDialog } from '../components/editor/ExportDialog';
 import { MediaPanel, importFiles, seedSoundEffects } from '../components/editor/MediaPanel';
+import { ScriptPanel } from '../components/editor/ScriptPanel';
 import { MobileEditor } from '../components/editor/MobileEditor';
 import { MultiTimeline } from '../components/editor/MultiTimeline';
 import { PreviewStage } from '../components/editor/PreviewStage';
@@ -43,6 +44,7 @@ function Workspace({
 
   const renderPanel = (id: PanelId) => {
     if (id === 'media') return <MediaPanel />;
+    if (id === 'script') return <ScriptPanel />;
     if (id === 'inspector') return <Inspector />;
     return (
       <TimelinePanel

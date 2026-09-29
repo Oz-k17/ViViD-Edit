@@ -1493,6 +1493,100 @@ hr {
 
 /* ---------- エフェクト一覧 ---------- */
 
+/* 台本。読み物として上から下へ並べる所。 */
+.script-head {
+  margin: 10px 0 5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: none;
+}
+
+.script-head span {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.script-head:first-child {
+  margin-top: 0;
+}
+
+.script-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.script-row {
+  padding: 6px 7px;
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.script-row.selected {
+  border-color: var(--accent);
+}
+
+.script-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.script-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.script-at {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 5px;
+  min-height: 0;
+}
+
+.script-span {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  margin-right: auto;
+}
+
+/* 読むには短すぎる行。黙って通さず、その場で見えるようにする。 */
+.script-span.short {
+  color: var(--warn, #f0b429);
+}
+
+.script-drop {
+  padding: 1px 5px;
+  min-height: 0;
+}
+
+.script-text {
+  width: 100%;
+  resize: vertical;
+  font-size: 12.5px;
+  line-height: 1.4;
+  min-height: 2.2em;
+}
+
+.script-name {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .effect-list {
   list-style: none;
   margin: 0;

@@ -650,6 +650,61 @@ eq('空文字', wrap('', 10), ['']);
   check('既定は頭で効く', effectAmount(DEFAULT_EFFECT_TIMING, 0.01, 3) > 0.9);
 }
 
+// ---- 外で組み立てたプロジェクト ----
+{
+  const { buildAutoEdit, toProjectFile } = await import('../src/model/autoedit.ts');
+  const media = {
+    id: 'asset_x', name: '配信.mp4', kind: 'video', src: '配信/haishin.mp4',
+    width: 1920, height: 1080, duration: 3600,
+  };
+  const cues = [
+    { start: 3600 - 3590, end: 3600 - 3588, text: '英語どこから喋れんの', speaker: null },
+    { start: 12, end: 14, text: 'ペラペラペーニョ', speaker: null },
+    { start: 3000, end: 3002, text: 'これは範囲の外', speaker: null },
+  ];
+
+  const r = buildAutoEdit(media, cues, { from: 5, to: 20, name: '切り抜き' });
+  check('名前が付く', r.project.name === '切り抜き');
+  check('画角は縦', r.project.sequence.width === 1080 && r.project.sequence.height === 1920);
+
+  const video = r.project.sequence.clips.filter((c) => c.kind === 'video');
+  check('素材は 1 本', video.length === 1, `${video.length} 本`);
+  check('使う範囲だけ切り出す', video[0].sourceIn === 5 && video[0].duration === 15,
+    `${video[0].sourceIn} / ${video[0].duration}`);
+  check('横長は寄せてある', video[0].crop.enabled && video[0].crop.sw < 1, String(video[0].crop.sw));
+
+  check('範囲の外の行は入らない', r.captions === 2, `${r.captions} 枚`);
+  const texts = r.project.sequence.clips.filter((c) => c.kind === 'text');
+  check('テロップは 1 行ずつ別のクリップ', texts.length === r.captions);
+  check('タイムラインの時刻に直っている', texts.every((c) => c.start >= 0 && c.start < 15),
+    texts.map((c) => c.start.toFixed(1)).join(','));
+  check('確かめてほしい所を返す', r.notes.length > 0);
+
+  // 範囲が空なら、黙って空のものを作らずに止まる
+  let threw = false;
+  try { buildAutoEdit(media, cues, { from: 10, to: 10 }); } catch { threw = true; }
+  check('範囲が空なら止まる', threw);
+
+  // 見出しは「飾り」なので、字幕なしで書き出しても残る側
+  const titled = buildAutoEdit(media, cues, {
+    from: 0, to: 20, title: 'ただ喋れば', titleStyle: { fontSize: 140 },
+  });
+  const title = titled.project.sequence.clips.find((c) => c.text?.content === 'ただ喋れば');
+  check('見出しを置ける', !!title);
+  check('見出しは飾り扱い', title.text.role === 'design', String(title.text.role));
+
+  // 3 段
+  const three = buildAutoEdit(media, cues, { from: 0, to: 20, layout: 'three' });
+  const videos = three.project.sequence.clips.filter((c) => c.kind === 'video');
+  check('3 段は映像が 3 本', videos.length === 3, `${videos.length} 本`);
+
+  // そのまま書ける形
+  const file = toProjectFile(r, media);
+  check('アプリが読む形になっている', file.app === 'vivid-edit' && file.version === 1);
+  check('素材の在り処が入っている', file.assets[0].src === '配信/haishin.mp4');
+  check('JSON にできる', typeof JSON.stringify(file) === 'string');
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

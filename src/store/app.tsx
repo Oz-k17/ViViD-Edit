@@ -68,15 +68,16 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
 export type LayoutMode = 'desktop' | 'mobile';
 
 /** 編集画面に置けるパネル。 */
-export type PanelId = 'media' | 'inspector' | 'timeline';
+export type PanelId = 'media' | 'inspector' | 'timeline' | 'script';
 /** パネルを置ける場所。 */
 export type PanelSlot = 'left' | 'right' | 'bottom';
 
-export const PANEL_IDS: PanelId[] = ['media', 'inspector', 'timeline'];
+export const PANEL_IDS: PanelId[] = ['media', 'script', 'inspector', 'timeline'];
 export const PANEL_SLOTS: PanelSlot[] = ['left', 'right', 'bottom'];
 
 export const PANEL_LABELS: Record<PanelId, string> = {
   media: '素材',
+  script: '台本',
   inspector: 'インスペクタ',
   timeline: 'タイムライン',
 };
@@ -107,7 +108,8 @@ export interface PanelLayout {
 const group = (...panels: PanelId[]): PanelGroup => ({ id: uid('g'), panels, active: panels[0] });
 
 export const DEFAULT_PANELS: PanelLayout = {
-  slots: { left: [group('media')], right: [group('inspector')], bottom: [group('timeline')] },
+  // 素材と台本は同じ場所に重ねてタブにする。どちらも「選んで持ってくる」側なので。
+  slots: { left: [group('media', 'script')], right: [group('inspector')], bottom: [group('timeline')] },
   hidden: [],
   leftWidth: 290,
   rightWidth: 330,
