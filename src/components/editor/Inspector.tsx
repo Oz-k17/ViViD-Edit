@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type MutableRefObject, type SyntheticEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type MutableRefObject, type SyntheticEvent } from 'react';
 import { EMOJI_FOLDER, formatTime, mediaRegistry } from '../../engine/media';
 import { player } from '../../engine/player';
 import { defaultCrop } from '../../engine/renderer';
@@ -6,7 +6,9 @@ import { FONT_OPTIONS, LOOK_PRESETS, SPEED_PRESETS, TEXT_PRESETS } from '../../p
 import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
 import { buildThreeBand } from '../../model/threeBand';
-import { buildCaptionClips, parseTranscript, tidyCues } from '../../model/transcript';
+import { buildCaptionClips, clipTimeline, parseTranscript, tidyCues } from '../../model/transcript';
+import { WHISPER_MODELS, checkWhisper, toMono16k, transcribe, type WhisperDevice, type WhisperSupport } from '../../engine/transcribe';
+import { decodeAssetAudio } from '../../engine/offline-export';
 import { CARD_ICON_LABELS, CARD_ICON_NAMES } from '../../engine/cardIcons';
 import { sortSpeakers } from '../../engine/speakerSort';
 import {
@@ -177,7 +179,26 @@ function TranscriptSection() {
   const [offset, setOffset] = useState(0);
   const [extendShort, setExtendShort] = useState(true);
   const [note, setNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  /** 整えて置き、やったことをそのまま知らせる。取り込みでも文字起こしでも同じ道を通る。 */
+  const place = (cues: Parameters<typeof tidyCues>[0], label: string, shift = 0) => {
+    const tidy = tidyCues(cues, { maxChars, offset: shift, extendShort });
+    const style = TEXT_PRESETS.find((p) => p.key === preset)?.text;
+    apply((seq) =>
+      buildCaptionClips(seq, tidy.cues, SPEAKERS, {
+        style,
+        speakerColors: SPEAKER_DEFAULT_COLORS,
+        trackName: `${label} ${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}`,
+      }),
+    );
+    const parts = [`${tidy.cues.length} 行を置きました`];
+    if (tidy.split > 0) parts.push(`長い行を割って ${tidy.split} 行ぶん増えました`);
+    if (tidy.extended > 0) parts.push(`短い行を ${tidy.extended} 行伸ばしました`);
+    if (tidy.stillShort > 0) parts.push(`${tidy.stillShort} 行は次の行が近く、読める長さに届いていません`);
+    setNote(parts.join('。') + '。');
+  };
 
   const load = async (file: File) => {
     const source = await file.text();
@@ -186,14 +207,7 @@ function TranscriptSection() {
       setNote('読めませんでした。SRT・VTT・Whisper の JSON のどれかを選んでください。');
       return;
     }
-    const tidy = tidyCues(parsed, { maxChars, offset, extendShort });
-    const style = TEXT_PRESETS.find((p) => p.key === preset)?.text;
-    apply((seq) => buildCaptionClips(seq, tidy.cues, SPEAKERS, { style, speakerColors: SPEAKER_DEFAULT_COLORS }));
-    const parts = [`${tidy.cues.length} 行を置きました`];
-    if (tidy.split > 0) parts.push(`長い行を割って ${tidy.split} 行ぶん増えました`);
-    if (tidy.extended > 0) parts.push(`短い行を ${tidy.extended} 行伸ばしました`);
-    if (tidy.stillShort > 0) parts.push(`${tidy.stillShort} 行は次の行が近く、読める長さに届いていません`);
-    setNote(parts.join('。') + '。');
+    place(parsed, '字幕', offset);
   };
 
   return (
@@ -235,7 +249,154 @@ function TranscriptSection() {
       <button type="button" className="wide" onClick={() => fileRef.current?.click()}>
         書き起こしを選ぶ（SRT / VTT / JSON）
       </button>
+      <WhisperSection place={(cues) => place(cues, '文字起こし')} busy={busy} setBusy={setBusy} setNote={setNote} maxChars={maxChars} />
       {note && <p className="muted small">{note}</p>}
+    </>
+  );
+}
+
+/**
+ * 音から直接、文字を起こす。
+ *
+ * 重い部分（transformers.js・onnxruntime・モデル）は同梱していないので、
+ * 置いていない環境では理由だけ出して素通りさせる。iOS 版（file://）は必ずこちら。
+ */
+function WhisperSection({
+  place,
+  busy,
+  setBusy,
+  setNote,
+  maxChars,
+}: {
+  place: (cues: Parameters<typeof tidyCues>[0]) => void;
+  busy: boolean;
+  setBusy: (v: boolean) => void;
+  setNote: (v: string) => void;
+  maxChars: number;
+}) {
+  const { sequence } = useEditor();
+  const [support, setSupport] = useState<WhisperSupport | null>(null);
+  const [modelId, setModelId] = useState<string>(WHISPER_MODELS[1].id);
+  const [device, setDevice] = useState<WhisperDevice>('wasm');
+  const [local, setLocal] = useState(false);
+  const [sourceId, setSourceId] = useState<string>('');
+
+  useEffect(() => {
+    void checkWhisper().then((result) => {
+      setSupport(result);
+      // WebGPU があるなら、そちらのほうが桁違いに速い。
+      if (result.webgpu) setDevice('webgpu');
+    });
+  }, []);
+
+  const sources = sequence.clips.filter((c) => c.mediaId && (c.kind === 'video' || c.kind === 'audio'));
+  const chosen = sources.find((c) => c.id === sourceId) ?? sources[0] ?? null;
+
+  if (!support) return null;
+  if (!support.installed) {
+    return (
+      <p className="muted small">
+        音からの文字起こしは、この開き方では使えません（{support.reason}）。
+        書き起こしファイルの取り込みは使えます。
+      </p>
+    );
+  }
+
+  const run = async () => {
+    if (!chosen?.mediaId || busy) return;
+    setBusy(true);
+    // どこで止まったかで、言うべきことが変わる。
+    let stage = 'audio';
+    try {
+      setNote('音を取り出しています…');
+      const buffer = await decodeAssetAudio(chosen.mediaId);
+      if (!buffer) {
+        setNote('この素材から音を取り出せませんでした。');
+        return;
+      }
+      const audio = await toMono16k(buffer);
+      const cues = await transcribe(audio, {
+        modelId,
+        device,
+        maxChars,
+        localLibrary: support.localLibrary,
+        localModels: local ? 'models/' : null,
+        localWasm: local ? 'ort/' : null,
+        onStage: (next) => {
+          stage = next;
+          setNote(
+            next === 'library'
+              ? '文字起こしの部品を読み込んでいます…'
+              : next === 'model'
+                ? 'モデルを読み込んでいます（初回は時間がかかります）…'
+                : '書き起こしています…',
+          );
+        },
+        onProgress: (percent, file) => setNote(`モデルを読み込んでいます… ${percent.toFixed(0)}% ${file}`),
+      });
+      if (cues.length === 0) {
+        setNote('言葉が見つかりませんでした。');
+        return;
+      }
+      place(clipTimeline(cues, chosen));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // 取りに行けなかったときは、どちらを取りに行って駄目だったのかまで言わないと直せない。
+      const network = /fetch|NetworkError|network/i.test(message);
+      const hint = !network
+        ? ''
+        : stage === 'library'
+          ? '（文字起こしの部品を取りに行けませんでした。ネットにつながっていないなら、'
+            + '`npm run whisper:pack` で手元へ写してください）'
+          : '（モデルを取りに行けませんでした。ネットにつながっていないか、置き場所に届いていません。'
+            + '「手元に置いたモデルだけを使う」にするか、つないでから試してください）';
+      setNote(`文字起こしに失敗しました: ${message}${hint}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <p className="muted small">または、音から直接起こす</p>
+      <Field label="どの素材から">
+        <select value={chosen?.id ?? ''} onChange={(e) => setSourceId(e.target.value)}>
+          {sources.length === 0 && <option value="">（タイムラインに映像か音がありません）</option>}
+          {sources.map((c) => (
+            <option key={c.id} value={c.id}>
+              {mediaRegistry.get(c.mediaId ?? '')?.name ?? c.mediaId} （{formatTime(c.start)} から）
+            </option>
+          ))}
+        </select>
+      </Field>
+      <div className="two-col">
+        <Field label="モデル">
+          <select value={modelId} onChange={(e) => setModelId(e.target.value)}>
+            {WHISPER_MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="どこで回すか">
+          <Segmented<WhisperDevice>
+            value={device}
+            options={[
+              { value: 'webgpu', label: 'GPU' },
+              { value: 'wasm', label: 'CPU' },
+            ]}
+            onChange={setDevice}
+          />
+        </Field>
+      </div>
+      {!support.webgpu && device === 'webgpu' && (
+        <p className="muted small">このブラウザでは GPU が使えません。CPU にしてください。</p>
+      )}
+      <Toggle label="手元に置いたモデルだけを使う（ネット無し）" checked={local} onChange={setLocal} />
+      <button type="button" className="wide" disabled={busy || !chosen} onClick={() => void run()}>
+        {busy ? '起こしています…' : '音から文字を起こす'}
+      </button>
     </>
   );
 }

@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
     "test:model": "node --import ./scripts/ts-resolve-register.mjs scripts/model-selftest.mjs",
-    "bundle": "npm run build && npm run lab:build && node scripts/sync-bundles.mjs",
+    "bundle": "npm run build && npm run lab:build && npm run whisper:build && node scripts/sync-bundles.mjs",
     "lab": "vite lab/auto-cut",
     "lab:build": "vite build lab/auto-cut",
     "lab:typecheck": "tsc -p lab/auto-cut --pretty false && tsc -p lab/scene-cut --pretty false && tsc -p lab/beat --pretty false && tsc -p lab/thumbnail --pretty false && tsc -p lab/reframe --pretty false && tsc -p lab/export-cost --pretty false && tsc -p lab/keyframe --pretty false && tsc -p lab/project-pack --pretty false",
@@ -63,7 +63,9 @@
     "lab:pack:thumbsize": "node lab/project-pack/thumb-size.mjs",
     "lab:pack:thumbs": "node lab/project-pack/thumb-probe.mjs",
     "lab:pack:digest": "node lab/project-pack/digest-probe.mjs",
-    "lab:pack:edge": "node lab/project-pack/edge-probe.mjs"
+    "lab:pack:edge": "node lab/project-pack/edge-probe.mjs",
+    "whisper:build": "vite build --config vite.whisper.config.ts",
+    "whisper:pack": "node scripts/whisper-pack.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.48.0",

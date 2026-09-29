@@ -8,3 +8,9 @@ dist-ssr
 
 # ラボの試し用素材（生成物）
 lab/fixtures/out/
+
+# 文字起こしの中間生成物と、手元で用意する重いもの
+whisper-dist
+docs/whisper/ort/
+docs/whisper/models/
+docs/whisper/transformers.min.js

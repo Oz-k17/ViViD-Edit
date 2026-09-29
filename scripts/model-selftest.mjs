@@ -426,6 +426,60 @@ eq('空文字', wrap('', 10), ['']);
     check('先頭のずれを足せる', r.cues[0].start === 11, String(r.cues[0].start));
   }
 
+  // whisper の返しを行にする
+  {
+    const { cuesFromSegments, cuesFromWords, clipTimeline } = await import('../src/model/transcript.ts');
+    const segs = cuesFromSegments([
+      { timestamp: [0, 2], text: ' 英語どこから喋れんの' },
+      { timestamp: [2.5, null], text: ' は?' },
+    ]);
+    check('文ごとの結果を行にする', segs.length === 2);
+    eq('前後の空白は落とす', segs[0].text, '英語どこから喋れんの');
+    check('終わりが無いものを埋める', segs[1].end === 4.5, String(segs[1].end));
+
+    const words = cuesFromWords([
+      { timestamp: [0, 0.4], text: '英語' },
+      { timestamp: [0.4, 0.9], text: 'どこから' },
+      { timestamp: [0.9, 1.4], text: '喋れんの?' },
+      { timestamp: [3.0, 3.4], text: 'は?' },
+    ]);
+    check('間があいたら切る', words.length === 2, `${words.length} 行`);
+    eq('つないだ本文', words[0].text, '英語どこから喋れんの?');
+    check('単語の時刻を持ち越す', (words[0].words ?? []).length === 3);
+    check('行の頭と尻は単語のとおり', words[0].start === 0 && words[0].end === 1.4);
+
+    const long = cuesFromWords(
+      Array.from({ length: 10 }, (_, i) => ({ timestamp: [i * 0.2, i * 0.2 + 0.2], text: 'あいう' })),
+      { maxChars: 6 },
+    );
+    check('長くなりすぎたら切る', long.length === 5, `${long.length} 行`);
+
+    // 素材の中の時刻 → タイムライン上の時刻
+    const moved = clipTimeline(
+      [
+        { start: 0, end: 1, text: '前', speaker: null },
+        { start: 10, end: 12, text: '中', speaker: null, words: [{ start: 10, end: 12, text: '中' }] },
+        { start: 99, end: 100, text: '後', speaker: null },
+      ],
+      { start: 5, sourceIn: 8, duration: 6, speed: 1 },
+    );
+    check('使っていない範囲は落とす', moved.length === 1 && moved[0].text === '中',
+      moved.map((c) => c.text).join(','));
+    check('タイムラインの時刻へ移す', moved[0].start === 7 && moved[0].end === 9,
+      `${moved[0].start} / ${moved[0].end}`);
+    check('単語の時刻も移す', moved[0].words[0].start === 7);
+
+    // 速さを変えたクリップ
+    const fast = clipTimeline([{ start: 4, end: 6, text: 'あ', speaker: null }],
+      { start: 0, sourceIn: 0, duration: 5, speed: 2 });
+    check('速さを変えても合う', fast[0].start === 2 && fast[0].end === 3, `${fast[0].start} / ${fast[0].end}`);
+
+    // 端が掛かっているものは、掛かっている所だけ
+    const edge = clipTimeline([{ start: 0, end: 10, text: 'あ', speaker: null }],
+      { start: 0, sourceIn: 4, duration: 3, speed: 1 });
+    check('端は切り詰める', edge[0].start === 0 && edge[0].end === 3, `${edge[0].start} / ${edge[0].end}`);
+  }
+
   // 話者の割り当ては出てきた順
   {
     const map = mapSpeakers([

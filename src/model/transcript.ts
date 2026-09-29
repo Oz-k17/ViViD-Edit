@@ -142,6 +142,75 @@ export function parseTranscript(source: string): Cue[] {
   return parseCueFile(source);
 }
 
+/** whisper が返す 1 かたまり。終わりの時刻は、最後の切れ端だと null になる。 */
+export interface ResultChunk {
+  timestamp: [number, number | null];
+  text: string;
+}
+
+/** 終わりの時刻が無いものを、次の始まりか「+2 秒」で埋める。 */
+function fillEnds(chunks: ResultChunk[]): { start: number; end: number; text: string }[] {
+  return chunks.map((chunk, i) => {
+    const start = chunk.timestamp[0];
+    const next = chunks[i + 1]?.timestamp[0];
+    const end = chunk.timestamp[1] ?? (next !== undefined ? next : start + 2);
+    return { start, end: Math.max(end, start), text: chunk.text.trim() };
+  });
+}
+
+/** 文ごとの結果を、そのまま行にする。 */
+export function cuesFromSegments(chunks: ResultChunk[]): Cue[] {
+  return fillEnds(chunks)
+    .filter((c) => c.text.length > 0)
+    .map((c) => ({ ...c, speaker: null }));
+}
+
+export interface GroupOptions {
+  /** 1 行の文字数の上限。超えたらそこで切る。 */
+  maxChars?: number;
+  /** これ以上あいたら、間があいたとみなして切る（秒）。 */
+  gap?: number;
+}
+
+/**
+ * 単語ごとの結果を、行にまとめる。
+ *
+ * 切るのは「文の終わりまで来た」「間があいた」「長くなりすぎた」の 3 つ。
+ * 単語の時刻はそのまま持たせておく。あとで行を割るときに、
+ * 言った所でちょうど切り替えられる。
+ */
+export function cuesFromWords(chunks: ResultChunk[], options: GroupOptions = {}): Cue[] {
+  const maxChars = options.maxChars ?? 24;
+  const gap = options.gap ?? 0.6;
+  const words = fillEnds(chunks).filter((w) => w.text.length > 0);
+
+  const cues: Cue[] = [];
+  let buffer: TranscriptWord[] = [];
+
+  const flush = () => {
+    if (buffer.length === 0) return;
+    cues.push({
+      start: buffer[0].start,
+      end: buffer[buffer.length - 1].end,
+      text: buffer.map((w) => w.text).join('').trim(),
+      speaker: null,
+      words: buffer,
+    });
+    buffer = [];
+  };
+
+  for (let i = 0; i < words.length; i += 1) {
+    buffer.push(words[i]);
+    const length = [...buffer.map((w) => w.text).join('').replace(/\s/g, '')].length;
+    const ended = /[。．！？!?…]$/.test(words[i].text.trim());
+    const next = words[i + 1];
+    const spaced = next !== undefined && next.start - words[i].end >= gap;
+    if (ended || spaced || length >= maxChars) flush();
+  }
+  flush();
+  return cues;
+}
+
 /**
  * 読むのにかかる長さの下限（秒）。
  *
@@ -221,6 +290,45 @@ function splitByWords(cue: Cue, chunks: string[]): Cue[] {
     const end = i === chunks.length - 1 ? cue.end : Math.min(Math.max(at, start), cue.end);
     return { start, end, text, speaker: cue.speaker };
   });
+}
+
+export interface ClipWindow {
+  /** タイムライン上の開始位置。 */
+  start: number;
+  /** 素材内のイン点。 */
+  sourceIn: number;
+  /** タイムライン上の尺。 */
+  duration: number;
+  speed: number;
+}
+
+/**
+ * 素材の中の時刻を、タイムライン上の時刻へ移す。
+ *
+ * 文字起こしは素材まるごとに掛けるので、出てくる時刻は**素材の頭から**のもの。
+ * クリップが素材の途中を使っていたり、速さを変えていたりすると、そのままでは合わない。
+ * クリップが使っていない範囲の行は落とす。
+ */
+export function clipTimeline(cues: Cue[], window: ClipWindow): Cue[] {
+  const speed = window.speed || 1;
+  const from = window.sourceIn;
+  const to = window.sourceIn + window.duration * speed;
+  const at = (t: number) => window.start + (t - from) / speed;
+
+  const out: Cue[] = [];
+  for (const cue of cues) {
+    // 端が掛かっているものは、掛かっている所だけ残す。
+    const start = Math.max(cue.start, from);
+    const end = Math.min(cue.end, to);
+    if (end <= start) continue;
+    out.push({
+      ...cue,
+      start: at(start),
+      end: at(end),
+      words: cue.words?.map((w) => ({ ...w, start: at(w.start), end: at(w.end) })),
+    });
+  }
+  return out;
 }
 
 export interface TidyOptions {

@@ -55,5 +55,19 @@ if (existsSync(labDist)) {
   console.log('ラボのビルドが無いので docs/lab は作りませんでした（`npm run lab:build` で作れます）。');
 }
 
+// 文字起こし（whisper）の駆け出し部分だけ。
+// transformers.js とモデルは配らない。押されたときに取りに行く
+//（手元に置きたい場合は `npm run whisper:pack`）。
+// iOS 版（file://）では Worker も fetch も通らないので、あちらには入れない。
+const whisperDist = path.join(root, 'whisper-dist');
+if (existsSync(whisperDist)) {
+  const whisperTarget = path.join(root, 'docs', 'whisper');
+  await mkdir(whisperTarget, { recursive: true });
+  await cp(whisperDist, whisperTarget, { recursive: true });
+  console.log(`同梱しました: ${path.relative(root, whisperTarget)} (${((await totalBytes(whisperTarget)) / 1024).toFixed(0)} KB)`);
+} else {
+  console.log('文字起こしのビルドが無いので docs/whisper は作りませんでした（`npm run whisper:build` で作れます）。');
+}
+
 // GitHub Pages は既定で Jekyll が走り、_ で始まるファイルなどを無視してしまう。
 await writeFile(path.join(root, 'docs', '.nojekyll'), '');
