@@ -373,6 +373,21 @@ export default function SettingsPage() {
             ))}
           </ul>
         </Panel>
+
+        {/*
+          いま動いているものがいつ組まれたものか。
+          配り先に古いものが残っていると、直したはずのものが出ない。
+          まずここを見れば、新旧の取り違えだと分かる。
+        */}
+        <Panel title="このアプリについて">
+          <p className="muted">
+            組み立て: <strong>{typeof __BUILD_STAMP__ === 'string' ? __BUILD_STAMP__ : '不明'}</strong>
+          </p>
+          <p className="muted small">
+            直したはずのものが出ないときは、まずこの日時を見てください。
+            古ければ、配り先（NAS のコンテナ・GitHub Pages・落とした zip）が入れ替わっていません。
+          </p>
+        </Panel>
       </main>
     </div>
   );

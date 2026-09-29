@@ -47,7 +47,25 @@ type TabKey = 'props' | 'effects' | 'text' | 'emoji';
 /** テロップのテキストエリアで最後にカーソルがあった位置（絵文字タブから挿入する先）。 */
 type CursorRef = MutableRefObject<{ clipId: string; pos: number } | null>;
 
+/**
+ * インスペクタ。上は選んでいるものによって変わり、下の「字幕」は**常に出る**。
+ *
+ * 字幕の取り込みと文字起こしは、どれか 1 つのクリップに対する操作ではないので、
+ * 最初はシーケンスの欄（＝何も選んでいないとき）に置いていた。
+ * ところが素材を置いた直後はそのクリップが選ばれるので、**まず目に入らない**。
+ * 常に同じ場所へ出し、選び直しても消えないようにしてある
+ *（作りとしても、上と並びの位置に置いて、文字起こしの途中で作り直されないようにする）。
+ */
 export function Inspector() {
+  return (
+    <>
+      <InspectorBody />
+      <CaptionPanel />
+    </>
+  );
+}
+
+function InspectorBody() {
   const { sequence, selection, apply } = useEditor();
   const [tab, setTab] = useState<TabKey>('props');
   const cursorRef: CursorRef = useRef(null);
@@ -154,7 +172,6 @@ function SequenceInspector() {
         出力サイズ {sequence.width} × {sequence.height}
       </p>
       <SourceFpsHint />
-      <TranscriptSection />
       <EmptyHint>
         クリップを選ぶと、ここで音量・不透明度・スケール・エフェクトを調整できます。
         <br />
@@ -164,6 +181,31 @@ function SequenceInspector() {
   );
 }
 
+
+/**
+ * 「字幕」の枠。ドックのパネルではなく、インスペクタの中にもう 1 枚置いている。
+ * 見出しを押すと畳める。
+ */
+function CaptionPanel() {
+  const [open, setOpen] = useState(true);
+  return (
+    <section className="panel">
+      <header className="panel-head">
+        <h2>字幕</h2>
+        <div className="panel-head-tail">
+          <button type="button" onClick={() => setOpen((v) => !v)}>
+            {open ? '畳む' : '開く'}
+          </button>
+        </div>
+      </header>
+      {open && (
+        <div className="panel-body">
+          <TranscriptSection />
+        </div>
+      )}
+    </section>
+  );
+}
 
 /**
  * 書き起こし（SRT / VTT / Whisper の JSON）を読んで、テロップを一気に並べる。
