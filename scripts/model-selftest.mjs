@@ -321,6 +321,122 @@ eq('空文字', wrap('', 10), ['']);
   check('端まで行っても大きさは保つ', pushed.w === small.w && pushed.h === small.h);
 }
 
+// ---- 書き起こしの取り込み ----
+{
+  const {
+    parseTimecode, parseTranscript, parseCueFile, parseWhisperJson,
+    splitCue, tidyCues, readableDuration, mapSpeakers,
+  } = await import('../src/model/transcript.ts');
+
+  check('時刻: 時分秒コンマ', parseTimecode('00:01:02,500') === 62.5);
+  check('時刻: 分秒ピリオド', parseTimecode('01:02.500') === 62.5);
+  check('時刻: 秒だけ', parseTimecode('7.25') === 7.25);
+  check('時刻: 読めないものは null', parseTimecode('あ') === null);
+
+  const srt = [
+    '1',
+    '00:00:01,000 --> 00:00:03,500',
+    '英語どこから喋れんの',
+    '',
+    '2',
+    '00:00:03,500 --> 00:00:05,000',
+    'ペラペラペーニョ',
+    '',
+  ].join('\n');
+  const fromSrt = parseCueFile(srt);
+  check('SRT を読める', fromSrt.length === 2, `${fromSrt.length} 行`);
+  check('SRT の時刻', fromSrt[0].start === 1 && fromSrt[0].end === 3.5);
+  eq('SRT の本文', fromSrt[1].text, 'ペラペラペーニョ');
+
+  const vtt = [
+    'WEBVTT',
+    '',
+    'cue-1',
+    '00:00:01.000 --> 00:00:03.500 line:90%',
+    '<v ルミ>英語どこから喋れんの</v>',
+    '',
+  ].join('\n');
+  const fromVtt = parseCueFile(vtt);
+  check('VTT を読める', fromVtt.length === 1, `${fromVtt.length} 行`);
+  eq('VTT の飾りは落とす', fromVtt[0].text, '英語どこから喋れんの');
+  check('VTT の後ろの設定は時刻に混ぜない', fromVtt[0].end === 3.5, String(fromVtt[0].end));
+
+  const json = JSON.stringify({
+    segments: [
+      {
+        start: 1, end: 4, text: '英語どこから喋れんの', speaker: 'SPEAKER_00',
+        words: [
+          { word: '英語', start: 1, end: 1.6 },
+          { word: 'どこから', start: 1.6, end: 2.6 },
+          { word: '喋れんの', start: 2.6, end: 4 },
+        ],
+      },
+      { start: 4, end: 5, text: 'ペラペラペーニョ', speaker: 'SPEAKER_01' },
+    ],
+  });
+  const fromJson = parseWhisperJson(json);
+  check('JSON を読める', fromJson.length === 2);
+  check('JSON の話者を持つ', fromJson[0].speaker === 'SPEAKER_00');
+  check('JSON の単語を持つ', (fromJson[0].words ?? []).length === 3);
+  check('中身を見て選り分ける', parseTranscript(json).length === 2 && parseTranscript(srt).length === 2);
+
+  // 割る（単語の時刻あり）
+  const byWords = splitCue(fromJson[0], 6);
+  check('長い行は割れる', byWords.length > 1, `${byWords.length} 行`);
+  check('割っても頭と尻は動かない', byWords[0].start === 1 && byWords[byWords.length - 1].end === 4);
+  check('割った時刻は前後しない', byWords.every((c, i) => i === 0 || c.start >= byWords[i - 1].start && c.end >= c.start));
+  check('単語の終わりで切れている', byWords.slice(0, -1).every((c) => [1.6, 2.6, 4].includes(c.end)),
+    byWords.map((c) => `${c.start}-${c.end}`).join(' '));
+
+  // 割る（単語の時刻なし）
+  const plain = { start: 0, end: 4, text: '自動翻訳できるぐらいには英語喋れるの', speaker: null };
+  const byChars = splitCue(plain, 8);
+  check('単語が無くても割れる', byChars.length > 1, `${byChars.length} 行`);
+  check('按分しても頭と尻は動かない', byChars[0].start === 0 && byChars[byChars.length - 1].end === 4);
+  check('割った本文をつなぐと元に戻る', byChars.map((c) => c.text.replace(/\n/g, '')).join('') === plain.text,
+    byChars.map((c) => c.text.replace(/\n/g, '/')).join(' | '));
+
+  // 短い行を伸ばす
+  {
+    const r = tidyCues([
+      { start: 0, end: 0.2, text: '英語どこから喋れんの', speaker: null },
+      { start: 3, end: 3.1, text: 'うそ', speaker: null },
+    ], { maxChars: 40 });
+    check('短い行を伸ばした', r.extended === 2, `${r.extended} 行`);
+    check('伸ばしても次の行にぶつからない', r.cues[0].end <= r.cues[1].start, `${r.cues[0].end} <= ${r.cues[1].start}`);
+    check('読める長さに届いている', r.cues[1].end - r.cues[1].start >= readableDuration('うそ') - 1e-9);
+  }
+  // 次の行がすぐ来るときは、伸ばしきれないことを数える
+  {
+    const r = tidyCues([
+      { start: 0, end: 0.1, text: '英語どこから喋れんの', speaker: null },
+      { start: 0.3, end: 3, text: 'ペラペラペーニョ', speaker: null },
+    ], { maxChars: 40 });
+    check('伸ばしきれない行を数える', r.stillShort === 1, `${r.stillShort} 行`);
+    check('それでも重なってはいない', r.cues[0].end <= r.cues[1].start);
+  }
+  // 伸ばさない指定
+  {
+    const r = tidyCues([{ start: 0, end: 0.2, text: 'うそ', speaker: null }], { extendShort: false });
+    check('伸ばさない指定が効く', r.extended === 0 && r.cues[0].end === 0.2);
+  }
+  // 先頭のずれ
+  {
+    const r = tidyCues([{ start: 1, end: 3, text: 'うそ', speaker: null }], { offset: 10 });
+    check('先頭のずれを足せる', r.cues[0].start === 11, String(r.cues[0].start));
+  }
+
+  // 話者の割り当ては出てきた順
+  {
+    const map = mapSpeakers([
+      { start: 0, end: 1, text: 'あ', speaker: 'B' },
+      { start: 1, end: 2, text: 'い', speaker: 'A' },
+      { start: 2, end: 3, text: 'う', speaker: 'B' },
+    ], ['1', '2']);
+    check('話者は出てきた順に割り当てる', map.get('B') === '1' && map.get('A') === '2');
+  }
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

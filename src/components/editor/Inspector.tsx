@@ -6,6 +6,7 @@ import { FONT_OPTIONS, LOOK_PRESETS, SPEED_PRESETS, TEXT_PRESETS } from '../../p
 import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
 import { buildThreeBand } from '../../model/threeBand';
+import { buildCaptionClips, parseTranscript, tidyCues } from '../../model/transcript';
 import { CARD_ICON_LABELS, CARD_ICON_NAMES } from '../../engine/cardIcons';
 import { sortSpeakers } from '../../engine/speakerSort';
 import {
@@ -151,12 +152,91 @@ function SequenceInspector() {
         出力サイズ {sequence.width} × {sequence.height}
       </p>
       <SourceFpsHint />
+      <TranscriptSection />
       <EmptyHint>
         クリップを選ぶと、ここで音量・不透明度・スケール・エフェクトを調整できます。
         <br />
         プレビューはドラッグで移動、ホイールで拡大縮小です。
       </EmptyHint>
     </Panel>
+  );
+}
+
+
+/**
+ * 書き起こし（SRT / VTT / Whisper の JSON）を読んで、テロップを一気に並べる。
+ *
+ * 文字起こしそのものはこの道具の外で作る前提。時刻付きの文さえあれば、
+ * 置き場所を手で決めずに済む。長い行は読める文字数へ割り、短すぎる行は
+ * 次の行にぶつからない範囲で伸ばす（`model/transcript.ts`）。
+ */
+function TranscriptSection() {
+  const { apply } = useEditor();
+  const [preset, setPreset] = useState('tv');
+  const [maxChars, setMaxChars] = useState(24);
+  const [offset, setOffset] = useState(0);
+  const [extendShort, setExtendShort] = useState(true);
+  const [note, setNote] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const load = async (file: File) => {
+    const source = await file.text();
+    const parsed = parseTranscript(source);
+    if (parsed.length === 0) {
+      setNote('読めませんでした。SRT・VTT・Whisper の JSON のどれかを選んでください。');
+      return;
+    }
+    const tidy = tidyCues(parsed, { maxChars, offset, extendShort });
+    const style = TEXT_PRESETS.find((p) => p.key === preset)?.text;
+    apply((seq) => buildCaptionClips(seq, tidy.cues, SPEAKERS, { style, speakerColors: SPEAKER_DEFAULT_COLORS }));
+    const parts = [`${tidy.cues.length} 行を置きました`];
+    if (tidy.split > 0) parts.push(`長い行を割って ${tidy.split} 行ぶん増えました`);
+    if (tidy.extended > 0) parts.push(`短い行を ${tidy.extended} 行伸ばしました`);
+    if (tidy.stillShort > 0) parts.push(`${tidy.stillShort} 行は次の行が近く、読める長さに届いていません`);
+    setNote(parts.join('。') + '。');
+  };
+
+  return (
+    <>
+      <p className="muted small">書き起こしから字幕を置く</p>
+      <div className="two-col">
+        <Field label="体裁">
+          <select value={preset} onChange={(e) => setPreset(e.target.value)}>
+            {TEXT_PRESETS.map((p) => (
+              <option key={p.key} value={p.key}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="1 枚の文字数" hint="超えたら割る">
+          <Slider value={maxChars} min={8} max={60} step={1} onChange={setMaxChars} format={(v) => v.toFixed(0)} />
+        </Field>
+      </div>
+      <Field label="先頭のずれ" hint="秒。素材の途中から起こしたとき">
+        <Slider value={offset} min={-60} max={600} step={0.5} onChange={setOffset} format={(v) => v.toFixed(1)} />
+      </Field>
+      <Toggle
+        label="短い行を読める長さまで伸ばす"
+        checked={extendShort}
+        onChange={setExtendShort}
+      />
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".srt,.vtt,.json,.txt,text/plain,application/json"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) void load(file);
+        }}
+      />
+      <button type="button" className="wide" onClick={() => fileRef.current?.click()}>
+        書き起こしを選ぶ（SRT / VTT / JSON）
+      </button>
+      {note && <p className="muted small">{note}</p>}
+    </>
   );
 }
 
