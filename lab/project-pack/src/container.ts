@@ -38,9 +38,12 @@
 import {
   cheapestFirst,
   DEFAULT_EDGE_BYTES,
+  DEFAULT_EDGE_PIECES,
   digestBodies,
   digestToText,
   DIGEST_BYTES,
+  LEGACY_EDGE_PIECES,
+  MAX_EDGE_PIECES,
   verifyBodies,
   type DigestPlacement,
   type VerifyDepth,
@@ -130,6 +133,15 @@ export interface PackHeader {
    * 端だけを唯一のハッシュにしない理由のひとつ（README の 8.4）。
    */
   edgeBytes: number;
+  /**
+   * 端だけのハッシュで、合計 2N を**何個に分けて読むか**（`digest.ts` の `DEFAULT_EDGE_PIECES`）。
+   *
+   * **この欄が無いファイルは 2（＝端だけ）として読む。** 2026-09-29（1 回目）に書いた
+   * ファイルがそれで、そこを「いまの既定」で埋めると昔のファイルの端が全部「違う」になる。
+   * **無いのは「分からない」ではなく「昔の形」。** 逆に、**書いてあるのに読めない**ときは
+   * 見る所が決まらないので、幅ごと 0 へ倒して端を「分からない」にする（README の 9.5）。
+   */
+  edgePieces: number;
 }
 
 /**
@@ -215,6 +227,14 @@ export interface LayoutOptions extends PlanOptions {
    * ただしそれを既定にはしない——測ったら中身の化けを 98% 見逃した（README の 8）。
    */
   edges?: number;
+  /**
+   * **合計 2N を何個に分けて読むか**（`digest.ts` の `DEFAULT_EDGE_PIECES` ＝ 3）。
+   *
+   * 省くと既定。**読む量はこれで 1 バイトも変わらない**（切れ端が短くなるだけ）ので、
+   * `edges` と違って費用は量ではなく**読む口を叩く回数**に出る。
+   * 2 にすると 2026-09-29（1 回目）の「端だけ」に戻る（比べる相手として残してある）。
+   */
+  edgePieces?: number;
 }
 
 /**
@@ -308,6 +328,16 @@ export function layoutPack(
       : digests === 'none'
         ? 0
         : DEFAULT_EDGE_BYTES;
+  // **散らし方は、読む量を 1 バイトも変えずに「どこを読むか」だけを決める。**
+  // 既定は 3（2026-09-29・2 回目に測って決めた——README の 9）。
+  // 2 にすれば「端だけ」に戻る。幅と違って、ここは 1 未満に倒す意味が無いので下を 2 で止める。
+  // 上限でも止める。**書く側が、自分で読めない数を書かないようにする**
+  // （`openPack` は上限を超える数を「読めない」として端を捨てるので、
+  // ここで丸めずに書くと「自分で書いたファイルの端が分からない」になる）。
+  const edgePieces = Math.min(
+    MAX_EDGE_PIECES,
+    Math.max(2, Math.floor(options.edgePieces ?? DEFAULT_EDGE_PIECES) || DEFAULT_EDGE_PIECES),
+  );
   // **番号はファイルに書かない。** 域は見出しの `bodies` と同じ順なので、
   // 何番目かは読む側が数えれば分かる（`openPack`）。最初は書いていたが、
   // 測ったら素材 1000 個で見出しが 14.5KB 太っていた——**「見出しから追い出す」ために
@@ -326,6 +356,7 @@ export function layoutPack(
     digestPlacement: digests,
     digestBytes,
     edgeBytes,
+    edgePieces,
   };
 
   const { prefix } = encodeHeader(header);
@@ -375,7 +406,7 @@ export async function attachDigests(layout: PackLayout, bodies: BodySource): Pro
   const hashes = await digestBodies(
     layout.order.map((b) => b.id),
     bodies,
-    { whole: placement !== 'none', edge },
+    { whole: placement !== 'none', edge, pieces: layout.header.edgePieces },
   );
 
   if (placement !== 'section') {
@@ -555,8 +586,30 @@ export async function openPack(reader: PackReader): Promise<OpenedPack> {
    * 0 に倒れると端の検査は「分からない」になり、丸ごとのハッシュはそのまま効く
    * （断ると、端のぶんが化けただけで**中身が全部読めるファイルを開けなくする**ことになる）。
    */
-  const edgeBytes =
+  const declaredEdgeBytes =
     Number.isSafeInteger(header.edgeBytes) && (header.edgeBytes as number) > 0 ? (header.edgeBytes as number) : 0;
+  /**
+   * 端だけのハッシュを、何個に分けて読むか。
+   *
+   * **欄が無いのと、欄が読めないのを分ける。**
+   *  - 無い → **2**（2026-09-29・1 回目までの「端だけ」で書かれたファイル）。
+   *    ここを*いまの*既定（3）で埋めると、**昔のファイルの端が全部「違う」になる。**
+   *    9/28（3 回目）に幅で踏んだ「既定で埋めない」の裏返しで、
+   *    **無い欄に入れるのは「いまの値」ではなく「そのとき何だったか」。**
+   *  - 読めない（負・小数・文字・**上限超え**） → **幅ごと 0 へ倒す。** 見る所が決まらないので、
+   *    端の検査は「分からない」になる。幅と同じで、断りはしない（丸ごとはそのまま効く）。
+   *    上限を入れてあるのは、**この数がそのまま読む口を叩く回数**だから
+   *    （`MAX_EDGE_PIECES` の注。`1e9` と書かれただけで読み所を並べに行って止まる）。
+   */
+  const legacyPieces = header.edgePieces === undefined;
+  const readablePieces =
+    Number.isSafeInteger(header.edgePieces) &&
+    (header.edgePieces as number) >= 2 &&
+    (header.edgePieces as number) <= MAX_EDGE_PIECES
+      ? (header.edgePieces as number)
+      : 0;
+  const edgePieces = legacyPieces ? LEGACY_EDGE_PIECES : readablePieces;
+  const edgeBytes = edgePieces === 0 ? 0 : declaredEdgeBytes;
   const thumbBase = digestBase + digestBytes;
   const placement: ThumbPlacement =
     header.thumbPlacement === 'section' || header.thumbPlacement === 'scattered' ? header.thumbPlacement : 'inline';
@@ -661,6 +714,7 @@ export async function openPack(reader: PackReader): Promise<OpenedPack> {
       digestPlacement,
       digestBytes,
       edgeBytes,
+      edgePieces,
     },
     bodyBase,
     thumbBase,
@@ -802,8 +856,13 @@ export async function verifyPack(
 
   if (options.sample !== undefined) targets = cheapestFirst(targets).slice(0, Math.max(0, options.sample));
 
-  // **幅はファイルに書いてあるものだけを渡す**（既定で埋めない——`verifyBodies` の注）。
-  const report = await verifyBodies(reader, targets, { depth, edge: opened.header.edgeBytes });
+  // **幅も散らし方も、ファイルに書いてあるものだけを渡す**（既定で埋めない——`verifyBodies` の注）。
+  // `openPack` が既に「無い＝昔の形（2）／読めない＝幅ごと 0」まで倒してある。
+  const report = await verifyBodies(reader, targets, {
+    depth,
+    edge: opened.header.edgeBytes,
+    pieces: opened.header.edgePieces,
+  });
   // ハッシュ域を読んだぶんも足して返す（「確かめるのに何バイト読んだか」を濁さない）。
   return { ...report, bytesRead: report.bytesRead + sectionBytesRead };
 }

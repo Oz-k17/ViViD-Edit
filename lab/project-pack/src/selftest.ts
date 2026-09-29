@@ -24,11 +24,21 @@ import {
   verifyPack,
   type PackHeader,
 } from './container.ts';
-import { DEFAULT_EDGE_BYTES, digestOf, digestToText } from './digest.ts';
+import {
+  DEFAULT_EDGE_BYTES,
+  DEFAULT_EDGE_PIECES,
+  digestOf,
+  digestOfParts,
+  digestToText,
+  edgeRanges,
+  edgeReadBytes,
+  LEGACY_EDGE_PIECES,
+  MAX_EDGE_PIECES,
+} from './digest.ts';
 import { decodeBase64, toDataUrl } from './thumbs.ts';
 import { base64Length, buildJsonPack, jsonPackBody, parseJsonPack } from './json-pack.ts';
 import { planPack } from './plan.ts';
-import { assetMap, clip, makeProject, memoryBodies, meta, pseudoBytes } from './scenarios.ts';
+import { assetMap, boilerplateBytes, clip, makeProject, memoryBodies, meta, pseudoBytes } from './scenarios.ts';
 import { PackError, type PackAssetMeta, type PackReader } from './types.ts';
 
 export interface Result {
@@ -131,6 +141,9 @@ function baseHeader(over: Partial<PackHeader> = {}): PackHeader {
     digestPlacement: 'none',
     digestBytes: 0,
     edgeBytes: 0,
+    // 既定ではなく**昔の形**を入れる。ここは「嘘をつく見出し」を組む所なので、
+    // いまの既定を置くと「欄が無いファイル」を作れなくなる（`over` で消す形も要る）。
+    edgePieces: LEGACY_EDGE_PIECES,
     ...over,
   };
 }
@@ -1126,21 +1139,44 @@ export async function runSelfTest(): Promise<Result[]> {
     // ここが緑であることは「端だけで足りる」ではなく「端だけでは足りない」の証。
     const { layout, file } = await packWithEdges([600]);
     const bodyBase = file.length - layout.order.reduce((n, o) => n + o.length, 0);
-    const broken = Uint8Array.from(file);
-    broken[bodyBase + 300] ^= 0x01; // 600 バイトの真ん中（端 64×2 の外）
-    const reader = readerFromBytes(broken);
-    const opened = await openPack(reader);
-    const full = await verifyPack(reader, opened);
-    const edge = await verifyPack(reader, opened, { depth: 'edge' });
+    // 読み所を**計算して**、当たる所と外れる所を 1 つずつ選ぶ。位置を直書きすると、
+    // 散らし方を変えたときに「外れる所」のつもりが当たる所になって、検算が黙って緩む。
+    const ranges = edgeRanges(600, 64, layout.header.edgePieces);
+    const covered = (at: number) => ranges.some((r) => at >= r.from && at < r.to);
+    const hit = ranges[1].from + 1; // 既定（3 個）では真ん中の読み所
+    const miss = Math.floor((ranges[0].to + ranges[1].from) / 2); // 読み所と読み所の間
+    const check = async (at: number) => {
+      const broken = Uint8Array.from(file);
+      broken[bodyBase + at] ^= 0x01;
+      const reader = readerFromBytes(broken);
+      const opened = await openPack(reader);
+      return {
+        full: await verifyPack(reader, opened),
+        edge: await verifyPack(reader, opened, { depth: 'edge' }),
+      };
+    };
+    const atMiss = await check(miss);
     add(
-      full.mismatch.length === 1 && edge.mismatch.length === 0 && edge.entries[0].state === 'ok',
-      '端だけは、実体の中ほどの化けを見つけられない（丸ごとは見つける）',
-      `丸ごと ${full.mismatch.length} 本 / 端 ${edge.mismatch.length} 本`,
+      !covered(miss) &&
+        atMiss.full.mismatch.length === 1 &&
+        atMiss.edge.mismatch.length === 0 &&
+        atMiss.edge.entries[0].state === 'ok',
+      '読み所の外の化けは、端では見つけられない（丸ごとは見つける）',
+      `${miss} B の化け：丸ごと ${atMiss.full.mismatch.length} 本 / 端 ${atMiss.edge.mismatch.length} 本`,
+    );
+    const atHit = await check(hit);
+    add(
+      // **既定（3 個）で初めて真ん中が読み所になる。** 2 個のままならここは外れる。
+      covered(hit) && hit > ranges[0].to && hit < ranges[2].from && atHit.edge.mismatch.length === 1,
+      '既定は読み所を 1 つ中へ置くので、実体の中ほどの化けも端で見つかる',
+      `${hit} B の化け：端 ${atHit.edge.mismatch.length} 本（読み所 ${ranges.map((r) => `${r.from}-${r.to}`).join('・')}）`,
     );
     add(
-      edge.bytesRead === 128 && full.bytesRead === 600,
-      '端だけなら読む量が幅の 2 倍で止まる（実体の大きさに依らない）',
-      `端 ${edge.bytesRead} B / 丸ごと ${full.bytesRead} B`,
+      atMiss.edge.bytesRead === edgeReadBytes(600, 64) &&
+        atMiss.edge.bytesRead <= 128 &&
+        atMiss.full.bytesRead === 600,
+      '端だけなら読む量が幅の 2 倍で止まる（実体の大きさにも散らし方にも依らない）',
+      `端 ${atMiss.edge.bytesRead} B / 丸ごと ${atMiss.full.bytesRead} B`,
     );
   }
 
@@ -1187,7 +1223,10 @@ export async function runSelfTest(): Promise<Result[]> {
       both,
     );
     add(
-      bodies.readBytes === 256 && both.readBytes === 2000,
+      // **数を直書きしない。** 散らし方（`pieces`）を変えると合計が 2N より少し減る
+      // （割り切れないぶんを読まないので）。直書きすると、そのたびに検算が
+      // 「関係が壊れた」ではなく「数が変わった」で落ちて、どちらか分からなくなる。
+      bodies.readBytes === edgeReadBytes(1000, 64) * 2 && both.readBytes === 2000,
       '端だけを書くときは実体も端しか読まない（両方持つときは 1 回だけ丸ごと読む）',
       `端だけ ${bodies.readBytes} B / 両方 ${both.readBytes} B（実体は 2000 B）`,
     );
@@ -1325,6 +1364,176 @@ export async function runSelfTest(): Promise<Result[]> {
       '幅 0 を渡せば端は書かない（丸ごとだけの形に戻せる）',
       `幅 ${layout.header.edgeBytes} B`,
     );
+  }
+
+  // ===== 散らし方（2026-09-29・2 回目。`npm run lab:pack:width`） =====
+
+  {
+    // **後方互換がいちばん大事。** `pieces = 2` は 9/29（1 回目）の「端だけ」と
+    // 1 バイトも同じ範囲でなければならない。ここが狂うと、昨日書いたファイルの
+    // 端が全部「中身が違う」になる（しかも丸ごとは合うので、人には意味が分からない）。
+    const cases = [
+      [600, 64],
+      [1000, 64],
+      [10_000, 1024],
+      [129, 64], // 2N の 1 つ上（端が 2 本に割れるぎりぎり）
+    ];
+    const same2 = cases.every(([len, n]) => {
+      const got = edgeRanges(len, n, 2);
+      return (
+        got.length === 2 && got[0].from === 0 && got[0].to === n && got[1].from === len - n && got[1].to === len
+      );
+    });
+    add(same2, '散らし方 2 は「先頭 N ＋末尾 N」そのもの（9/29・1 回目のファイルがそのまま読める）');
+  }
+
+  {
+    // 読む量は散らし方で増えない（**2N を超えない**）。切れ端が短くなるだけ。
+    const len = 12 * 1024 * 1024;
+    const n = 64 * 1024;
+    const rows = [2, 3, 4, 16, 64].map((p) => ({ p, read: edgeReadBytes(len, n, p) }));
+    add(
+      rows.every((r) => r.read <= n * 2 && r.read > n * 2 - r.p),
+      '散らしても読む量は増えない（2N を超えず、割り切れないぶんだけ足りない）',
+      rows.map((r) => `${r.p} 個 ${r.read} B`).join(' / '),
+    );
+    // 重なると真ん中が二重に混ざる（`edgeRanges` の注）。計算で閉じてあるはずの所を、数で押さえる。
+    const overlapped = [2, 3, 4, 16, 64, 255].some((p) => {
+      const rs = edgeRanges(len, n, p);
+      return rs.some((r, i) => r.from < 0 || r.to > len || (i > 0 && r.from < rs[i - 1].to));
+    });
+    add(!overlapped, '読み所は重ならず、実体からもはみ出さない（重なると二重に混ざる）');
+    // **極端な数で止まらないこと。** `pieces` はそのまま読み所の数になるので、
+    // `Infinity` や 10 億がそのまま通ると、1 バイトも読む前に並べに行って返ってこない。
+    add(
+      edgeRanges(len, n, Infinity).length === MAX_EDGE_PIECES &&
+        edgeRanges(len, n, 1e9).length === MAX_EDGE_PIECES &&
+        edgeRanges(len, n, Number.NaN).length === LEGACY_EDGE_PIECES,
+      '極端な散らし方でも読み所の数が上限で止まる（Infinity・10 億・NaN）',
+      `∞→${edgeRanges(len, n, Infinity).length} / 1e9→${edgeRanges(len, n, 1e9).length} / NaN→${edgeRanges(len, n, Number.NaN).length}`,
+    );
+    // 書く側も上限で止める（自分で読めない数を書かない）。
+    const capped = layoutPack(
+      makeProject([clip('c0')]),
+      assetMap([meta({ id: 'c0' })]),
+      memoryBodies(new Map([['c0', pseudoBytes(10, 91)]])),
+      { edgePieces: 1e9 },
+    );
+    add(
+      capped.header.edgePieces === MAX_EDGE_PIECES,
+      '書く側も散らし方を上限で止める（読む側が断る数を自分で書かない）',
+      `${capped.header.edgePieces} 個`,
+    );
+  }
+
+  {
+    // **意地悪。** 同じ設定で書き出した動画を模した素材（両端が決まり文句）。
+    // 端だけ（2 個）は**幅をいくら広げても**入れ替わりを見つけられない——
+    // 決まり文句がどこまで続くかは書く側に分からないので、幅では守れない。
+    const len = 200_000;
+    const boiler = 60_000;
+    const a = boilerplateBytes(len, 11, { head: boiler, tail: boiler });
+    const b = boilerplateBytes(len, 22, { head: boiler, tail: boiler });
+    const differs = async (p: number, n: number) =>
+      (await digestOfParts(edgeRanges(len, n, p).map((r) => a.subarray(r.from, r.to)))) !==
+      (await digestOfParts(edgeRanges(len, n, p).map((r) => b.subarray(r.from, r.to))));
+    const edgeBlind = !(await differs(2, 1024)) && !(await differs(2, 32 * 1024)) && !(await differs(2, boiler));
+    const spreadSees = await differs(DEFAULT_EDGE_PIECES, 32 * 1024);
+    add(
+      edgeBlind && spreadSees,
+      '両端が決まり文句の実体では、端だけ（2 個）は幅を広げても入れ替わりを見落とす。既定は見つける',
+      `端だけ 幅 1KB/32KB/${boiler / 1000}KB とも × / 既定（${DEFAULT_EDGE_PIECES} 個・32KB）○`,
+    );
+    // **既定が全勝ではないことも固定する。** 頭に集中した化けは、端だけのほうが強い
+    // （容器の見出しは実体の頭にあるので、「開けない壊れ方」はそこに集中しやすい）。
+    // ここが緑でなくなったら、それは「良くなった」ではなく交換の向きが変わったということ。
+    const n = 64 * 1024;
+    // **位置は探して決める。** 直書きすると、散らし方を変えたときに
+    // 「読み所の外」のつもりが中に入って、検算が黙って別のことを測る（実際 1 回踏んだ）。
+    const spread = edgeRanges(len, n, 16);
+    let atHead = -1;
+    for (let at = 0; at < n; at += 1) {
+      if (!spread.some((r) => at >= r.from && at < r.to)) {
+        atHead = at;
+        break;
+      }
+    }
+    const flipped = Uint8Array.from(a);
+    if (atHead >= 0) flipped[atHead] ^= 0x01;
+    const seenBy = async (p: number) =>
+      (await digestOfParts(edgeRanges(len, n, p).map((r) => a.subarray(r.from, r.to)))) !==
+      (await digestOfParts(edgeRanges(len, n, p).map((r) => flipped.subarray(r.from, r.to))));
+    const by2 = await seenBy(2);
+    const by16 = await seenBy(16);
+    add(
+      atHead >= 0 && by2 && !by16,
+      '頭に集中した化けは端だけ（2 個）のほうが強い（散らすと薄くなる。交換であって進歩ではない）',
+      `${atHead} B の化け：2 個 ${by2 ? '○' : '×'} / 16 個 ${by16 ? '○' : '×'}`,
+    );
+  }
+
+  {
+    // 見出しに `edgePieces` が無いファイル（9/29・1 回目までの形）は 2 として読む。
+    // **いまの既定で埋めない**——埋めると昔のファイルの端が全部「違う」になる。
+    const { file } = await packWithEdges([600, 700], { edgePieces: 2 });
+    const headerBytes = new DataView(file.buffer, file.byteOffset, file.byteLength).getUint32(8, true);
+    const header = JSON.parse(new TextDecoder().decode(file.subarray(PACK_PREAMBLE, PACK_PREAMBLE + headerBytes)));
+    delete header.edgePieces;
+    const old = packWith(header, file.subarray(PACK_PREAMBLE + headerBytes));
+    const reader = readerFromBytes(old);
+    const opened = await openPack(reader);
+    const edge = await verifyPack(reader, opened, { depth: 'edge' });
+    add(
+      opened.header.edgePieces === LEGACY_EDGE_PIECES && edge.entries.every((e) => e.state === 'ok'),
+      '散らし方の欄が無いファイルは「昔の形（2）」として読む（いまの既定で埋めない）',
+      `${opened.header.edgePieces} 個 / ${edge.entries.map((e) => e.state).join('・')}`,
+    );
+  }
+
+  {
+    // 欄が**あるのに読めない**ときは、見る所が決まらない。幅ごと 0 へ倒して
+    // 端を「分からない」にする（幅が読めないときと同じ扱い。断りはしない）。
+    const { file } = await packWithEdges([600, 700]);
+    const headerBytes = new DataView(file.buffer, file.byteOffset, file.byteLength).getUint32(8, true);
+    const header = JSON.parse(new TextDecoder().decode(file.subarray(PACK_PREAMBLE, PACK_PREAMBLE + headerBytes)));
+    const states: string[] = [];
+    // **上限超えと `Infinity` も「読めない」側**。ここがただの数として通ると、
+    // 読み所を 10 億個並べに行って止まる（1 バイトも読む前に）。
+    for (const edgePieces of [-1, 0, 1, 2.5, null, 'さん', MAX_EDGE_PIECES + 1, 1e9]) {
+      const broken = packWith({ ...header, edgePieces }, file.subarray(PACK_PREAMBLE + headerBytes));
+      const reader = readerFromBytes(broken);
+      const opened = await openPack(reader);
+      const edge = await verifyPack(reader, opened, { depth: 'edge' });
+      const full = await verifyPack(reader, opened);
+      states.push(`${String(edgePieces)}:${edge.entries[0].state}/${full.entries[0].state}`);
+    }
+    add(
+      states.every((s) => s.endsWith('unknown/ok')),
+      '散らし方が読めないファイルも断らない。端は「分からない」、丸ごとはそのまま効く',
+      states.join(' '),
+    );
+  }
+
+  {
+    // 散らし方を変えたファイルは往復する。**2N 以下の実体では散らし方に関係なく端＝全部**
+    // （`edgeRanges` の境界。ここが崩れると「小さい素材だけ必ず違う」になる）。
+    for (const pieces of [2, 3, 8]) {
+      const { layout, file } = await packWithEdges([100, 600, 5000], { edgePieces: pieces });
+      const reader = readerFromBytes(file);
+      const opened = await openPack(reader);
+      const edge = await verifyPack(reader, opened, { depth: 'edge' });
+      const full = await verifyPack(reader, opened);
+      add(
+        opened.header.edgePieces === pieces &&
+          layout.order[0].edgeHash === undefined && // 100 B は 2N（128 B）以下なので端＝全部
+          typeof layout.order[1].edgeHash === 'string' &&
+          edge.entries.every((e) => e.state === 'ok') &&
+          full.entries.every((e) => e.state === 'ok') &&
+          file.length === layout.totalBytes,
+        `散らし方 ${pieces} でも往復する（2N 以下の実体は散らし方に関係なく端＝全部）`,
+        `${edge.entries.map((e) => e.state).join('・')} / 読んだ ${edge.bytesRead} B`,
+      );
+    }
   }
 
   // ===== 比べる相手（JSON に base64） =====

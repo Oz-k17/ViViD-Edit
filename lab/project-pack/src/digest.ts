@@ -66,6 +66,66 @@ export const DIGEST_BYTES = 32;
  */
 export const DEFAULT_EDGE_BYTES = 64 * 1024;
 
+/**
+ * **同じ読む量（2N）を、実体の端から端まで何個に分けて読むか。既定は 3。**
+ *
+ * 2026-09-29（2 回目）の積み残し「端の幅 N を素材の大きさで変えるか」を測った答え
+ * （`npm run lab:pack:width`・README の 9）。**幅は変えない。代わりに散らす。**
+ *
+ * 幅を変えても買えるものが無い。端だけの覆いは「読んだ量 ÷ 実体の大きさ」そのもので、
+ * **見つける確率はその数と 1 の位まで同じ**（12MB に 1 バイトの化けを 2000 か所置いて、
+ * 覆い 1.0% に対し 0.9%・覆い 10.0% に対し 10.0%）。
+ * 「長さの 0.5%」にすると覆いは大きさによらず 1.0% で揃うが、**揃えた先が 1.0% のまま**で、
+ * 費用だけが大きさに比例して戻る（96MB の素材で 983KB）。**幅は丸ごとへの近道ではない。**
+ *
+ * 効くのは**幅ではなく、同じ量をどこで読むか**だった。`pieces = 2` が端だけで、
+ * 3 以上にすると読み所が中へ入る（読む量は 1 バイトも変わらない）。
+ *
+ * | | 読む量 | 全域の 1B | 頭 64KB の中 | 両端が決まり文句の入れ替わり |
+ * | --- | ---: | ---: | ---: | --- |
+ * | 2（端だけ） | 128KB | 0.9% | **100%** | **×（幅をいくら広げても ×）** |
+ * | **3（既定）** | 128KB | 1.4% | 66% | **○** |
+ * | 16 | 128KB | 0.9% | 13% | ○ |
+ *
+ * **3 にした理由は、2 が「原理的に取れない」相手を 1 つ抱えているから。**
+ * 同じ設定で書き出した動画は頭に同じ容器の見出しが付き、形式によっては尻も同じ形で終わる。
+ * 両端が揃っている 2 本は、端だけで見ると**同じ実体に見える**——そして
+ * **決まり文句がどこまで続くかは書く側に分からない**ので、幅では守れない
+ * （頭 2MB ＋尻 2MB が揃った素材は、端 1MB でも見落とす）。
+ * 3 は読み所を 1 つ真ん中へ置くだけでそこへ届く。
+ *
+ * 代価は 2 つ。**頭・尻に集中した化けが 100% → 66%**（容器の見出しが壊れる形はここに来る）と、
+ * ファイルの上で 1 本 0.33 → 0.55ms（読む口を 1 回多く叩くぶん。丸ごとは 14.7ms）。
+ * **どちらも一方が他方を覆わない**ので、`pieces` は読む側が選べるようにしてある。
+ */
+export const DEFAULT_EDGE_PIECES = 3;
+
+/**
+ * **`edgePieces` が書かれていないファイルの読み方。**
+ *
+ * 2026-09-29（1 回目）に書いたファイルは端だけ（＝2 個）で、見出しにこの欄が無い。
+ * **そこを「いまの既定」で埋めない。** 埋めると、昔のファイルの端が全部「違う」になる。
+ * 幅（`edgeBytes`）で同じ穴を踏まないようにしたのと同じ話で、
+ * **欄が無いのは「分からない」ではなく「昔の形」**なので、昔の値を入れる。
+ */
+export const LEGACY_EDGE_PIECES = 2;
+
+/**
+ * **散らし方の上限。** これを超える数は「読めない」として扱う（端は「分からない」）。
+ *
+ * 上限が要るのは、**この数がそのまま読む口を叩く回数**だから。
+ * 壊れた見出しが `edgePieces: 1e9` と言っただけで、読み所を 10 億個並べようとして止まる
+ * （幅と違って、ここは 1 バイトも読む前に効く）。差分を粗探しして見つけた穴。
+ *
+ * 1024 に置いたのは、**256 個で既に「安い検査」ではなくなっている**から
+ * （12MB の実体で 散らす 256 個 11.5ms 対 丸ごと 14.6ms。README の 9.4）。
+ * その 4 倍まで許して、それより上は使い道が無い。
+ *
+ * **丸めずに断る側へ倒す。** 丸めると、見出しが 5000 と言っているファイルを
+ * 1024 で読んで「中身が違う」と言い出す（嘘をつく口を増やさない——9.5）。
+ */
+export const MAX_EDGE_PIECES = 1024;
+
 /** ファイルの中の範囲。`[from, to)`。 */
 export interface ByteRange {
   from: number;
@@ -79,20 +139,47 @@ export interface ByteRange {
  * 真ん中が二重に混ざり、同じバイト列なのに**全部を見たときと値が変わる**。
  * まとめておけば小さい実体では端＝全部になり、`edgeHash === hash` が成り立つ
  * （検算で固定してある）。ここを間違えると「小さい素材だけ必ず違う」になる。
+ * **この境界は `pieces` に依らない**——2N 以下なら何個に分けても全部を読むので。
+ *
+ * `pieces` は**合計 2N を何個に分けて、端から端まで等間隔に置くか**（`DEFAULT_EDGE_PIECES`）。
+ * `pieces = 2` はちょうど先頭 N ＋末尾 N になるので、**「端だけ」は散らし方の 1 つ**で
+ * 別物ではない。**読む量は `pieces` で変わらない**（切れ端が短くなるだけ）。
+ *
+ * 切れ端どうしは重ならない。間隔は `(len - chunk) / (pieces - 1)` で、
+ * `len > 2N` かつ `chunk ≦ 2N / pieces` なので間隔は必ず `chunk` より広くなる。
+ * 重なると真ん中が二重に混ざる（上と同じ穴）ので、ここは計算で閉じてある。
  */
-export function edgeRanges(length: number, edge: number = DEFAULT_EDGE_BYTES): ByteRange[] {
+export function edgeRanges(
+  length: number,
+  edge: number = DEFAULT_EDGE_BYTES,
+  pieces: number = DEFAULT_EDGE_PIECES,
+): ByteRange[] {
   const len = Math.max(0, length);
   const n = Math.max(0, Math.floor(edge));
+  // 1 個では「端から端まで」が作れない（頭だけになる）ので、下は 2 で止める。
+  // 上は `MAX_EDGE_PIECES` で止める。**`Infinity` がそのまま通ると回り続ける。**
+  // ここは読む前に効くので、ファイルから来た数をそのまま長さに使わせない
+  // （読む側は `openPack` が先に断っているが、この関数は単独でも呼ばれる）。
+  const p = Math.min(MAX_EDGE_PIECES, Math.max(2, Math.floor(pieces) || 2));
   if (n === 0 || len <= n * 2) return [{ from: 0, to: len }];
-  return [
-    { from: 0, to: n },
-    { from: len - n, to: len },
-  ];
+  // 切れ端の長さ。**割り切れないぶんは読まない**（端の 2 個ぶんより増やさない）。
+  const chunk = Math.max(1, Math.floor((n * 2) / p));
+  const out: ByteRange[] = [];
+  for (let i = 0; i < p; i += 1) {
+    // i = 0 は先頭から、i = p-1 は末尾で終わる。**p = 2 なら先頭 N と末尾 N そのもの。**
+    const from = Math.round((i * (len - chunk)) / (p - 1));
+    out.push({ from, to: from + chunk });
+  }
+  return out;
 }
 
 /** 端だけを見るときに読むバイト数。 */
-export function edgeReadBytes(length: number, edge: number = DEFAULT_EDGE_BYTES): number {
-  return edgeRanges(length, edge).reduce((sum, r) => sum + (r.to - r.from), 0);
+export function edgeReadBytes(
+  length: number,
+  edge: number = DEFAULT_EDGE_BYTES,
+  pieces: number = DEFAULT_EDGE_PIECES,
+): number {
+  return edgeRanges(length, edge, pieces).reduce((sum, r) => sum + (r.to - r.from), 0);
 }
 
 export type VerifyState = 'ok' | 'mismatch' | 'unknown';
@@ -171,8 +258,12 @@ export async function digestOfParts(parts: Uint8Array[]): Promise<string> {
  * 先に見つける。混ぜると小さい実体で `edgeHash === hash` が成り立たなくなり、
  * 「端＝全部」という境界が読む側から見えなくなる。
  */
-export async function edgeDigestOf(bytes: Uint8Array, edge: number = DEFAULT_EDGE_BYTES): Promise<string> {
-  return digestOfParts(edgeRanges(bytes.byteLength, edge).map((r) => bytes.subarray(r.from, r.to)));
+export async function edgeDigestOf(
+  bytes: Uint8Array,
+  edge: number = DEFAULT_EDGE_BYTES,
+  pieces: number = DEFAULT_EDGE_PIECES,
+): Promise<string> {
+  return digestOfParts(edgeRanges(bytes.byteLength, edge, pieces).map((r) => bytes.subarray(r.from, r.to)));
 }
 
 /** 生の 32 バイトを base64 に直す（`section` から読んだものを見出しの形に合わせる）。 */
@@ -184,6 +275,8 @@ export function digestToText(bytes: Uint8Array): string {
 export interface DigestSpec {
   whole: boolean;
   edge: number;
+  /** 2N を何個に分けて読むか（`DEFAULT_EDGE_PIECES`）。読む量はこれで変わらない。 */
+  pieces?: number;
 }
 
 export interface BodyDigests {
@@ -210,13 +303,16 @@ export async function digestBodies(
   spec: DigestSpec = { whole: true, edge: 0 },
 ): Promise<Map<string, BodyDigests>> {
   const out = new Map<string, BodyDigests>();
+  const pieces = spec.pieces ?? DEFAULT_EDGE_PIECES;
   for (const id of ids) {
     // 大きさが分からない持ち主では端を切れないので、丸ごと読む側へ落とす
     // （**0 バイト扱いにして「何も無い」のハッシュを書くと、黙って全部の実体が通る**）。
     const known = bodies.size(id);
     if (!spec.whole && spec.edge > 0 && bodies.slice && known !== undefined) {
       const parts: Uint8Array[] = [];
-      for (const r of edgeRanges(known, spec.edge)) parts.push(await bodies.slice(id, r.from, r.to));
+      // **読む口を叩く回数が `pieces` になる。** 読む量は変わらないが、
+      // ここが散らす費用の出どころ（ファイルの上で 1 回 0.05ms・README の 9.4）。
+      for (const r of edgeRanges(known, spec.edge, pieces)) parts.push(await bodies.slice(id, r.from, r.to));
       out.set(id, { edgeHash: await digestOfParts(parts) });
       continue;
     }
@@ -229,7 +325,7 @@ export async function digestBodies(
     const duplicate = spec.whole && bytes.byteLength <= spec.edge * 2;
     out.set(id, {
       ...(spec.whole ? { hash: await digestOf(bytes) } : {}),
-      ...(spec.edge > 0 && !duplicate ? { edgeHash: await edgeDigestOf(bytes, spec.edge) } : {}),
+      ...(spec.edge > 0 && !duplicate ? { edgeHash: await edgeDigestOf(bytes, spec.edge, pieces) } : {}),
     });
   }
   return out;
@@ -258,7 +354,13 @@ export interface VerifyTarget {
 export async function verifyBodies(
   reader: PackReader,
   targets: VerifyTarget[],
-  { depth = 'full', edge = 0 }: { depth?: VerifyDepth; edge?: number } = {},
+  {
+    depth = 'full',
+    edge = 0,
+    // **幅と同じで、ここも呼ぶ側が渡したものだけを使う。** 既定で埋めると、
+    // 散らし方の違うファイルを黙って「中身が違う」と言い出す（`LEGACY_EDGE_PIECES` の注）。
+    pieces = LEGACY_EDGE_PIECES,
+  }: { depth?: VerifyDepth; edge?: number; pieces?: number } = {},
 ): Promise<VerifyReport> {
   const entries: VerifyEntry[] = [];
   let bytesRead = 0;
@@ -285,7 +387,7 @@ export async function verifyBodies(
     }
     // **端だけのときは、読む範囲を実体の頭からの相対で決めてからファイルの位置へ移す。**
     // ファイル上の位置で先に足すと、`length` が 0 の実体で頭と尻が同じ所を指す。
-    const ranges = depth === 'edge' ? edgeRanges(length, edge) : [{ from: 0, to: length }];
+    const ranges = depth === 'edge' ? edgeRanges(length, edge, pieces) : [{ from: 0, to: length }];
     const parts: Uint8Array[] = [];
     let read = 0;
     for (const r of ranges) {

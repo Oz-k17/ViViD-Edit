@@ -28,6 +28,15 @@ const { attachDigests, layoutPack, openPack, realizePack, readerFromBytes, verif
   './src/container.ts'
 );
 const { digestOf, edgeDigestOf, edgeReadBytes, DEFAULT_EDGE_BYTES } = await import('./src/digest.ts');
+
+/**
+ * **この測りは「端だけ」（＝先頭 N ＋末尾 N）の話。** 散らし方は 2 で固定する。
+ *
+ * 2026-09-29（2 回目）に既定の散らし方が 3 になった（`lab:pack:width`・README の 9）。
+ * 省くとここが黙って 3 個になり、**「端だけは中ほどを見逃す」の表が中ほどを見つけ始める。**
+ * 9/29（1 回目）に「比べる相手は既定を使わずに書く」と書いた所を、まさにここで踏む。
+ */
+const EDGE_PIECES = 2;
 const { memoryBodies, pseudoBytes, scenarioAt, thumbScenario } = await import('./src/scenarios.ts');
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -82,15 +91,15 @@ console.log('\n## 1. 端だけにすると、1 バイトの化けをどれだけ
     const body = pseudoBytes(length, 5);
     const row = [];
     for (const edge of edges) {
-      const want = await edgeDigestOf(body, edge);
+      const want = await edgeDigestOf(body, edge, EDGE_PIECES);
       let found = 0;
       for (let i = 0; i < spots; i += 1) {
         const at = Math.min(length - 1, Math.floor((i * length) / (spots - 1)));
         body[at] ^= 0x01;
-        if ((await edgeDigestOf(body, edge)) !== want) found += 1;
+        if ((await edgeDigestOf(body, edge, EDGE_PIECES)) !== want) found += 1;
         body[at] ^= 0x01;
       }
-      const read = edgeReadBytes(length, edge);
+      const read = edgeReadBytes(length, edge, EDGE_PIECES);
       row.push(`${pct(found / spots)} / ${(read / KB).toFixed(0)}KB`);
     }
     console.log(`${pad(`${(length / KB).toFixed(0)}KB`, 10)}${row.map((r) => rpad(r, 14)).join('')}`);
@@ -109,7 +118,7 @@ console.log('\n## 2. 壊し方 × 4 象限（何本見るか × 1 本のどこ�
   const EDGE = 64 * KB;
   const t = thumbScenario(6, { bodyBytes: 1 * MB });
   const tb = memoryBodies(t.bodies);
-  const layout = await attachDigests(layoutPack(t.project, t.assets, tb, { digests: 'header', edges: EDGE }), tb);
+  const layout = await attachDigests(layoutPack(t.project, t.assets, tb, { digests: 'header', edges: EDGE, edgePieces: EDGE_PIECES }), tb);
   const clean = concat(await realizePack(layout, tb));
   const bodyBase = clean.length - layout.order.reduce((n, o) => n + o.length, 0);
 
@@ -250,9 +259,9 @@ console.log('\n## 3. 費用（96MB・12MB × 8 本。同じ回の中で交互に
   // 省くと*これも*端を持ち、**同じものを 2 回測って「差は 1.09 倍」と読んでしまう**
   // （1 回目の測りが実際そうなっていた。9/28 の測りには `edges: 0` を足したのに、
   // 新しく書いたこの測りの中で同じ穴を踏んだ）。
-  const whole = layoutPack(s.project, s.assets, bodies, { digests: 'header', edges: 0 });
-  const edgeOnly = layoutPack(s.project, s.assets, bodies, { digests: 'none', edges: EDGE });
-  const both = layoutPack(s.project, s.assets, bodies, { digests: 'header', edges: EDGE });
+  const whole = layoutPack(s.project, s.assets, bodies, { digests: 'header', edges: 0, edgePieces: EDGE_PIECES });
+  const edgeOnly = layoutPack(s.project, s.assets, bodies, { digests: 'none', edges: EDGE, edgePieces: EDGE_PIECES });
+  const both = layoutPack(s.project, s.assets, bodies, { digests: 'header', edges: EDGE, edgePieces: EDGE_PIECES });
   const cases = [
     { name: '書く：丸ごとだけ', run: async () => attachDigests(whole, bodies) },
     { name: '書く：端だけ', run: async () => attachDigests(edgeOnly, bodies) },
@@ -281,9 +290,9 @@ console.log('\n## 3. 費用（96MB・12MB × 8 本。同じ回の中で交互に
 
   // 読んだバイト数（`memoryBodies.readBytes` が数えている）
   for (const [name, opts] of [
-    ['丸ごとだけ', { digests: 'header', edges: 0 }],
-    ['端だけ', { digests: 'none', edges: EDGE }],
-    ['両方', { digests: 'header', edges: EDGE }],
+    ['丸ごとだけ', { digests: 'header', edges: 0, edgePieces: EDGE_PIECES }],
+    ['端だけ', { digests: 'none', edges: EDGE, edgePieces: EDGE_PIECES }],
+    ['両方', { digests: 'header', edges: EDGE, edgePieces: EDGE_PIECES }],
   ]) {
     const b = memoryBodies(s.bodies);
     await attachDigests(layoutPack(s.project, s.assets, b, opts), b);
@@ -291,7 +300,7 @@ console.log('\n## 3. 費用（96MB・12MB × 8 本。同じ回の中で交互に
   }
 
   // 読む側 4 象限（実際のファイルを 1 本作って測る）
-  const layout = await attachDigests(layoutPack(s.project, s.assets, bodies, { digests: 'header', edges: EDGE }), bodies);
+  const layout = await attachDigests(layoutPack(s.project, s.assets, bodies, { digests: 'header', edges: EDGE, edgePieces: EDGE_PIECES }), bodies);
   const path = join(OUT, 'edge-probe.bin');
   await writeFile(path, (await realizePack(layout, bodies)).map((p) => Buffer.from(p)));
   const bytes = concat(await realizePack(layout, bodies));
@@ -332,9 +341,9 @@ console.log('\n## 4. 見出しの太り\n');
     const rows = [];
     for (const [name, opts] of [
       ['持たない', { digests: 'none' }],
-      ['丸ごとだけ', { digests: 'header', edges: 0 }],
-      ['端だけ', { digests: 'none', edges: DEFAULT_EDGE_BYTES }],
-      ['両方（既定）', { digests: 'header', edges: DEFAULT_EDGE_BYTES }],
+      ['丸ごとだけ', { digests: 'header', edges: 0, edgePieces: EDGE_PIECES }],
+      ['端だけ', { digests: 'none', edges: DEFAULT_EDGE_BYTES, edgePieces: EDGE_PIECES }],
+      ['両方（既定）', { digests: 'header', edges: DEFAULT_EDGE_BYTES, edgePieces: EDGE_PIECES }],
     ]) {
       const layout = await attachDigests(layoutPack(t.project, t.assets, tb, opts), tb);
       rows.push({ name, headerBytes: layout.prefix.length - PACK_PREAMBLE });
@@ -362,9 +371,9 @@ console.log('\n## 5. 端＝全部になる境界\n');
   const edge = 64 * KB;
   for (const length of [0, 1, edge, 2 * edge, 2 * edge + 1]) {
     const body = pseudoBytes(length, 3);
-    const same = (await edgeDigestOf(body, edge)) === (await digestOf(body));
+    const same = (await edgeDigestOf(body, edge, EDGE_PIECES)) === (await digestOf(body));
     console.log(
-      `  ${rpad(length, 8)} バイト: 読む ${rpad(edgeReadBytes(length, edge), 8)} / 丸ごとと同じ値 ${same ? '○' : '×'}`,
+      `  ${rpad(length, 8)} バイト: 読む ${rpad(edgeReadBytes(length, edge, EDGE_PIECES), 8)} / 丸ごとと同じ値 ${same ? '○' : '×'}`,
     );
   }
   console.log('\n**2N までは端＝全部**（頭と尻が重なるので 1 本にまとめてある）。');

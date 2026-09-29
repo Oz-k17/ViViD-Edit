@@ -255,3 +255,35 @@ function base64Of(bytes: Uint8Array): string {
   }
   return out;
 }
+
+/**
+ * **両端に「決まり文句」を持つ実体。** 端だけの検査を潰すための素材。
+ *
+ * `pseudoBytes` は全域が乱数なので、**どの 1 バイトを見ても実体どうしが違う。**
+ * 端だけの検査を乱数の素材で測ると、入れ替わりが必ず見つかって当たり前に見える——
+ * それは端の手柄ではなく、素材が端で既に違っていたからでしかない。
+ *
+ * 本物はそうではない。同じ設定で書き出した動画は**頭に同じ容器の見出し**が付き、
+ * 形式によっては**尻が同じ形で終わる**（零で詰める・同じ終端の印）。
+ * そこが揃っている素材では、端だけの検査は「別の素材」を同じものと見なす。
+ *
+ * `head` は素材によらず同じ並び、`tail` は零、間だけが `seed` で変わる。
+ * **頭と尻を別々に指定できる**ようにしてあるのは、端が頭と尻の両方を見るので、
+ * **片方が揃っているだけでは破れない**（＝どちらが効いているか）を測るため。
+ */
+export function boilerplateBytes(
+  length: number,
+  seed = 1,
+  { head = 0, tail = 0 }: { head?: number; tail?: number } = {},
+): Uint8Array {
+  const len = Math.max(0, length);
+  const h = Math.min(len, Math.max(0, Math.floor(head)));
+  const t = Math.min(len - h, Math.max(0, Math.floor(tail)));
+  const out = pseudoBytes(len, seed);
+  // 頭は「容器の見出し」のつもりの決まり文句。**素材によらず同じ**にしたいので
+  // 種を固定する（`seed` を混ぜると、揃えたつもりで揃っていない素材になる）。
+  if (h > 0) out.set(pseudoBytes(h, 0x5f5f), 0);
+  // 尻は零詰め。**乱数で埋めると「揃っている」が作れない**（種が違えば違う並びになる）。
+  if (t > 0) out.fill(0, len - t, len);
+  return out;
+}
