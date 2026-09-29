@@ -24,7 +24,7 @@ import {
   verifyPack,
   type PackHeader,
 } from './container.ts';
-import { digestOf, digestToText } from './digest.ts';
+import { DEFAULT_EDGE_BYTES, digestOf, digestToText } from './digest.ts';
 import { decodeBase64, toDataUrl } from './thumbs.ts';
 import { base64Length, buildJsonPack, jsonPackBody, parseJsonPack } from './json-pack.ts';
 import { planPack } from './plan.ts';
@@ -130,6 +130,7 @@ function baseHeader(over: Partial<PackHeader> = {}): PackHeader {
     thumbs: [],
     digestPlacement: 'none',
     digestBytes: 0,
+    edgeBytes: 0,
     ...over,
   };
 }
@@ -1052,6 +1053,277 @@ export async function runSelfTest(): Promise<Result[]> {
       report.mismatch[0] === '日本語の名前の素材.mp4',
       '中身が違った素材は、id ではなく人が読める名前で出す',
       report.mismatch.join('・'),
+    );
+  }
+
+  // ===== 端だけのハッシュ（2026-09-29） =====
+
+  /**
+   * 端だけのハッシュを入れた形で 1 本組む。
+   *
+   * **幅（`edges`）を小さくして渡す。** 既定の 64KB で試すと実体を 128KB 超にしないと
+   * 端が端にならないので、検算が MB 単位のバイト列を並べることになる。
+   * 見ているのは「頭と尻だけを混ぜる」という形なので、幅は小さくても同じ道を通る。
+   */
+  async function packWithEdges(
+    lengths: number[],
+    options: Parameters<typeof layoutPack>[3] = {},
+  ) {
+    const metas = lengths.map((_, i) => meta({ id: `e${i}`, name: `端${i}.mp4` }));
+    const map = new Map(metas.map((m, i) => [m.id, pseudoBytes(lengths[i], i + 41)]));
+    const bodies = memoryBodies(map);
+    const project = makeProject(metas.map((m) => clip(m.id)));
+    const layout = await attachDigests(layoutPack(project, assetMap(metas), bodies, { edges: 64, ...options }), bodies);
+    const file = concat(await realizePack(layout, bodies));
+    return { metas, bodies, layout, file, map };
+  }
+
+  {
+    const metas = [meta({ id: 'x0' })];
+    const bodies = memoryBodies(new Map([['x0', pseudoBytes(300, 51)]]));
+    const layout = layoutPack(makeProject([clip('x0')]), assetMap(metas), bodies);
+    add(
+      layout.header.edgeBytes === DEFAULT_EDGE_BYTES,
+      '既定は「丸ごとに添えて端も持つ」（端だけを唯一の持ち方にはしない）',
+      `幅 ${layout.header.edgeBytes} B`,
+    );
+    const none = layoutPack(makeProject([clip('x0')]), assetMap(metas), bodies, { digests: 'none' });
+    add(
+      none.header.edgeBytes === 0,
+      'ハッシュ無しの形（9/28 までの比べる相手）には、端も足さない',
+      `幅 ${none.header.edgeBytes} B`,
+    );
+  }
+
+  {
+    const { layout } = await packWithEdges([600, 700]);
+    add(
+      layout.order.every((b) => typeof b.hash === 'string' && typeof b.edgeHash === 'string'),
+      '丸ごとと端のハッシュが両方、見出しに入る（域は増やさない）',
+      `域 ${layout.header.digestBytes} B / 幅 ${layout.header.edgeBytes} B`,
+    );
+  }
+
+  {
+    // **2N 以下では端＝全部**なので、同じ 44 文字を 2 つ書かない。
+    // 書かない代わりに、読む側は丸ごとのぶんで端を確かめられること（そこが対**）。
+    const { layout, file } = await packWithEdges([100, 300]);
+    const reader = readerFromBytes(file);
+    const opened = await openPack(reader);
+    const edge = await verifyPack(reader, opened, { depth: 'edge' });
+    add(
+      layout.order[0].edgeHash === undefined &&
+        typeof layout.order[1].edgeHash === 'string' &&
+        edge.entries.every((e) => e.state === 'ok') &&
+        edge.unknown.length === 0,
+      '2N 以下の実体には端のぶんを書かない（同じ値になる）。それでも端で確かめられる',
+      `100B の端 ${layout.order[0].edgeHash === undefined ? 'なし' : 'あり'} / 300B の端 あり / ${edge.entries.map((e) => e.state).join('・')}`,
+    );
+  }
+
+  {
+    // **今回いちばん正直に書くべき検算。** 端だけは中ほどの化けを見つけられない。
+    // ここが緑であることは「端だけで足りる」ではなく「端だけでは足りない」の証。
+    const { layout, file } = await packWithEdges([600]);
+    const bodyBase = file.length - layout.order.reduce((n, o) => n + o.length, 0);
+    const broken = Uint8Array.from(file);
+    broken[bodyBase + 300] ^= 0x01; // 600 バイトの真ん中（端 64×2 の外）
+    const reader = readerFromBytes(broken);
+    const opened = await openPack(reader);
+    const full = await verifyPack(reader, opened);
+    const edge = await verifyPack(reader, opened, { depth: 'edge' });
+    add(
+      full.mismatch.length === 1 && edge.mismatch.length === 0 && edge.entries[0].state === 'ok',
+      '端だけは、実体の中ほどの化けを見つけられない（丸ごとは見つける）',
+      `丸ごと ${full.mismatch.length} 本 / 端 ${edge.mismatch.length} 本`,
+    );
+    add(
+      edge.bytesRead === 128 && full.bytesRead === 600,
+      '端だけなら読む量が幅の 2 倍で止まる（実体の大きさに依らない）',
+      `端 ${edge.bytesRead} B / 丸ごと ${full.bytesRead} B`,
+    );
+  }
+
+  {
+    // **ずれは端でも見つかる**（ずれは実体の頭も尻も同じだけ動かすので）。
+    // 9/28（3 回目）にいちばん効くと分かった形（サムネイル域が長い側へずれる）で試す。
+    const metas = [meta({ id: 's0', thumbnail: toDataUrl('image/jpeg', pseudoBytes(40, 61)) }), meta({ id: 's1' })];
+    const map = new Map([['s0', pseudoBytes(600, 62)], ['s1', pseudoBytes(700, 63)]]);
+    const bodies = memoryBodies(map);
+    const layout = await attachDigests(
+      layoutPack(makeProject([clip('s0'), clip('s1')]), assetMap(metas), bodies, { thumbs: 'section', edges: 64 }),
+      bodies,
+    );
+    const file = concat(await realizePack(layout, bodies));
+    // 域を 1 長いと嘘をつく（絵は域に収まったままなので 9/28 の門は素通りする）。
+    const headerBytes = new DataView(file.buffer, file.byteOffset, file.byteLength).getUint32(8, true);
+    const header = JSON.parse(new TextDecoder().decode(file.subarray(PACK_PREAMBLE, PACK_PREAMBLE + headerBytes)));
+    header.thumbBytes += 1;
+    const shifted = packWith(header, file.subarray(PACK_PREAMBLE + headerBytes));
+    const reader = readerFromBytes(shifted);
+    const opened = await openPack(reader);
+    const edge = await verifyPack(reader, opened, { depth: 'edge' });
+    const one = await verifyPack(reader, opened, { sample: 1, depth: 'edge' });
+    add(
+      edge.mismatch.length > 0 && one.mismatch.length === 1,
+      'ずれは端でも、しかも 1 本の抜き取りでも見つかる（頭も尻も同じだけ動くので）',
+      `端 ${edge.mismatch.length} 本 / 抜き取り 1 本で ${one.mismatch.length} 本・${one.bytesRead} B`,
+    );
+  }
+
+  {
+    // 端だけを持つ形では、**書く側も端しか読まない**。
+    // ここが「100 分の 1 になるはず」の 100 分の 1 が出てくる唯一の場所。
+    const metas = [meta({ id: 'w0' }), meta({ id: 'w1' })];
+    const map = new Map([['w0', pseudoBytes(1000, 71)], ['w1', pseudoBytes(1000, 72)]]);
+    const bodies = memoryBodies(map);
+    await attachDigests(
+      layoutPack(makeProject([clip('w0'), clip('w1')]), assetMap(metas), bodies, { digests: 'none', edges: 64 }),
+      bodies,
+    );
+    const both = memoryBodies(map);
+    await attachDigests(
+      layoutPack(makeProject([clip('w0'), clip('w1')]), assetMap(metas), both, { digests: 'header', edges: 64 }),
+      both,
+    );
+    add(
+      bodies.readBytes === 256 && both.readBytes === 2000,
+      '端だけを書くときは実体も端しか読まない（両方持つときは 1 回だけ丸ごと読む）',
+      `端だけ ${bodies.readBytes} B / 両方 ${both.readBytes} B（実体は 2000 B）`,
+    );
+  }
+
+  {
+    // **幅が化けたら 0 へ倒して「分からない」にする。断らない。**
+    // 断ると、端のぶんが化けただけで中身の読めるファイルを開けなくすることになる。
+    const { file } = await packWithEdges([600]);
+    const headerBytes = new DataView(file.buffer, file.byteOffset, file.byteLength).getUint32(8, true);
+    const header = JSON.parse(new TextDecoder().decode(file.subarray(PACK_PREAMBLE, PACK_PREAMBLE + headerBytes)));
+    const states: string[] = [];
+    for (const edgeBytes of [-1, 1.5, null, 'いち']) {
+      const broken = packWith({ ...header, edgeBytes }, file.subarray(PACK_PREAMBLE + headerBytes));
+      const reader = readerFromBytes(broken);
+      const opened = await openPack(reader);
+      const edge = await verifyPack(reader, opened, { depth: 'edge' });
+      const full = await verifyPack(reader, opened);
+      states.push(`${String(edgeBytes)}:${edge.entries[0].state}/${full.entries[0].state}`);
+    }
+    add(
+      states.every((s) => s.endsWith('unknown/ok')),
+      '端の幅が読めないファイルは断らない。端は「分からない」、丸ごとはそのまま効く',
+      states.join(' '),
+    );
+  }
+
+  {
+    // 幅が**読める形のまま別の値に書き換わった**ら、端の検査は全部「違う」と言い出す。
+    // **丸ごとにはこの弱みが無い**（読む範囲が実体の位置だけで決まるので）。
+    // 端だけを唯一のハッシュにしない理由のひとつ。数字は README の 8.4。
+    const { file } = await packWithEdges([600, 700]);
+    const headerBytes = new DataView(file.buffer, file.byteOffset, file.byteLength).getUint32(8, true);
+    const header = JSON.parse(new TextDecoder().decode(file.subarray(PACK_PREAMBLE, PACK_PREAMBLE + headerBytes)));
+    const broken = packWith({ ...header, edgeBytes: 32 }, file.subarray(PACK_PREAMBLE + headerBytes));
+    const reader = readerFromBytes(broken);
+    const opened = await openPack(reader);
+    const edge = await verifyPack(reader, opened, { depth: 'edge' });
+    const full = await verifyPack(reader, opened);
+    add(
+      edge.mismatch.length === 2 && full.mismatch.length === 0,
+      '幅だけを書き換えると、端は壊れていない実体まで「違う」と言う（丸ごとは動じない）',
+      `端 ${edge.mismatch.length} 本が違う / 丸ごと ${full.mismatch.length} 本`,
+    );
+  }
+
+  {
+    // 0 バイトの実体でも端の道が通ること（頭と尻が同じ所を指して二重に混ざらない）。
+    const { file, layout } = await packWithEdges([0, 600]);
+    const reader = readerFromBytes(file);
+    const opened = await openPack(reader);
+    const edge = await verifyPack(reader, opened, { depth: 'edge' });
+    add(
+      layout.order[0].length === 0 && edge.entries.every((e) => e.state === 'ok'),
+      '0 バイトの実体でも端の道が通る（頭と尻が重なっても二重に混ざらない）',
+      edge.entries.map((e) => `${e.name}:${e.state}`).join('・'),
+    );
+  }
+
+  {
+    // 端を持つ約束のまま計算せずに書こうとしたら断る（`digests: 'none'` でも）。
+    const metas = [meta({ id: 'f0' })];
+    const bodies = memoryBodies(new Map([['f0', pseudoBytes(600, 81)]]));
+    const layout = layoutPack(makeProject([clip('f0')]), assetMap(metas), bodies, { digests: 'none', edges: 64 });
+    const msg = await threw(() => realizePack(layout, bodies));
+    add(
+      msg !== null && msg.includes('attachDigests'),
+      '端だけを持つ約束のまま、計算せずに書こうとしたら断る（空の端は「分からない」になる）',
+      msg ?? '',
+    );
+  }
+
+  {
+    // `section`（比べる相手）でも、端は域ではなく見出しに入る。域は 32 の倍数のまま。
+    const { layout, file } = await packWithEdges([600, 700], { digests: 'section' });
+    const reader = readerFromBytes(file);
+    const opened = await openPack(reader);
+    const full = await verifyPack(reader, opened);
+    const edge = await verifyPack(reader, opened, { depth: 'edge' });
+    add(
+      layout.header.digestBytes === 64 &&
+        layout.order.every((b) => typeof b.edgeHash === 'string') &&
+        full.entries.every((e) => e.state === 'ok') &&
+        edge.entries.every((e) => e.state === 'ok') &&
+        file.length === layout.totalBytes,
+      'section でも端は見出しに入る（域は 32 の倍数のまま・長さの見込みも合う）',
+      `域 ${layout.header.digestBytes} B / 全体 ${file.length}=${layout.totalBytes}`,
+    );
+  }
+
+  {
+    // 端だけを持つ形でも、書き出した長さが読まずに出した見込みと合う
+    // （`digests: 'none'` はもう「何も足さない」ではなくなったので、ここを別に見る）。
+    const { layout, file } = await packWithEdges([600, 700], { digests: 'none' });
+    const reader = readerFromBytes(file);
+    const opened = await openPack(reader);
+    const edge = await verifyPack(reader, opened, { depth: 'edge' });
+    const full = await verifyPack(reader, opened);
+    add(
+      file.length === layout.totalBytes &&
+        edge.entries.every((e) => e.state === 'ok') &&
+        full.entries.every((e) => e.state === 'unknown'),
+      '端だけを持つ形も往復する（長さの見込みも合う。丸ごとは「分からない」になる）',
+      `全体 ${file.length}=${layout.totalBytes} / 端 ${edge.entries.map((e) => e.state).join('・')} / 丸ごと ${full.entries.map((e) => e.state).join('・')}`,
+    );
+  }
+
+  {
+    // **`slice` を持たない持ち主でも同じ値になる**（丸ごと読んでから端を切る側の道）。
+    // ここが違うと、持ち主によってハッシュが変わるファイルが書ける。
+    const metas = [meta({ id: 'n0' })];
+    const map = new Map([['n0', pseudoBytes(1000, 121)]]);
+    const withSlice = memoryBodies(map);
+    const plain = { size: withSlice.size, bytes: withSlice.bytes }; // `slice` を持たない持ち主
+    const a = await attachDigests(
+      layoutPack(makeProject([clip('n0')]), assetMap(metas), withSlice, { digests: 'none', edges: 64 }),
+      withSlice,
+    );
+    const b = await attachDigests(
+      layoutPack(makeProject([clip('n0')]), assetMap(metas), plain, { digests: 'none', edges: 64 }),
+      plain,
+    );
+    add(
+      a.order[0].edgeHash === b.order[0].edgeHash && typeof a.order[0].edgeHash === 'string',
+      'slice を持たない持ち主でも端のハッシュは同じ（丸ごと読んで切るだけの違い）',
+      `${(a.order[0].edgeHash ?? '').slice(0, 8)}…`,
+    );
+  }
+
+  {
+    // 幅を 0 で渡したら、端は 1 バイトも書かない（`digests` の既定を変えずに切れる）。
+    const { layout } = await packWithEdges([600], { edges: 0 });
+    add(
+      layout.header.edgeBytes === 0 && layout.order.every((b) => b.edgeHash === undefined),
+      '幅 0 を渡せば端は書かない（丸ごとだけの形に戻せる）',
+      `幅 ${layout.header.edgeBytes} B`,
     );
   }
 

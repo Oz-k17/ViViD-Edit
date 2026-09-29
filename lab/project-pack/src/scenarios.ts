@@ -59,18 +59,32 @@ export function assetMap(list: PackAssetMeta[]): Map<string, PackAssetMeta> {
  * **`size` は表を引くだけ、`bytes` は数えて渡す**という差を残してある
  * （ブラウザの `Blob.size` と `Blob.arrayBuffer()` の差がこれ）。
  */
-export function memoryBodies(bodies: Map<string, Uint8Array>): BodySource & { reads: string[] } {
+export function memoryBodies(
+  bodies: Map<string, Uint8Array>,
+): BodySource & { reads: string[]; readBytes: number } {
   const reads: string[] = [];
-  return {
+  const self = {
     reads,
-    size: (id) => bodies.get(id)?.byteLength,
-    bytes: async (id) => {
+    /** **読んだバイト数**。端だけで済んだかを測る側が見る（`slice` は範囲ぶんだけ増える）。 */
+    readBytes: 0,
+    size: (id: string) => bodies.get(id)?.byteLength,
+    bytes: async (id: string) => {
       const body = bodies.get(id);
       if (!body) throw new Error(`実体が無い: ${id}`);
       reads.push(id);
+      self.readBytes += body.byteLength;
       return body;
     },
+    slice: async (id: string, from: number, to: number) => {
+      const body = bodies.get(id);
+      if (!body) throw new Error(`実体が無い: ${id}`);
+      reads.push(id);
+      // ブラウザの `Blob.slice` と同じで、**写しは作らない**（範囲を指す view を返す）。
+      self.readBytes += Math.max(0, to - from);
+      return body.subarray(from, to);
+    },
   };
+  return self;
 }
 
 export interface Scenario {

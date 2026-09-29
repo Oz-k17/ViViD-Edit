@@ -64,6 +64,15 @@ export interface BodySource {
   size(id: string): number | undefined;
   /** 実体。実際に書き出すときだけ呼ぶ。 */
   bytes(id: string): Promise<Uint8Array>;
+  /**
+   * 実体の一部だけ（`[from, to)`）。**あれば端だけのハッシュが安くなる。**
+   *
+   * ブラウザの `Blob.slice(from, to).arrayBuffer()` がこれ。
+   * 無くても困らない（`bytes` で丸ごと読む）ようにしてあるのは、
+   * **持っていない持ち主があってよい**から——ここを必須にすると
+   * 「実体は Blob で持つ」という前提が呼ぶ側に漏れる。
+   */
+  slice?(id: string, from: number, to: number): Promise<Uint8Array>;
 }
 
 /** ファイルの中から、要る所だけを拾って読む口。ブラウザでは `Blob.slice`。 */

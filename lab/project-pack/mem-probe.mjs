@@ -15,7 +15,10 @@
  */
 
 const [, , indexArg, mode] = process.argv;
-const { attachDigests, layoutPack, realizePack } = await import('./src/container.ts');
+const { attachDigests, layoutPack: layoutAny, realizePack } = await import('./src/container.ts');
+
+/** 端だけのハッシュは足さずに測る（`digest-probe.mjs` の注と同じ理由）。 */
+const layoutPack = (project, assets, bodies, options = {}) => layoutAny(project, assets, bodies, { edges: 0, ...options });
 const { digestOf } = await import('./src/digest.ts');
 const { buildJsonPack } = await import('./src/json-pack.ts');
 const { memoryBodies, scenarioAt } = await import('./src/scenarios.ts');

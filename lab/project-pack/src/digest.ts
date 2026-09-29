@@ -53,7 +53,62 @@ export type DigestPlacement = 'none' | 'header' | 'section';
 /** sha-256 の生バイト数。`section` はこの固定長で並べる。 */
 export const DIGEST_BYTES = 32;
 
+/**
+ * **端だけのハッシュ（先頭 N バイト＋末尾 N バイト）で見る幅 N。既定は 64KB。**
+ *
+ * 9/28（3 回目）の積み残し「ハッシュを端だけで取る形を測っていない」。
+ * 費用は全部「実体を丸ごと読む」に出る（3.6ms/MB）ので、端だけなら
+ * 素材の大きさに依らない定数になる。**何を見つけられなくなるかは
+ * `npm run lab:pack:edge` で測った**（README の 8）。
+ *
+ * 64KB を既定にしたのは、7.4 で「抜き取り 1 本」の費用として実測した幅と同じにして、
+ * **読む量を揃えたまま「1 本だけ」と「全部の端」を比べられる**ようにするため。
+ */
+export const DEFAULT_EDGE_BYTES = 64 * 1024;
+
+/** ファイルの中の範囲。`[from, to)`。 */
+export interface ByteRange {
+  from: number;
+  to: number;
+}
+
+/**
+ * 端だけを見るとき、実体のどこを読むか。
+ *
+ * **`length <= edge * 2` なら 1 本にまとめて丸ごと返す。** 頭と尻を別々に返すと
+ * 真ん中が二重に混ざり、同じバイト列なのに**全部を見たときと値が変わる**。
+ * まとめておけば小さい実体では端＝全部になり、`edgeHash === hash` が成り立つ
+ * （検算で固定してある）。ここを間違えると「小さい素材だけ必ず違う」になる。
+ */
+export function edgeRanges(length: number, edge: number = DEFAULT_EDGE_BYTES): ByteRange[] {
+  const len = Math.max(0, length);
+  const n = Math.max(0, Math.floor(edge));
+  if (n === 0 || len <= n * 2) return [{ from: 0, to: len }];
+  return [
+    { from: 0, to: n },
+    { from: len - n, to: len },
+  ];
+}
+
+/** 端だけを見るときに読むバイト数。 */
+export function edgeReadBytes(length: number, edge: number = DEFAULT_EDGE_BYTES): number {
+  return edgeRanges(length, edge).reduce((sum, r) => sum + (r.to - r.from), 0);
+}
+
 export type VerifyState = 'ok' | 'mismatch' | 'unknown';
+
+/**
+ * どこまで読んで確かめるか。
+ *
+ * | | 読む量 | 見つかるもの |
+ * | --- | --- | --- |
+ * | `full`（既定） | 実体を丸ごと | 中身の化けも、ずれも |
+ * | `edge` | 端 2×64KB だけ | **ずれだけ**（中の化けは端に落ちたぶんだけ） |
+ *
+ * **`edge` は `full` の安い版ではなく、見つけるものが違う検査。**
+ * 数字は README の 8。混ぜて読まないこと。
+ */
+export type VerifyDepth = 'full' | 'edge';
 
 export interface VerifyEntry {
   id: string;
@@ -89,9 +144,51 @@ export async function digestOf(bytes: Uint8Array): Promise<string> {
   return encodeBase64(new Uint8Array(digest));
 }
 
+/**
+ * いくつかの切れ端をつないで 1 つのハッシュにする。**端だけを見るときに通る道。**
+ *
+ * `subtle.digest` に流し込む口が無いので、**ここでだけ写しを 1 つ作る**（端の 2×64KB ぶん）。
+ * 実体を丸ごと繋ぐのと形は同じだが、大きさが実体に比例しないので山にならない
+ * （丸ごと繋ぐと 96MB で +251MB になる——README の 7.1）。
+ * 切れ端が 1 本のときは繋がない（写しを増やさない）。
+ */
+export async function digestOfParts(parts: Uint8Array[]): Promise<string> {
+  if (parts.length === 1) return digestOf(parts[0]);
+  const total = parts.reduce((sum, p) => sum + p.byteLength, 0);
+  const joined = new Uint8Array(total);
+  let at = 0;
+  for (const part of parts) {
+    joined.set(part, at);
+    at += part.byteLength;
+  }
+  return digestOf(joined);
+}
+
+/**
+ * 端だけ（先頭 N ＋末尾 N）のハッシュ。**長さは混ぜない。**
+ *
+ * 長さは見出しの `bodies` に書いてあり、そこがずれる形は位置の門（`outOfRange`）が
+ * 先に見つける。混ぜると小さい実体で `edgeHash === hash` が成り立たなくなり、
+ * 「端＝全部」という境界が読む側から見えなくなる。
+ */
+export async function edgeDigestOf(bytes: Uint8Array, edge: number = DEFAULT_EDGE_BYTES): Promise<string> {
+  return digestOfParts(edgeRanges(bytes.byteLength, edge).map((r) => bytes.subarray(r.from, r.to)));
+}
+
 /** 生の 32 バイトを base64 に直す（`section` から読んだものを見出しの形に合わせる）。 */
 export function digestToText(bytes: Uint8Array): string {
   return encodeBase64(bytes);
+}
+
+/** 何を出すか。`whole` が丸ごとのハッシュ、`edge` が端だけ（0 なら持たない）。 */
+export interface DigestSpec {
+  whole: boolean;
+  edge: number;
+}
+
+export interface BodyDigests {
+  hash?: string;
+  edgeHash?: string;
 }
 
 /**
@@ -101,16 +198,44 @@ export function digestToText(bytes: Uint8Array): string {
  * ここだけは実体を読むので、`layoutPack` からは切り離してある——
  * 「詰める計画は実体を 1 バイトも読まない」を壊さないため
  * （画面に「このファイルは何 MB になります」を出すのは計画の段の仕事）。
+ *
+ * **端だけを書くときは、実体も端だけ読む**（`BodySource.slice` があれば）。
+ * ここが「端だけにすると 100 分の 1 になるはず」の 100 分の 1 が出てくる唯一の場所で、
+ * 丸ごと読んでから端を切っても費用は 1 バイトも下がらない
+ * （ブラウザでは `Blob.slice(…).arrayBuffer()` がこの `slice` にあたる）。
  */
-export async function digestBodies(ids: string[], bodies: BodySource): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
+export async function digestBodies(
+  ids: string[],
+  bodies: BodySource,
+  spec: DigestSpec = { whole: true, edge: 0 },
+): Promise<Map<string, BodyDigests>> {
+  const out = new Map<string, BodyDigests>();
   for (const id of ids) {
-    out.set(id, await digestOf(await bodies.bytes(id)));
+    // 大きさが分からない持ち主では端を切れないので、丸ごと読む側へ落とす
+    // （**0 バイト扱いにして「何も無い」のハッシュを書くと、黙って全部の実体が通る**）。
+    const known = bodies.size(id);
+    if (!spec.whole && spec.edge > 0 && bodies.slice && known !== undefined) {
+      const parts: Uint8Array[] = [];
+      for (const r of edgeRanges(known, spec.edge)) parts.push(await bodies.slice(id, r.from, r.to));
+      out.set(id, { edgeHash: await digestOfParts(parts) });
+      continue;
+    }
+    // 丸ごと要るなら 1 回だけ読んで、そこから両方を作る。
+    // **端のぶんに読み直しは要らない**（読んだ物の上で切るだけ）。
+    const bytes = await bodies.bytes(id);
+    // **2N 以下の実体には端のぶんを書かない。** そこは端＝全部なので、
+    // 書くと**同じ 44 文字が見出しに 2 つ並ぶ**だけになる（測って気づいた——README の 8.5）。
+    // 読む側は「端＝全部」の境界を長さから出せるので、丸ごとのぶんで確かめられる。
+    const duplicate = spec.whole && bytes.byteLength <= spec.edge * 2;
+    out.set(id, {
+      ...(spec.whole ? { hash: await digestOf(bytes) } : {}),
+      ...(spec.edge > 0 && !duplicate ? { edgeHash: await edgeDigestOf(bytes, spec.edge) } : {}),
+    });
   }
   return out;
 }
 
-/** 確かめる相手（`verifyBodies` に渡す形）。`hash` が無ければ `unknown` になる。 */
+/** 確かめる相手（`verifyBodies` に渡す形）。要るほうのハッシュが無ければ `unknown` になる。 */
 export interface VerifyTarget {
   id: string;
   name: string;
@@ -118,6 +243,8 @@ export interface VerifyTarget {
   start: number;
   end: number;
   hash?: string;
+  /** 端だけのハッシュ（`depth: 'edge'` のときに使う）。 */
+  edgeHash?: string;
 }
 
 /**
@@ -128,24 +255,50 @@ export interface VerifyTarget {
  * 域の長さがずれた壊れ方（`README.md` の 6.4）は実体の位置を**全部**ずらすので、
  * 1 本でも合わなければ分かる（`cheapestFirst` がその 1 本を選ぶ）。
  */
-export async function verifyBodies(reader: PackReader, targets: VerifyTarget[]): Promise<VerifyReport> {
+export async function verifyBodies(
+  reader: PackReader,
+  targets: VerifyTarget[],
+  { depth = 'full', edge = 0 }: { depth?: VerifyDepth; edge?: number } = {},
+): Promise<VerifyReport> {
   const entries: VerifyEntry[] = [];
   let bytesRead = 0;
 
   for (const target of targets) {
-    if (!target.hash) {
+    const length = Math.max(0, target.end - target.start);
+    // **端＝全部になる大きさでは、丸ごとのぶんで端を確かめる。**
+    // 書く側がそこに `edgeHash` を置かない（同じ値になるので）ぶんの受け側。
+    // ここが無いと、小さい素材だけ「分からない」になって読む側から境界が見えなくなる。
+    // **幅が無いときに既定の幅で埋めない。** 埋めると、その幅より小さい実体では
+    // 「端＝全部」が成り立ってしまい、**端の検査が黙って丸ごとの検査に化ける**
+    // （幅が読めないファイルでも小さい素材だけ ok と言い出す）。検算が捕まえた穴。
+    const wholeIsEdge = edge > 0 && length <= edge * 2;
+    const want =
+      depth === 'edge'
+        ? edge > 0
+          ? (target.edgeHash ?? (wholeIsEdge ? target.hash : undefined))
+          : undefined
+        : target.hash;
+    if (!want) {
       // **読まない。** 書かれていないものを読んでも分かることは増えない。
       entries.push({ id: target.id, name: target.name, state: 'unknown', bytesRead: 0 });
       continue;
     }
-    const bytes = await reader.read(target.start, target.end);
-    const got = await digestOf(bytes);
-    const read = Math.max(0, target.end - target.start);
+    // **端だけのときは、読む範囲を実体の頭からの相対で決めてからファイルの位置へ移す。**
+    // ファイル上の位置で先に足すと、`length` が 0 の実体で頭と尻が同じ所を指す。
+    const ranges = depth === 'edge' ? edgeRanges(length, edge) : [{ from: 0, to: length }];
+    const parts: Uint8Array[] = [];
+    let read = 0;
+    for (const r of ranges) {
+      const part = await reader.read(target.start + r.from, target.start + r.to);
+      read += r.to - r.from;
+      parts.push(part);
+    }
+    const got = await digestOfParts(parts);
     bytesRead += read;
     entries.push({
       id: target.id,
       name: target.name,
-      state: got === target.hash ? 'ok' : 'mismatch',
+      state: got === want ? 'ok' : 'mismatch',
       bytesRead: read,
     });
   }

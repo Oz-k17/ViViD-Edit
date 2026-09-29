@@ -62,7 +62,8 @@
     "lab:pack": "node lab/project-pack/bench.mjs",
     "lab:pack:thumbsize": "node lab/project-pack/thumb-size.mjs",
     "lab:pack:thumbs": "node lab/project-pack/thumb-probe.mjs",
-    "lab:pack:digest": "node lab/project-pack/digest-probe.mjs"
+    "lab:pack:digest": "node lab/project-pack/digest-probe.mjs",
+    "lab:pack:edge": "node lab/project-pack/edge-probe.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.48.0",

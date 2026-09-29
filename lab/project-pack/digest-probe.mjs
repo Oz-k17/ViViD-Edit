@@ -29,9 +29,24 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-const { attachDigests, layoutPack, openPack, realizePack, readerFromBytes, verifyPack, PACK_PREAMBLE } = await import(
-  './src/container.ts'
-);
+const {
+  attachDigests,
+  layoutPack: layoutAny,
+  openPack,
+  realizePack,
+  readerFromBytes,
+  verifyPack,
+  PACK_PREAMBLE,
+} = await import('./src/container.ts');
+
+/**
+ * **端だけのハッシュは足さずに測る**（2026-09-29 に既定へ入ったので、明示して切る）。
+ *
+ * この段の表は「丸ごとのハッシュを入れるか、どこへ置くか」を並べたもので、
+ * 2026-09-28 の 3 回目に測った。端のぶんを混ぜると見出しの太りも書く時間も
+ * その表と比べられなくなる。端の費用は `npm run lab:pack:edge` が別に出す。
+ */
+const layoutPack = (project, assets, bodies, options = {}) => layoutAny(project, assets, bodies, { edges: 0, ...options });
 const { digestOf, cheapestFirst } = await import('./src/digest.ts');
 const { memoryBodies, scenarioAt, thumbScenario } = await import('./src/scenarios.ts');
 

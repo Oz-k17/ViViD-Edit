@@ -37,11 +37,13 @@
 
 import {
   cheapestFirst,
+  DEFAULT_EDGE_BYTES,
   digestBodies,
   digestToText,
   DIGEST_BYTES,
   verifyBodies,
   type DigestPlacement,
+  type VerifyDepth,
   type VerifyReport,
   type VerifyTarget,
 } from './digest.ts';
@@ -69,6 +71,14 @@ export interface PackBodyEntry {
    * 「確かめられない」なので、`verifyPack` では `unknown` になる。
    */
   hash?: string;
+  /**
+   * **端だけ（先頭 N ＋末尾 N）のハッシュ。** N は見出しの `edgeBytes`。
+   *
+   * `hash` と一緒に持てる。**置き所は見出しだけ**にした——`section` でも見出しへ書く。
+   * 7.3 で「44 バイトの置き所は開く時間を動かさない」と測れているので域へ出す得が無く、
+   * 域へ出すと「長さが 32 の倍数」の決まりが 2 通りになって断る条件が増える。
+   */
+  edgeHash?: string;
   /**
    * ハッシュ域の何番目に自分のハッシュがあるか（`digests: 'section'` のときだけ）。
    *
@@ -112,6 +122,14 @@ export interface PackHeader {
   digestPlacement: DigestPlacement;
   /** ハッシュ域の長さ（32 × 実体の数）。`section` 以外では 0。 */
   digestBytes: number;
+  /**
+   * 端だけのハッシュで見る幅 N（`edgeHash` を持たないときは 0）。
+   *
+   * **ここが化けると、端の検査は全部「違う」と言い出す**（見る所が変わるので）。
+   * 丸ごとのハッシュにはこの弱みが無い——読む範囲が実体の位置だけで決まるから。
+   * 端だけを唯一のハッシュにしない理由のひとつ（README の 8.4）。
+   */
+  edgeBytes: number;
 }
 
 /**
@@ -188,6 +206,15 @@ export interface LayoutOptions extends PlanOptions {
    * `none` は 9/28（2 回目）までの形として、`section` は比べる相手として残してある。
    */
   digests?: DigestPlacement;
+  /**
+   * **端だけのハッシュも持つか。** 幅 N をバイトで渡す（0 で持たない）。
+   *
+   * **省くと `DEFAULT_EDGE_BYTES`（64KB）＝丸ごとに添えて持つ**（`digests: 'none'` のときだけ 0）。
+   * `digests: 'none'` と `edges` を組めば「端だけしか持たない」形になり、
+   * **書く側も端しか読まない**（`BodySource.slice` があれば）。
+   * ただしそれを既定にはしない——測ったら中身の化けを 98% 見逃した（README の 8）。
+   */
+  edges?: number;
 }
 
 /**
@@ -269,6 +296,18 @@ export function layoutPack(
   // 「位置は域の先頭からの相対」という決まりのおかげ（このファイルの頭の注）。
   const digests: DigestPlacement = options.digests ?? 'header';
   const digestBytes = digests === 'section' ? DIGEST_BYTES * order.length : 0;
+  // 端だけのハッシュは見出しにだけ置くので、**域も位置も 1 バイトも動かさない。**
+  //
+  // **既定は「丸ごとに添える」**（2026-09-29 に測って決めた——README の 8）。
+  // `digests: 'none'` のときだけ 0 にしてあるのは、あれが「9/28 までの形」を比べるための
+  // 置き所で、そこに端だけを足すと**端が唯一のハッシュになった形**が既定で出てくるから。
+  // 端だけ単独は中身の化けを 98% 見逃すので、既定にはしない（8.1・8.2）。
+  const edgeBytes =
+    options.edges !== undefined
+      ? Math.max(0, Math.floor(options.edges))
+      : digests === 'none'
+        ? 0
+        : DEFAULT_EDGE_BYTES;
   // **番号はファイルに書かない。** 域は見出しの `bodies` と同じ順なので、
   // 何番目かは読む側が数えれば分かる（`openPack`）。最初は書いていたが、
   // 測ったら素材 1000 個で見出しが 14.5KB 太っていた——**「見出しから追い出す」ために
@@ -286,6 +325,7 @@ export function layoutPack(
     thumbs,
     digestPlacement: digests,
     digestBytes,
+    edgeBytes,
   };
 
   const { prefix } = encodeHeader(header);
@@ -303,7 +343,9 @@ export function layoutPack(
     thumbParts,
     digestParts: [],
     // ハッシュを持たない形は、この時点でもう書ける。
-    digestsAttached: digests === 'none',
+    // **端だけを持つ約束でも、埋めるまでは書かせない**（空の `edgeHash` で書くと、
+    // 壊れていないのに端の検査が全部「分からない」になる——それは黙った失敗）。
+    digestsAttached: digests === 'none' && edgeBytes === 0,
     order,
     parts,
     totalBytes: prefix.length + digestBytes + after,
@@ -323,17 +365,22 @@ export function layoutPack(
  */
 export async function attachDigests(layout: PackLayout, bodies: BodySource): Promise<PackLayout> {
   const placement = layout.header.digestPlacement;
+  const edge = layout.header.edgeBytes;
   // 2 回通しても同じ結果になるようにする。`section` で 2 回通すと
   // **域が 2 つ並んだファイル**になり、位置が全部ずれる（長さの辻褄だけ合わない形）。
-  if (placement === 'none' || layout.digestsAttached) return layout;
+  if (layout.digestsAttached || (placement === 'none' && edge === 0)) return layout;
 
+  // **丸ごとと端は、同じ 1 回の読みから作る。** 端のぶんに読み直しは要らない
+  // （`digestBodies` の注）。丸ごとが要らないときだけ、読む量そのものが端で止まる。
   const hashes = await digestBodies(
     layout.order.map((b) => b.id),
     bodies,
+    { whole: placement !== 'none', edge },
   );
 
-  if (placement === 'header') {
-    const order = layout.order.map((b) => ({ ...b, hash: hashes.get(b.id) }));
+  if (placement !== 'section') {
+    // `header`（既定）と「端だけ」は、どちらも見出しへ書くので同じ道を通る。
+    const order = layout.order.map((b) => ({ ...b, ...hashes.get(b.id) }));
     const header = { ...layout.header, bodies: order };
     const { prefix } = encodeHeader(header);
     const after = layout.parts.reduce((sum, p) => sum + (p.kind === 'body' ? p.length : p.bytes.length), 0);
@@ -349,9 +396,18 @@ export async function attachDigests(layout: PackLayout, bodies: BodySource): Pro
 
   // `section`: 生の 32 バイトを見出しの bodies の順に並べて、前置きの直後に置く。
   // base64 にしないのは、域に置くなら 1.333 倍がそのまま損になるから（サムネイルと同じ話）。
-  const digestParts = layout.order.map((b) => decodeDigest(hashes.get(b.id)!));
+  const digestParts = layout.order.map((b) => decodeDigest(hashes.get(b.id)!.hash!));
+  // **端のぶんは域へ出さず、見出しへ書く**（`PackBodyEntry.edgeHash` の注）。
+  // 域へ混ぜると「32 の倍数」の決まりが 2 通りになるので、断る条件が増える。
+  const sectionOrder = edge > 0 ? layout.order.map((b) => ({ ...b, edgeHash: hashes.get(b.id)!.edgeHash })) : layout.order;
+  const sectionHeader = edge > 0 ? { ...layout.header, bodies: sectionOrder } : layout.header;
+  const sectionPrefix = edge > 0 ? encodeHeader(sectionHeader).prefix : layout.prefix;
   return {
     ...layout,
+    header: sectionHeader,
+    prefix: sectionPrefix,
+    order: sectionOrder,
+    totalBytes: layout.totalBytes + (sectionPrefix.length - layout.prefix.length),
     digestParts,
     digestsAttached: true,
     parts: [...layout.order.map((b, i) => ({ kind: 'digest' as const, id: b.id, bytes: digestParts[i] })), ...layout.parts],
@@ -492,6 +548,15 @@ export async function openPack(reader: PackReader): Promise<OpenedPack> {
       throw new PackError('ハッシュ域がファイルの外へはみ出しています（途中で切れている可能性があります）。');
     }
   }
+  /**
+   * 端だけのハッシュで見る幅。
+   *
+   * **ここは断らずに 0 へ倒す。** 域も位置も動かさない値なので、形が変でも読み進められる。
+   * 0 に倒れると端の検査は「分からない」になり、丸ごとのハッシュはそのまま効く
+   * （断ると、端のぶんが化けただけで**中身が全部読めるファイルを開けなくする**ことになる）。
+   */
+  const edgeBytes =
+    Number.isSafeInteger(header.edgeBytes) && (header.edgeBytes as number) > 0 ? (header.edgeBytes as number) : 0;
   const thumbBase = digestBase + digestBytes;
   const placement: ThumbPlacement =
     header.thumbPlacement === 'section' || header.thumbPlacement === 'scattered' ? header.thumbPlacement : 'inline';
@@ -552,6 +617,9 @@ export async function openPack(reader: PackReader): Promise<OpenedPack> {
       length: entry.length,
       // ハッシュは「無くても読める」ので、形が違えば黙って捨てる（`unknown` になるだけ）。
       ...(digestPlacement === 'header' && typeof entry.hash === 'string' ? { hash: entry.hash } : {}),
+      // 端のぶんも同じ扱い。**幅（`edgeBytes`）が読めないファイルでは拾わない**——
+      // 拾うと、どこを見ればよいか分からないまま突き合わせて全部「違う」と言い出す。
+      ...(edgeBytes > 0 && typeof entry.edgeHash === 'string' ? { edgeHash: entry.edgeHash } : {}),
       // **番号は落とす前の並びで数える**（`digestAt` の注）。
       ...(digestPlacement === 'section' ? { digestAt: at } : {}),
     });
@@ -592,6 +660,7 @@ export async function openPack(reader: PackReader): Promise<OpenedPack> {
       thumbs,
       digestPlacement,
       digestBytes,
+      edgeBytes,
     },
     bodyBase,
     thumbBase,
@@ -675,6 +744,14 @@ export interface VerifyOptions {
    * **抜き取りで見つかるのは「ずれ」だけ**。ここを混ぜて読まないこと。
    */
   sample?: number;
+  /**
+   * **どこまで読むか**（`digest.ts` の `VerifyDepth`）。既定は `full`（実体を丸ごと）。
+   *
+   * `edge` は端 2×N だけを読む。**`sample` と掛け算になる**ので、
+   * 「何本を見るか」と「1 本のどこを見るか」は別々に選べる
+   * （4 通りの表は README の 8.2）。
+   */
+  depth?: VerifyDepth;
 }
 
 /**
@@ -689,9 +766,11 @@ export async function verifyPack(
   options: VerifyOptions = {},
 ): Promise<VerifyReport> {
   const nameOf = new Map(opened.header.assets.map((a) => [a.id, a.name]));
+  const depth: VerifyDepth = options.depth ?? 'full';
   let sectionBytesRead = 0;
   let section: Uint8Array | null = null;
-  if (opened.header.digestPlacement === 'section' && opened.header.digestBytes > 0) {
+  // **端だけのときはハッシュ域を読まない**（域に居るのは丸ごとのぶんだけ）。
+  if (depth === 'full' && opened.header.digestPlacement === 'section' && opened.header.digestBytes > 0) {
     section = await reader.read(opened.digestBase, opened.digestBase + opened.header.digestBytes);
     sectionBytesRead = opened.header.digestBytes;
   }
@@ -711,12 +790,20 @@ export async function verifyPack(
         hash = digestToText(section.subarray(from, from + DIGEST_BYTES));
       }
     }
-    targets.push({ id: entry.id, name: nameOf.get(entry.id) ?? entry.id, start: at.start, end: at.end, hash });
+    targets.push({
+      id: entry.id,
+      name: nameOf.get(entry.id) ?? entry.id,
+      start: at.start,
+      end: at.end,
+      hash,
+      edgeHash: entry.edgeHash,
+    });
   }
 
   if (options.sample !== undefined) targets = cheapestFirst(targets).slice(0, Math.max(0, options.sample));
 
-  const report = await verifyBodies(reader, targets);
+  // **幅はファイルに書いてあるものだけを渡す**（既定で埋めない——`verifyBodies` の注）。
+  const report = await verifyBodies(reader, targets, { depth, edge: opened.header.edgeBytes });
   // ハッシュ域を読んだぶんも足して返す（「確かめるのに何バイト読んだか」を濁さない）。
   return { ...report, bytesRead: report.bytesRead + sectionBytesRead };
 }
