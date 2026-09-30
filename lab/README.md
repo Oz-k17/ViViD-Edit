@@ -65,6 +65,7 @@ npm run lab:reframe:uitest  # 自動リフレームの画面まで通して確�
 
 npm run lab:export          # 書き出しの費用を測る（数え上げ → 実測の 2 段）
 npm run lab:export:audio    # 音の側の先払い（一括ミックス 対 窓に割る）を測る
+npm run lab:export:range    # 素材の要る範囲だけを起こす（丸ごと 対 範囲。本物の WebM を焼いて測る）
 
 npm run lab:keyframe:probe  # 打点の時刻を「何の秒」で持つか、4 通りを編集に当てて測る
 npm run lab:keyframe        # 打点を持つと 1 コマあたりどれだけ高くつくかを測る

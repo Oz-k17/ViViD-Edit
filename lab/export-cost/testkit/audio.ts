@@ -62,7 +62,7 @@ function rng(seed: number): () => number {
  * 雑音を混ぜてあるのは、窓の境目の継ぎ目を**隠さない**ため。
  * 正弦波だけだと、境目でサンプルが 1 つずれても指紋がほとんど動かない。
  */
-function synth(seconds: number, sampleRate: number): Float32Array {
+export function synth(seconds: number, sampleRate: number): Float32Array {
   const length = Math.max(1, Math.round(seconds * sampleRate));
   const out = new Float32Array(length);
   const noise = rng(20260926);
@@ -203,7 +203,7 @@ export interface AudioMeasureResult {
 }
 
 /** 指紋を取る区画の長さ（標本）。48kHz で 1 区画 ≒ 10.7ms。 */
-const SIGNATURE_BLOCK = 512;
+export const SIGNATURE_BLOCK = 512;
 
 /**
  * 出力へ渡した波の指紋を、**渡す単位をまたいで**取る。
@@ -216,7 +216,7 @@ const SIGNATURE_BLOCK = 512;
  * 窓の幅を変えただけで区画の数が変わり、**比べる相手と長さが揃わなくなる**
  * （最初はそう書いて、窓 0.37 秒と 5 秒が「長さが違う」で落ちた）。
  */
-class Fingerprint {
+export class Fingerprint {
   private sum = 0;
   private peak = 0;
   private count = 0;
@@ -272,7 +272,7 @@ function sliceAudio(source: AudioBuffer, fromSample: number, sampleCount: number
  * 窓に割ると節の時刻が窓の頭からの相対秒に変わるので、**丸めの残りが変わって
  * 漏れる場所も変わる**——最初に「窓に割ると波が違う」と出たのは、窓のせいではなくこれだった。
  */
-function placeInto(
+export function placeInto(
   ctx: OfflineAudioContext,
   buffer: AudioBuffer,
   placement: Placement,
