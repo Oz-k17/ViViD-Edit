@@ -85,9 +85,18 @@ export interface DecodePlanOptions {
    * **前後で理由が違うので、対称にする意味がない**（対称にすると助走のぶんだけ
    * 後ろも太って、1 山が短い素材で取り分が倍になる。0.5 対称で 1.50 倍 / 0.5＋0.05 で 1.27 倍）。
    *
-   * 実測では**0 でも波は同じ**だった（要求からの広がりが 3.5〜13.5ms あり、それで足りている）。
-   * それでも 0 にしていないのは、**48kHz でない素材と速さの丸めを試していない**ため。
-   * 1 山 2 秒に対して 2.5% しか増えないので、そこは安いほうへ倒してある。
+   * 2026-09-30（2 回目）に**48kHz でない素材（44.1kHz / 96kHz）と 1 でない速さ（0.25〜2）を測った。**
+   * どの組でも**後ろ 0 でも波は同じ**だった（`npm run lab:export:rate`）。
+   * つまり理由 2・3 は、**測ったら効いていなかった**。
+   *
+   * それでも 0 にしていないのは、0 で通っている理由が
+   * **デコーダが要求より後ろまで出す広がり**（実測 3.5〜46ms）だから。
+   * 広がりは仕様ではないので、そこに寄りかからないだけの余裕は残す。
+   * 1 山 2 秒に対して 2.5% しか増えない。
+   *
+   * **足りない組み合わせが見つかったときは、ここではなく `sourceRateRatio` で直した**
+   * （96kHz × 速さ 0.5 は源を 2 倍要る。後ろの余裕で埋めると 1 秒必要になり、
+   * 覆いの話ではなく読む秒の話なので場所が違う）。
    */
   tailSeconds?: number;
   /**
@@ -99,6 +108,24 @@ export interface DecodePlanOptions {
    * 釣り合う所は `lab:export:range` が測って出す（この端末では 0.7〜0.9 秒）。
    */
   mergeGapSeconds?: number;
+  /**
+   * **素材の標本の速さ ÷ ミックスの標本の速さ**（1 未満なら 1 として扱う）。
+   *
+   * 読む源の秒は素直に考えれば「壁時計 × 速さ」で、9/30（1 回目）はそう数えていた。
+   * **測ったら、それで足りない組み合わせがあった**（2026-09-30・2 回目）——
+   * 96kHz の素材を速さ 1 未満で鳴らすと、**2 倍の源を読まないと波が合わない**
+   * （1 山 2 秒・速さ 0.5 で、読む 1.0 秒では 414 / 1500 区画が違い、2.0 秒でちょうど 0 になる）。
+   * 48kHz と 44.1kHz では速さ 0.25〜2 のどこでも起きない。
+   *
+   * **なぜ 2 倍なのかは分かっていない。** `AudioBufferSourceNode` は
+   * 素材の標本の速さがミックスと違うとき内部で変換するので、その取り分だと見ているが、
+   * 変換の実装を読んで確かめたわけではない。**実測で足りた量が比のぶんだった**ので、
+   * `max(1, 比)` を掛けておく。1 未満を 1 に切り上げるのは、
+   * **44.1kHz で範囲を狭めると逆に足りなくなる**側だから（そちらは実測で足りている）。
+   *
+   * 既定 1 ＝ 9/30（1 回目）の数え方そのまま。48kHz の素材では比が 1 なので何も変わらない。
+   */
+  sourceRateRatio?: number;
 }
 
 /** 助走（秒）。実測した 0.22 秒前後の 2.1 倍。端末やコーデックで動く恐れがあるので余裕を見てある。 */
@@ -125,12 +152,13 @@ export const DEFAULT_MERGE_GAP_SECONDS = 1;
  * そこを詰めて数えると、起こしていない所を鳴らすことになる。
  * （得をしにくい形を安全側に倒す。ループの素材は短いのが普通なので実害は小さい。）
  */
-export function readRangeOf(sound: Sound): SourceRange | null {
+export function readRangeOf(sound: Sound, { sourceRateRatio = 1 }: DecodePlanOptions = {}): SourceRange | null {
   const assetDuration = Math.max(0, sound.assetDuration);
   if (!(assetDuration > 0)) return null;
   const wall = Math.max(0, sound.to - sound.from);
   if (!(wall > 0)) return null;
-  const played = wall * sound.speed;
+  // 比が 1 より大きい素材（ミックスより速い標本）では、実測で比のぶん余分に要った。上の注。
+  const played = wall * sound.speed * Math.max(1, sourceRateRatio > 0 ? sourceRateRatio : 1);
   const start = Math.max(0, Math.min(sound.sourceIn, assetDuration));
 
   if (sound.loop) {
@@ -190,14 +218,16 @@ export function planAssetDecodes(
     prerollSeconds = DEFAULT_PREROLL_SECONDS,
     tailSeconds = DEFAULT_TAIL_SECONDS,
     mergeGapSeconds = DEFAULT_MERGE_GAP_SECONDS,
+    sourceRateRatio = 1,
   }: DecodePlanOptions = {},
 ): AssetDecodePlan[] {
   if (!(prerollSeconds >= 0)) throw new Error(`prerollSeconds は 0 以上です（${prerollSeconds}）`);
   if (!(tailSeconds >= 0)) throw new Error(`tailSeconds は 0 以上です（${tailSeconds}）`);
   if (!(mergeGapSeconds >= 0)) throw new Error(`mergeGapSeconds は 0 以上です（${mergeGapSeconds}）`);
+  if (!(sourceRateRatio > 0)) throw new Error(`sourceRateRatio は正の数です（${sourceRateRatio}）`);
   const byAsset = new Map<string, { assetDuration: number; reads: SourceRange[] }>();
   for (const sound of soundsOf(sequence)) {
-    const range = readRangeOf(sound);
+    const range = readRangeOf(sound, { sourceRateRatio });
     if (!range) continue;
     const hit = byAsset.get(sound.mediaId);
     if (hit) {
@@ -269,6 +299,155 @@ export function offsetInParts(
     return { part, offset: needFrom - part.from };
   }
   return null;
+}
+
+/**
+ * 容器が時刻を持てる細かさから、**区間の頭を標本ちょうどで置けるか**を判定する材料。
+ *
+ * `timeResolution` は mediabunny の `InputTrack.getTimeResolution()`
+ * （「この track の packet の時刻と長さは、すべて 1/x の整数倍」の x）。
+ * Matroska / WebM は既定で **1ms**（x = 1000）。
+ */
+export interface TimestampGrid {
+  /** 素材の標本の速さ（Hz）。 */
+  sampleRate: number;
+  /** 容器の時刻の細かさ（1 秒を x 分割）。 */
+  timeResolution: number;
+  /**
+   * 容器に書いてある **packet の境目**（秒・昇順・少なくとも 2 つ）。
+   * 先頭から数本ぶんでよい（丸ごと歩いたら範囲読みの意味が無い）。
+   */
+  packetBoundaries: number[];
+  /**
+   * **起こしてみた buffer の境目**（秒・昇順）。
+   *
+   * packet と 1 対 1 ではない（`AudioBufferSink` は何本かまとめて 1 本の buffer にする）。
+   * なので**本数で突き合わせてはいけない**——1 度そう書いて、Opus を「断る」と誤判定した。
+   *
+   * **先頭の境目は使わない。** Opus は素材の頭を数百標本捨てる（プリスキップ。実測 312 標本）ので、
+   * 1 本目だけ packet より短い。ここも「乗っていない」と数えると Opus が落ちる（2 度目の誤判定）。
+   * 見るのは**ずれの広がり**で、ずれの大きさそのものではない（下の注）。
+   */
+  decodedBoundaries: number[];
+}
+
+export interface TimestampGridVerdict {
+  /** 区間の頭を標本ちょうどで置けるか。 */
+  exact: boolean;
+  reason:
+    | 'ok'
+    /** `getTimeResolution()` が読めない（0 以下・無限・NaN）。 */
+    | 'no-time-resolution'
+    /** packet か buffer の境目が 2 つ未満（見ていない）。 */
+    | 'no-packets'
+    /** 1 目盛りが整数の標本にならない（44.1kHz を 1ms の粒で持つ形）。 */
+    | 'tick-not-whole-samples'
+    /** 容器に書いてある境目が、整数の標本の上に無い。 */
+    | 'boundary-not-whole-samples'
+    /** 起こした buffer の境目と容器の境目のずれが、一定でない（＝書いてある時刻が丸めてある）。 */
+    | 'decoded-boundary-drifts';
+  /** 1 目盛りが何標本か。整数でなければそこで駄目。 */
+  samplesPerTick: number;
+  /** 区間の頭が最大で何標本ずれ得るか（目盛りの半分。判定できないときは Infinity）。 */
+  worstShiftSamples: number;
+  /**
+   * 起こした境目と容器の境目のずれの**広がり**（標本）。
+   * ずれの大きさではない——**一定のずれは害が無い**（丸ごとも範囲も同じだけずれる）。
+   * 広がっていることが「丸めてある」の印。
+   */
+  worstBoundaryDriftSamples: number;
+}
+
+/**
+ * **「返ってきた時刻」を信じてよい素材かを判定する。**
+ *
+ * ## なぜこの門が要ったか（2026-09-30・2 回目に踏んだ穴）
+ *
+ * 9/30（1 回目）に範囲読みを入れたとき、いちばん気を付けたのは
+ * 「要求した時刻ではなく**返ってきた時刻**を使う」ことだった（`decodeRanges` の注）。
+ * デコーダは packet の頭からしか始められないので、要求より手前から出てくるためである。
+ * **その注は正しいが、足りていなかった。返ってきた時刻も容器の粒で丸められている。**
+ *
+ * Matroska / WebM は時刻を **1ms** の粒で持つ。
+ * - **Opus は packet が 20ms ちょうど**なので、境目が 1ms の格子にぴったり乗る。嘘にならない。
+ * - **PCM のブロックは乗らない**（起こしてみると 2944 標本など、ms の整数倍でない）。
+ *   容器には丸めた値しか書けないので、`timestamp` は真の頭から**最大で半目盛り**ずれる。
+ *   48kHz なら 24 標本、44.1kHz では目盛り自体が 44.1 標本で整数にならない。
+ *
+ * ## この穴は、境目の数字を見ても見つからない
+ *
+ * 起こした区間の `from` も `to` も長さも、1 標本まで筋が通っている（`partBounds` で確かめた）。
+ * **中身だけが 16 標本ずれている。** しかも mediabunny は 2 本目以降の時刻を
+ * 1 本目に長さを足して作るので、**区間の中の整合性でも出ない**（`tickDrift` は 0）。
+ * 見つけるには丸ごとと中身を突き合わせるしかない（`testkit` の `measureRangeAlignment`）。
+ * だから**事前に断る門**が要る。判定に使えるのは容器の粒と packet の長さだけ。
+ *
+ * ## 判定
+ *
+ * 1 目盛り＝`sampleRate / timeResolution` 標本が整数で、容器に書いてある境目が標本の上にあり、
+ * **起こした buffer の境目がその境目にちょうど乗っている**なら、時刻は嘘をついていない。
+ * どれかが欠けたら丸ごと起こす道へ落とす。**安全側に倒す**（ずれた音は耳でも指紋でも
+ * 「鳴っている」に見えるので、間違ったまま通すほうがずっと高い）。
+ *
+ * ## 突き合わせ方を 2 度間違えた（どちらも実測が教えてくれた）
+ *
+ * 1. **「書いてある長さが整数の標本か」だけでは足りない。** 48kHz と 96kHz を取りこぼした
+ *    （実測 16・32 標本のずれに対して「乗る」と答えた）。書いてある長さは
+ *    **定義上いつも粒の整数倍**で、48kHz なら 1ms ＝ 48 標本ちょうどなので、
+ *    **丸めてあっても整数の標本に見える**。
+ * 2. **packet と buffer を本数で組にしてはいけない。** `AudioBufferSink` は
+ *    packet を何本かまとめて 1 本の buffer にするので、Opus を「断る」と誤判定した。
+ *    **境目が乗っているかだけを見る**（何本にまとめられても境目は動かない）。
+ * 3. **ずれの大きさではなく、ずれの広がりを見る。** Opus は素材の頭を捨てる
+ *    （プリスキップ・実測 312 標本）ので、境目が丸ごと一定量ずれる。
+ *    そこで「乗っていない」と数えると Opus が落ちる（2 度目の誤判定）。
+ *    **一定のずれは害が無い**——丸ごと起こしても範囲で起こしても同じだけずれるので、
+ *    置き方は食い違わない（実測でも Opus のずれは 0 標本）。害があるのは
+ *    **区間ごとに違う量ずれる**ことで、それは丸めからしか出ない。
+ */
+export function judgeTimestampGrid({
+  sampleRate,
+  timeResolution,
+  packetBoundaries,
+  decodedBoundaries,
+}: TimestampGrid): TimestampGridVerdict {
+  const whole = (seconds: number) => Math.abs(seconds * sampleRate - Math.round(seconds * sampleRate)) <= 1e-6;
+  const packets = [...packetBoundaries].sort((a, b) => a - b);
+  const last = packets[packets.length - 1] ?? 0;
+  // 起こした境目のうち、**容器の境目が分かっている範囲に入っているもの**だけを見る
+  // （途中で読むのをやめているので、最後の境目は packet の途中にある）。
+  // **先頭は落とす**（プリスキップで 1 本目だけ短い。上の注）。
+  const inside = decodedBoundaries
+    .filter((t) => t >= (packets[0] ?? 0) - 1e-9 && t <= last + 1e-9)
+    .slice(1);
+  // 各境目の「いちばん近い容器の境目からのずれ」。**一定なら害が無く、広がっていたら丸めてある。**
+  const errors = inside.map((t) => {
+    const nearest = packets.reduce((best, p) => (Math.abs(p - t) < Math.abs(best - t) ? p : best), packets[0] ?? 0);
+    return (t - nearest) * sampleRate;
+  });
+  const drift = errors.length > 0 ? Math.max(...errors) - Math.min(...errors) : 0;
+
+  if (!(timeResolution > 0) || !Number.isFinite(timeResolution)) {
+    return {
+      exact: false,
+      reason: 'no-time-resolution',
+      samplesPerTick: Number.NaN,
+      worstShiftSamples: Infinity,
+      worstBoundaryDriftSamples: drift,
+    };
+  }
+  const samplesPerTick = sampleRate / timeResolution;
+  // 目盛りの半分が最悪のずれ。整数標本に落ちないので切り上げる。
+  const worstShiftSamples = Math.ceil(samplesPerTick / 2);
+  const base = { samplesPerTick, worstShiftSamples, worstBoundaryDriftSamples: drift };
+  if (Math.abs(samplesPerTick - Math.round(samplesPerTick)) > 1e-9) {
+    return { exact: false, reason: 'tick-not-whole-samples', ...base };
+  }
+  if (packets.length < 2 || inside.length < 2) return { exact: false, reason: 'no-packets', ...base };
+  if (packets.some((t) => !whole(t))) return { exact: false, reason: 'boundary-not-whole-samples', ...base };
+  // ずれが広がっていれば、書いてある時刻は丸めた値。
+  if (drift > 0.5) return { exact: false, reason: 'decoded-boundary-drifts', ...base };
+  return { exact: true, reason: 'ok', samplesPerTick, worstShiftSamples: 0, worstBoundaryDriftSamples: drift };
 }
 
 /**

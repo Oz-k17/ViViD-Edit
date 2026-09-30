@@ -60,6 +60,7 @@
     "lab:keyframe:uitest": "node lab/keyframe/uitest.mjs",
     "lab:export:audio": "node lab/export-cost/audio.mjs",
     "lab:export:range": "node lab/export-cost/range.mjs",
+    "lab:export:rate": "node lab/export-cost/rate-probe.mjs",
     "lab:pack": "node lab/project-pack/bench.mjs",
     "lab:pack:thumbsize": "node lab/project-pack/thumb-size.mjs",
     "lab:pack:thumbs": "node lab/project-pack/thumb-probe.mjs",

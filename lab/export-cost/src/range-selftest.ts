@@ -26,6 +26,7 @@ import {
   DEFAULT_PREROLL_SECONDS,
   DEFAULT_TAIL_SECONDS,
   jetCutSequence,
+  judgeTimestampGrid,
   mergeRanges,
   offsetInParts,
   partsOf,
@@ -425,6 +426,191 @@ export function runRangeSelfTest(): TestResult[] {
       '既定は 助走 0.5 秒 ・ 後ろ 0.05 秒 ・ 畳む幅 1 秒（`lab:export:range` で測って決めた）',
       near(DEFAULT_PREROLL_SECONDS, 0.5) && near(DEFAULT_TAIL_SECONDS, 0.05) && near(DEFAULT_MERGE_GAP_SECONDS, 1),
       `${DEFAULT_PREROLL_SECONDS}s / ${DEFAULT_TAIL_SECONDS}s / ${DEFAULT_MERGE_GAP_SECONDS}s`,
+    );
+  }
+
+  // ---- 読む源の秒（標本の速さの比。2026-09-30・2 回目に実測で見つけた不足） ----
+
+  {
+    const sound = soundsOf(splitAudioSequence({ seconds: 2, pieces: 1, assetSeconds: 60, speed: 0.5 }))[0];
+    const plain = readRangeOf(sound);
+    const doubled = readRangeOf(sound, { sourceRateRatio: 2 });
+    const slower = readRangeOf(sound, { sourceRateRatio: 44_100 / 48_000 });
+    ok(
+      '比 1（48kHz の素材）では、読む源の秒は 壁時計 × 速さ のまま',
+      plain !== null && near(plain.to - plain.from, 1),
+      `${(plain?.to ?? 0) - (plain?.from ?? 0)}s`,
+    );
+    ok(
+      '比 2（96kHz の素材）では、読む源の秒が 2 倍になる（実測で足りた量）',
+      doubled !== null && near(doubled.to - doubled.from, 2),
+      `${(doubled?.to ?? 0) - (doubled?.from ?? 0)}s`,
+    );
+    ok(
+      '比が 1 未満（44.1kHz）でも狭めない（狭めると足りなくなる側なので 1 に切り上げる）',
+      slower !== null && near(slower.to - slower.from, 1),
+      `${(slower?.to ?? 0) - (slower?.from ?? 0)}s`,
+    );
+    // 素材の端は越えない（比で伸ばしても、無い所は読めない）。
+    const atEnd = soundsOf(splitAudioSequence({ seconds: 2, pieces: 1, assetSeconds: 2.4, speed: 1 }))[0];
+    const clamped = readRangeOf(atEnd, { sourceRateRatio: 4 });
+    ok(
+      '比で伸ばしても素材の端で切る',
+      clamped !== null && near(clamped.to, 2.4),
+      `[${clamped?.from}, ${clamped?.to})`,
+    );
+    let threw = 0;
+    for (const sourceRateRatio of [0, -1, Number.NaN]) {
+      try {
+        planAssetDecodes(splitAudioSequence({ seconds: 2, assetSeconds: 60 }), { sourceRateRatio });
+      } catch {
+        threw += 1;
+      }
+    }
+    ok('比に 0 や負の数や NaN を渡したら黙って通さない', threw === 3, `${threw} / 3 件で止まった`);
+  }
+
+  // ---- 容器の時刻の粒（2026-09-30・2 回目に踏んだ穴の門） ----
+
+  {
+    // 実測した形をそのまま置く。**この 4 つが分かれないなら門の意味が無い。**
+
+    // Opus / WebM: 1ms 粒・packet 20ms ＝ 960 標本ちょうど。
+    // **buffer は packet 3 本ぶんにまとめられている**（本数で組にすると誤判定する形）。
+    const opus = judgeTimestampGrid({
+      sampleRate: 48_000,
+      timeResolution: 1000,
+      packetBoundaries: [0, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12],
+      // **プリスキップ込みの形**。1 本目だけ 312 標本短く、そのあとは 20ms の格子に乗る
+      // （ずれは一定の -312 標本で、広がらない）。
+      decodedBoundaries: [0, 0.06 - 312 / 48_000, 0.12 - 312 / 48_000],
+    });
+    ok(
+      'Opus / WebM（1ms 粒・packet 20ms）は標本ちょうどに乗ると判定する',
+      opus.exact && opus.reason === 'ok' && opus.samplesPerTick === 48 && opus.worstShiftSamples === 0,
+      `${opus.reason} ・ 1 目盛り ${opus.samplesPerTick} 標本`,
+    );
+    ok(
+      'packet を何本かまとめて 1 本の buffer にしていても、境目で突き合わせるので通る',
+      opus.exact && opus.worstBoundaryDriftSamples < 1e-6,
+      `packet 6 本 対 buffer 2 本 ・ ずれの広がり ${opus.worstBoundaryDriftSamples} 標本`,
+    );
+    // **一定のずれ（プリスキップ 312 標本）で断らない。** 丸ごとも範囲も同じだけずれるので害が無い。
+    ok(
+      'プリスキップで境目が丸ごとずれている素材は断らない（ずれの大きさではなく広がりを見る）',
+      opus.exact,
+      `ずれ -312 標本・広がり ${opus.worstBoundaryDriftSamples} 標本`,
+    );
+
+    // PCM / Matroska 48kHz: 容器の境目は 1ms に丸めてあるので 61ms・104ms。
+    // 起こすと 2944 標本（61.3333ms）・5888 標本（122.6667ms）なので乗らない。
+    const pcm48 = judgeTimestampGrid({
+      sampleRate: 48_000,
+      timeResolution: 1000,
+      packetBoundaries: [0, 0.061, 0.123, 0.184],
+      decodedBoundaries: [0, 2944 / 48_000, 5888 / 48_000, 8832 / 48_000],
+    });
+    ok(
+      'PCM / Matroska 48kHz（容器の時刻が ms に丸めてある）は断る',
+      !pcm48.exact && pcm48.reason === 'decoded-boundary-drifts' && pcm48.worstShiftSamples === 24,
+      `${pcm48.reason} ・ ずれの広がり ${pcm48.worstBoundaryDriftSamples.toFixed(1)} 標本 ・ 最悪 ${pcm48.worstShiftSamples} 標本`,
+    );
+    // **容器の境目だけを見る形では素通りする**（門を 1 度そう作って、実測と食い違った）。
+    ok(
+      '容器の境目は、丸めてあっても 48kHz では整数の標本に見える（だから起こして突き合わせる）',
+      [0, 0.061, 0.123, 0.184].every((t) => Math.abs(t * 48_000 - Math.round(t * 48_000)) <= 1e-6),
+      [0, 0.061, 0.123, 0.184].map((t) => `${(t * 48_000).toFixed(1)} 標本`).join(' / '),
+    );
+
+    // 44.1kHz を 1ms 粒で持つ形は、**目盛りそのものが整数標本にならない**ので突き合わせる前に落ちる。
+    const pcm44 = judgeTimestampGrid({
+      sampleRate: 44_100,
+      timeResolution: 1000,
+      packetBoundaries: [0, 0.02, 0.04, 0.06],
+      decodedBoundaries: [0, 0.02, 0.04, 0.06],
+    });
+    ok(
+      '44.1kHz を 1ms の粒で持つ形は、目盛りが整数標本でないので断る',
+      !pcm44.exact && pcm44.reason === 'tick-not-whole-samples' && pcm44.worstShiftSamples === 23,
+      `${pcm44.reason} ・ 1 目盛り ${pcm44.samplesPerTick.toFixed(1)} 標本 ・ 最悪 ${pcm44.worstShiftSamples} 標本`,
+    );
+
+    // 96kHz は目盛り 96 標本。境目が乗らなければ落ちる（実測 32 標本のずれ）。
+    const pcm96 = judgeTimestampGrid({
+      sampleRate: 96_000,
+      timeResolution: 1000,
+      packetBoundaries: [0, 0.061, 0.123, 0.184],
+      decodedBoundaries: [0, 5888 / 96_000, 11776 / 96_000, 17664 / 96_000],
+    });
+    ok(
+      'PCM / Matroska 96kHz も断る（最悪のずれは目盛りの半分＝48 標本）',
+      !pcm96.exact && pcm96.reason === 'decoded-boundary-drifts' && pcm96.worstShiftSamples === 48,
+      `${pcm96.reason} ・ 最悪 ${pcm96.worstShiftSamples} 標本`,
+    );
+
+    // 実測の最悪ずれ（48kHz 16 / 44.1kHz 18 / 96kHz 32 標本）が、門の言う上限の中にあること。
+    // **上限が実測より小さければ、門は断りながら大きさを読み違えている。**
+    ok(
+      '門が言う最悪のずれが、実測したずれ（16 / 18 / 32 標本）を覆っている',
+      pcm48.worstShiftSamples >= 16 && pcm44.worstShiftSamples >= 18 && pcm96.worstShiftSamples >= 32,
+      `48kHz ${pcm48.worstShiftSamples} ≥ 16 ・ 44.1kHz ${pcm44.worstShiftSamples} ≥ 18 ・ 96kHz ${pcm96.worstShiftSamples} ≥ 32`,
+    );
+
+    // 半標本までの食い違いは丸め誤差として通す（起こした秒は浮動小数で出てくる）。
+    const jitter = judgeTimestampGrid({
+      sampleRate: 48_000,
+      timeResolution: 1000,
+      packetBoundaries: [0, 0.02, 0.04, 0.06],
+      decodedBoundaries: [0, 0.02, 0.04 + 0.4 / 48_000, 0.06],
+    });
+    ok(
+      '半標本までの食い違いは通す（浮動小数の丸めで断らない）',
+      jitter.exact && jitter.worstBoundaryDriftSamples < 0.5,
+      `ずれの広がり ${jitter.worstBoundaryDriftSamples.toFixed(2)} 標本`,
+    );
+
+    // **容器の境目より先の境目は見ない。** 途中で読むのをやめているので、
+    // 最後の buffer の終わりは packet の途中にある。そこを数えると全部断ることになる。
+    const tailOutside = judgeTimestampGrid({
+      sampleRate: 48_000,
+      timeResolution: 1000,
+      packetBoundaries: [0, 0.02, 0.04, 0.06],
+      decodedBoundaries: [0, 0.02, 0.04, 0.06, 0.0733333],
+    });
+    ok(
+      '容器の境目を知らない先の buffer 境目は数えない（読むのをやめた所で断らない）',
+      tailOutside.exact,
+      `${tailOutside.reason} ・ ずれの広がり ${tailOutside.worstBoundaryDriftSamples.toFixed(2)} 標本`,
+    );
+
+    // 読めない・見ていないときは通さない（**分からないときは丸ごと起こす道**）。
+    const two = [0, 0.02, 0.04];
+    const blind = [
+      judgeTimestampGrid({ sampleRate: 48_000, timeResolution: 0, packetBoundaries: two, decodedBoundaries: two }),
+      judgeTimestampGrid({ sampleRate: 48_000, timeResolution: Infinity, packetBoundaries: two, decodedBoundaries: two }),
+      judgeTimestampGrid({ sampleRate: 48_000, timeResolution: Number.NaN, packetBoundaries: two, decodedBoundaries: two }),
+      judgeTimestampGrid({ sampleRate: 48_000, timeResolution: 1000, packetBoundaries: [0], decodedBoundaries: two }),
+      judgeTimestampGrid({ sampleRate: 48_000, timeResolution: 1000, packetBoundaries: two, decodedBoundaries: [] }),
+    ];
+    ok(
+      '粒が読めない・境目を 2 つ見ていないときは「乗る」と言わない',
+      blind.every((v) => !v.exact),
+      blind.map((v) => v.reason).join(' / '),
+    );
+
+    // 境目そのものが標本の上に無い容器（粒より細かい時刻を書いてある形）。
+    // 1ms の粒では 48kHz の時刻が必ず整数標本になるので、ここに入るのはそういう容器だけ。
+    // **通してしまうと丸ごとずれる**側なので、安いうちに断っておく。
+    const offGrid = judgeTimestampGrid({
+      sampleRate: 48_000,
+      timeResolution: 48_000,
+      packetBoundaries: [0, 1.5 / 48_000, 3 / 48_000, 4.5 / 48_000],
+      decodedBoundaries: [0, 1.5 / 48_000, 3 / 48_000, 4.5 / 48_000],
+    });
+    ok(
+      '容器の境目が標本の上に無い素材も断る',
+      !offGrid.exact && offGrid.reason === 'boundary-not-whole-samples',
+      `${offGrid.reason} ・ 最悪 ${offGrid.worstShiftSamples} 標本`,
     );
   }
 
