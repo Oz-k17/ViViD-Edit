@@ -391,6 +391,86 @@ export function truePeakEnvelope(data: Float32Array): Float64Array {
 }
 
 /**
+ * `truePeakEnvelope` が後ろ／先へ何標本ぶん覗くか。**長尺を区間に割るときに要る。**
+ *
+ * 位相 p の出力は時刻 `i + TP_DELAY + round(p/4)` の位置へ入るので、
+ * 列の j 番目は入力の `[j - back, j + forward]` から作られる。
+ * 区間の継ぎ目でここを渡し忘れると、継ぎ目の前後だけ値が小さく出る
+ * （＝そこだけ天井を超えたまま通る）。**数で書かずに係数から出しているのは、
+ * タップ数や群遅延を動かしたときに黙ってずれないようにするため。**
+ */
+export const TP_CONTEXT: { back: number; forward: number } = (() => {
+  let back = 0;
+  let forward = 0;
+  for (let p = 1; p < TP_PHASES; p += 1) {
+    const at = TP_DELAY + Math.round(p / TP_PHASES);
+    if (at > back) back = at;
+    if (TP_TAPS - 1 - at > forward) forward = TP_TAPS - 1 - at;
+  }
+  return { back, forward };
+})();
+
+/**
+ * `truePeakEnvelope` の一部だけを、**同じ値になるように**作る（長尺を区間に割るため）。
+ *
+ * - `data` は絶対位置 `dataFrom` から始まる切れ端。
+ * - `totalLength` は**素材ぜんたい**の長さ。端の扱い（先頭 6 標本・末尾 11 標本は
+ *   標本の値そのまま／`TP_TAPS` より短い素材は畳み込まない）が素材の端でしか起きないので、
+ *   切れ端の長さではなくこちらを見る必要がある。**ここを切れ端の長さで判断すると、
+ *   区間の継ぎ目が全部「素材の端」として扱われて値が下がる。**
+ * - 返すのは絶対位置 `[from, to)` ぶんの列（長さ `to - from`）。
+ *
+ * 呼ぶ側は `data` に `[from - TP_CONTEXT.back, to + TP_CONTEXT.forward)` を
+ * （素材の外にはみ出すぶんを除いて）入れておくこと。足りなければ投げる。
+ * **足りないまま黙って小さい値を返すほうが、落ちるより悪い**ので門にしてある。
+ *
+ * `into` を渡すとそこへ書く（返るのはその先頭 `to - from` ぶんの眺め）。
+ * **区間ごとに呼ぶ側のために置いてある**——毎回確保すると、
+ * 捨てた列が溜まってメモリの山がそこで決まってしまう（実測で 2 倍以上動いた）。
+ * 列は頭から全部上書きするので、使い回しても前の値は残らない。
+ */
+export function truePeakEnvelopeRange(
+  data: Float32Array,
+  dataFrom: number,
+  totalLength: number,
+  from: number,
+  to: number,
+  into?: Float64Array,
+): Float64Array {
+  const want = Math.max(0, to - from);
+  if (into !== undefined && into.length < want) {
+    throw new Error(`真のピークの列の入れ物が足りません（要 ${want} / 渡された ${into.length}）`);
+  }
+  const env = into === undefined ? new Float64Array(want) : into.subarray(0, want);
+  if (env.length === 0) return env;
+  const needFrom = Math.max(0, from - TP_CONTEXT.back);
+  const needTo = Math.min(totalLength, to + TP_CONTEXT.forward);
+  if (dataFrom > needFrom || dataFrom + data.length < needTo) {
+    throw new Error(
+      `真のピークの列を区間で作るには前後のりしろが要ります（要 [${needFrom}, ${needTo}) / 渡された [${dataFrom}, ${dataFrom + data.length})）`,
+    );
+  }
+  for (let j = from; j < to; j += 1) env[j - from] = Math.abs(data[j - dataFrom]);
+  if (totalLength < TP_TAPS) return env;
+  for (let p = 1; p < TP_PHASES; p += 1) {
+    const taps = TP_FILTER[p];
+    const at = TP_DELAY + Math.round(p / TP_PHASES);
+    // 一括版は i を 0..totalLength-TP_TAPS で回して env[i+at] へ入れる。
+    // ここで要るのは i+at が [from, to) に入るぶんだけ。
+    const iFrom = Math.max(0, from - at);
+    const iTo = Math.min(totalLength - TP_TAPS, to - 1 - at);
+    for (let i = iFrom; i <= iTo; i += 1) {
+      let acc = 0;
+      for (let k = 0; k < TP_TAPS; k += 1) acc += taps[k] * data[i + k - dataFrom];
+      const a = Math.abs(acc);
+      const j = i + at - from;
+      if (a > env[j]) env[j] = a;
+    }
+  }
+  return env;
+}
+
+/**
  * 標本の間も含めた最大の絶対値を返す（線形。dB ではない）。
  *
  * 位相 0 は δ なので元の標本そのもの。残り 3 つだけを畳み込めばよい。

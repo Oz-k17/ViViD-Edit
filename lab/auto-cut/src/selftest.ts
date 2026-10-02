@@ -38,10 +38,19 @@ import {
   kWeighting,
   measureLoudness,
   planLoudnessNormalization,
+  TP_CONTEXT,
   truePeakEnvelope,
+  truePeakEnvelopeRange,
   truePeakOf,
 } from './lufs.ts';
-import { DEFAULT_LIMITER, limitTruePeak } from './limiter.ts';
+import {
+  blockSourceOf,
+  DEFAULT_LIMITER,
+  DEFAULT_LIMITER_BLOCK_SECONDS,
+  limitTruePeak,
+  limitTruePeakInBlocks,
+  limitTruePeakStream,
+} from './limiter.ts';
 import {
   applyClipGains,
   attachClipGains,
@@ -2849,6 +2858,248 @@ export function runSelfTest(): TestResult[] {
         '既定ではリミッタを前提にしない（従来どおりピークで止まる）',
         DEFAULT_NORMALIZATION.limiterHeadroomDb === 0 && plan.limitedBy === 'peak' && plan.neededReductionDb === 0,
         `${plan.limitedBy}`,
+      );
+    }
+  }
+
+  // --- 長尺のリミッタ（区間ごとに流す形。2026-10-02）---
+  //
+  // ここで確かめたいのは「それらしく動くか」ではない。**一括とビット単位で同じか**だけ。
+  // 一括のほうは 2026-09-19〜20 に測って既定を決めた側なので、
+  // 流す形がそこから 1 ビットでも動いたら、決めた既定の根拠がそのぶん崩れる。
+  // 近いかどうかではなく `!==` で数えているのは、そういう意味。
+  {
+    const sr = 48000;
+
+    const mono = (length: number, fill: (i: number) => number, rate = sr) => {
+      const data = new Float32Array(length);
+      for (let i = 0; i < length; i += 1) data[i] = fill(i);
+      return { sampleRate: rate, numberOfChannels: 1, length, getChannelData: () => data } as AudioLike;
+    };
+    /** 土台の正弦波に、指定の位置だけ天井を超える打点を置く。 */
+    const withHits = (length: number, hits: number[], rate = sr) => {
+      const data = new Float32Array(length);
+      for (let i = 0; i < length; i += 1) data[i] = 0.3 * Math.sin((2 * Math.PI * 180 * i) / rate);
+      for (const at of hits) for (let k = 0; k < 24 && at + k < length; k += 1) data[at + k] += 1.7 * Math.exp(-k / 8);
+      return { sampleRate: rate, numberOfChannels: 1, length, getChannelData: () => data } as AudioLike;
+    };
+    /** 出口を 1 標本ずつ突き合わせて、違う標本の数を返す。 */
+    const sampleDiff = (a: AudioLike, b: AudioLike) => {
+      let n = 0;
+      for (let c = 0; c < a.numberOfChannels; c += 1) {
+        const A = a.getChannelData(c);
+        const B = b.getChannelData(c);
+        for (let i = 0; i < a.length; i += 1) if (A[i] !== B[i]) n += 1;
+      }
+      return n;
+    };
+
+    // ① 区間版の真のピークの列が、一括の列と**どの範囲でも**一致する。
+    //    ここがずれると、以降の「同じ」は全部意味を失う（倍率の素がずれているので）。
+    {
+      const data = withHits(4000, [0, 7, 11, 12, 1999, 3988, 3999]).getChannelData(0);
+      const whole = truePeakEnvelope(data);
+      let worst = 0;
+      for (const [from, to] of [
+        [0, 4000],
+        [0, 1],
+        [0, 13],
+        [11, 12],
+        [12, 13],
+        [1000, 1001],
+        [1000, 2000],
+        [3987, 4000],
+        [3999, 4000],
+      ] as [number, number][]) {
+        const part = truePeakEnvelopeRange(data, 0, data.length, from, to);
+        for (let j = from; j < to; j += 1) worst = Math.max(worst, Math.abs(part[j - from] - whole[j]));
+      }
+      check('真のピークの列は、区間で作っても一括と同じ', worst === 0, `いちばん大きいずれ ${worst}`);
+    }
+
+    // ② 切れ端だけを渡しても同じ（**素材ぜんたいの長さ**を渡すのが肝）。
+    //    ここを切れ端の長さで判断すると、継ぎ目が全部「素材の端」になって値が下がる。
+    {
+      const data = withHits(4000, [500, 1500, 2500]).getChannelData(0);
+      const whole = truePeakEnvelope(data);
+      const from = 1200;
+      const to = 1800;
+      const dataFrom = from - TP_CONTEXT.back;
+      const part = truePeakEnvelopeRange(data.subarray(dataFrom, to + TP_CONTEXT.forward), dataFrom, data.length, from, to);
+      let worst = 0;
+      for (let j = from; j < to; j += 1) worst = Math.max(worst, Math.abs(part[j - from] - whole[j]));
+      // のりしろを 1 標本削ると断ること（黙って小さい値を返さない）。
+      let threw = false;
+      try {
+        truePeakEnvelopeRange(data.subarray(dataFrom + 1, to + TP_CONTEXT.forward), dataFrom + 1, data.length, from, to);
+      } catch {
+        threw = true;
+      }
+      check('切れ端から作っても同じで、のりしろが足りなければ断る', worst === 0 && threw, `ずれ ${worst} / 断った ${threw}`);
+    }
+
+    // ③ 列の入れ物を使い回しても、前の値が残らない。
+    {
+      const data = withHits(2000, [100, 900]).getChannelData(0);
+      const into = new Float64Array(2000);
+      into.fill(99); // 前の区間の値が残っている状態を作る
+      const a = truePeakEnvelopeRange(data, 0, data.length, 0, 500, into);
+      const b = truePeakEnvelopeRange(data, 0, data.length, 1000, 1500, into);
+      const refA = truePeakEnvelopeRange(data, 0, data.length, 0, 500);
+      const refB = truePeakEnvelopeRange(data, 0, data.length, 1000, 1500);
+      let ok = a.length === 500 && b.length === 500;
+      for (let i = 0; i < 500; i += 1) if (b[i] !== refB[i]) ok = false;
+      // a は b で上書きされている（使い回しの約束どおり）。先に写しを取れば残る。
+      check('列の入れ物を使い回しても前の値が残らない', ok && refA.length === 500, `${ok}`);
+    }
+
+    // ④ **本題。** 流す形が一括とビット単位で同じ。区間を極端に振り、
+    //    **打点が区間の継ぎ目に乗る位置**も混ぜる（継ぎ目は 0.25 秒ごとなので 12000 標本）。
+    {
+      const length = Math.round(1 * sr);
+      const buffer = withHits(length, [0, 11999, 12000, 12001, 23999, length - 1]);
+      const ref = limitTruePeak(buffer, { maxReductionDb: 12 });
+      const tried: string[] = [];
+      let diff = 0;
+      let reportDiff = 0;
+      for (const blockSeconds of [1 / sr, 2 / sr, 0.001, 0.01, 0.25, 0.5, 1, 10]) {
+        const got = limitTruePeakInBlocks(buffer, { maxReductionDb: 12, blockSeconds });
+        diff += sampleDiff(ref.buffer, got.buffer);
+        if (JSON.stringify(ref.report) !== JSON.stringify(got.report)) reportDiff += 1;
+        tried.push(`${blockSeconds}`);
+      }
+      check(
+        '流す形は一括とビット単位で同じ（区間を 1 標本から素材より長くまで振る）',
+        diff === 0 && reportDiff === 0,
+        `${tried.length} 通り / 違う標本 ${diff} / 違う報告 ${reportDiff}`,
+      );
+    }
+
+    // ⑤ 2ch でも同じ（左右に同じ倍率を当てる話が、区間に割っても崩れていないこと）。
+    {
+      const length = Math.round(0.4 * sr);
+      const left = new Float32Array(length);
+      const right = new Float32Array(length);
+      for (let i = 0; i < length; i += 1) {
+        left[i] = 0.9 * Math.sin((2 * Math.PI * 120 * i) / sr);
+        right[i] = 0.3 * Math.sin((2 * Math.PI * 300 * i) / sr);
+      }
+      const stereo = {
+        sampleRate: sr,
+        numberOfChannels: 2,
+        length,
+        getChannelData: (c: number) => (c === 0 ? left : right),
+      } as AudioLike;
+      const ref = limitTruePeak(stereo, { maxReductionDb: 12 });
+      let diff = 0;
+      for (const blockSeconds of [0.003, 0.05, 0.4]) {
+        diff += sampleDiff(ref.buffer, limitTruePeakInBlocks(stereo, { maxReductionDb: 12, blockSeconds }).buffer);
+      }
+      check('2ch でも流す形は一括と同じ', diff === 0, `違う標本 ${diff}`);
+    }
+
+    // ⑥ 標本の速さと先読み・戻りを振っても同じ（つまみごとに状態の持ち越し方が変わるので）。
+    {
+      let diff = 0;
+      let cases = 0;
+      for (const rate of [44100, 48000, 96000]) {
+        for (const lookAheadMs of [0, 1, 20]) {
+          for (const releaseMs of [5, 200]) {
+            const length = Math.round(0.2 * rate);
+            const buffer = withHits(length, [0, 37, Math.round(length / 2), length - 3], rate);
+            const opt = { lookAheadMs, releaseMs, maxReductionDb: 12 };
+            const ref = limitTruePeak(buffer, opt);
+            diff += sampleDiff(ref.buffer, limitTruePeakInBlocks(buffer, { ...opt, blockSeconds: 0.05 }).buffer);
+            cases += 1;
+          }
+        }
+      }
+      check('速さ・先読み・戻りを振っても同じ', diff === 0, `${cases} 通り / 違う標本 ${diff}`);
+    }
+
+    // ⑦ 端の素材。**空・1 標本・先読みより短い・区間が素材より長い**の 4 つ。
+    {
+      const empty = { sampleRate: sr, numberOfChannels: 1, length: 0, getChannelData: () => new Float32Array(0) } as AudioLike;
+      const one = mono(1, () => 1);
+      const shorter = mono(Math.round(0.001 * sr), (i) => 1.5 * Math.sin((2 * Math.PI * 300 * i) / sr));
+      let blocks = 0;
+      const emptyReport = limitTruePeakStream(blockSourceOf(empty), () => { blocks += 1; }, {});
+      const refEmpty = limitTruePeak(empty, {});
+      const pairs: [string, AudioLike][] = [['1 標本', one], ['先読みより短い', shorter]];
+      let diff = 0;
+      for (const [, buffer] of pairs) {
+        const ref = limitTruePeak(buffer, { maxReductionDb: 12 });
+        for (const blockSeconds of [1 / sr, 0.0005, 100]) {
+          diff += sampleDiff(ref.buffer, limitTruePeakInBlocks(buffer, { maxReductionDb: 12, blockSeconds }).buffer);
+        }
+      }
+      check(
+        '空・1 標本・先読みより短い素材でも、流す形は一括と同じ',
+        diff === 0 && blocks === 0 && JSON.stringify(emptyReport) === JSON.stringify(refEmpty.report),
+        `違う標本 ${diff} / 空のときに渡した区間 ${blocks}`,
+      );
+    }
+
+    // ⑧ 入り口が約束を破ったら断る（短く返す `read` を黙って受けると、無音を混ぜて通してしまう）。
+    {
+      const base = blockSourceOf(mono(Math.round(0.1 * sr), (i) => 1.4 * Math.sin((2 * Math.PI * 200 * i) / sr)));
+      let threw = false;
+      try {
+        limitTruePeakStream({ ...base, read: (from, to) => base.read(from, Math.max(from, to - 1)) }, () => {}, {
+          blockSeconds: 0.01,
+        });
+      } catch {
+        threw = true;
+      }
+      check('read が頼んだ長さを返さなければ断る', threw, `${threw}`);
+    }
+
+    // ⑨ `read` は**前へ進む方向にしか呼ばれない**（デコーダをそのまま繋げる根拠）。
+    //    のりしろは入れ物の中で持ち回すので、同じ標本を二度読まない。
+    {
+      const length = Math.round(0.5 * sr);
+      const base = blockSourceOf(withHits(length, [100, 12000, 24000]));
+      const calls: [number, number][] = [];
+      limitTruePeakStream(
+        { ...base, read: (from, to) => { calls.push([from, to]); return base.read(from, to); } },
+        () => {},
+        { blockSeconds: 0.02 },
+      );
+      let forward = true;
+      let read = 0;
+      for (let i = 0; i < calls.length; i += 1) {
+        read += calls[i][1] - calls[i][0];
+        if (i > 0 && calls[i][0] < calls[i - 1][1]) forward = false;
+      }
+      check('read は前へ進む方向にしか呼ばれない（同じ標本を二度読まない）', forward && read === length, `${calls.length} 回 / ${read} 標本`);
+    }
+
+    // ⑩ 渡す列は**使い回す**（持ち続けると書き換わる）。
+    //    これは制約だが、黙っていると「最後の区間だけが並んでいる」形で静かに壊れるので、
+    //    約束として検算で固定しておく。
+    {
+      const length = Math.round(0.1 * sr);
+      const buffer = withHits(length, [10, 2400]);
+      const held: Float32Array[] = [];
+      limitTruePeakStream(blockSourceOf(buffer), (blocks) => { held.push(blocks[0]); }, { blockSeconds: 0.02 });
+      // 同じ入れ物が返ってきている（最後の区間だけ短いので眺めになる）。
+      const sameBuffer = held.length > 2 && held[0].buffer === held[1].buffer;
+      check('渡す列は使い回す（持ち続けるなら写しを取る）', sameBuffer, `${held.length} 区間 / 同じ入れ物 ${sameBuffer}`);
+    }
+
+    // ⑪ 区間の既定が動いていないこと（動かすと書き出しの刻みと合わなくなる）。
+    check('区間の既定は 5 秒', DEFAULT_LIMITER_BLOCK_SECONDS === 5, `${DEFAULT_LIMITER_BLOCK_SECONDS}s`);
+
+    // ⑫ 流した出口も天井を守っている（報告の値と、測り直した値の両方で）。
+    {
+      const length = Math.round(0.5 * sr);
+      const buffer = withHits(length, [0, 4000, 12000, 12001, length - 1]);
+      const out = limitTruePeakInBlocks(buffer, { maxReductionDb: 24, blockSeconds: 0.02 });
+      const measured = 20 * Math.log10(truePeakOf(out.buffer.getChannelData(0)));
+      check(
+        '区間に割っても天井を超えない',
+        measured <= DEFAULT_LIMITER.ceilingDb + 0.01 && out.report.truePeakDb <= DEFAULT_LIMITER.ceilingDb + 0.01,
+        `測り直し ${measured.toFixed(4)} / 報告 ${out.report.truePeakDb.toFixed(4)} dBTP`,
       );
     }
   }

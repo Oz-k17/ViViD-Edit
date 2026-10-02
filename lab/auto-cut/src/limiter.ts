@@ -29,11 +29,14 @@
  *
  * ## 分かっている限界
  *
- * **尺に比例してメモリを食う。** 倍率の列を 4 本（いずれも倍精度）と、
+ * **`limitTruePeak`（一括）は尺に比例してメモリを食う。** 倍率の列を 4 本（いずれも倍精度）と、
  * 真のピークの列（チャンネルごとに 1 本、そのつど捨てる）を持つので、
- * 標本 1 つあたり 40 バイト ＋ 8 バイトかかる。13 秒 1ch で 26MB、10 分なら 1.2GB になる。
- * 13 秒の試し素材では問題にならないが、**長尺に当てるなら区間ごとに流す形へ直すこと**
- * （倍率の作り方は先読みの窓 L しか先を見ないので、L ぶん重ねて繋げば分割できる）。
+ * 標本 1 つあたり 40 バイト ＋ 8 バイトかかる。数えると 10 分で 1.2GB だが、
+ * **実測は 558MB**（2026-10-02）。V8 が使い終わった列を先に回収するので、
+ * 「持つ量」から数えると 2 倍を言ってしまう。**メモリは数えるより測ること。**
+ * **長尺は `limitTruePeakStream`（区間ごとに流す形。2026-10-02）を使うこと。**
+ * 一括のほうは**基準（リファレンス）として残してある**——流す形が同じ値を出しているかは、
+ * 短い素材でこの 2 つを突き合わせて確かめる（`selftest.ts` のリミッタの節）。
  *
  * **通したあとに真のピークを測り直すぶん、倍率を当てるより 2 倍以上重い**（13 秒 1ch で 150ms）。
  * 守れていることを毎回確かめるための代価で、外していない。
@@ -42,7 +45,7 @@
  */
 
 import { SILENCE_DB, type AudioLike } from './loudness.ts';
-import { truePeakEnvelope } from './lufs.ts';
+import { TP_CONTEXT, truePeakEnvelope, truePeakEnvelopeRange } from './lufs.ts';
 
 export interface LimiterOptions {
   /** 真のピークの上限（dBTP）。ここを超えさせない。 */
@@ -282,5 +285,309 @@ export function limitTruePeak(buffer: AudioLike, options: LimiterOptions = {}): 
       clamped,
       truePeakDb: after > 0 ? Math.max(SILENCE_DB, 20 * Math.log10(after)) : SILENCE_DB,
     },
+  };
+}
+
+// ---------- 長尺（区間ごとに流す形。2026-10-02） ----------
+
+/**
+ * 標本を**要る範囲だけ**返せる入り口。`AudioLike` との違いは、
+ * 「ぜんぶ起こしてから渡す」必要が無いこと。
+ *
+ * `read` は**前へ進む方向にしか呼ばれない**（同じ範囲を二度読まない）ので、
+ * デコーダをそのまま繋げる。`export-cost` の `planAssetDecodes`（2026-09-30）と同じ向き。
+ */
+export interface BlockSource {
+  sampleRate: number;
+  numberOfChannels: number;
+  length: number;
+  /** 絶対位置 `[from, to)` の標本を、チャンネルの並びで返す。**必ず `to - from` 標本ぶん返すこと。** */
+  read(from: number, to: number): Float32Array[];
+}
+
+export interface StreamLimiterOptions extends LimiterOptions {
+  /**
+   * 1 区間の長さ（秒）。**メモリはここで決まり、尺では決まらない。**
+   *
+   * 既定の 5 秒は、音のミックスを窓に割ったとき（2026-09-26・3 回目）と同じ刻み。
+     * あちらは 1 秒だと `OfflineAudioContext` を作る手間で一括と互角に落ちたが、
+   * **こちらにはその手間が無い**ので、0.1 秒まで下げても速さは落ちない。
+   * ただし 0.01 秒まで下げると 1.4 倍遅くなる（区間ごとの段取りが見えてくる）。
+   * 測った表は `README.md` の「長尺のリミッタ」。5 秒に揃えてあるのは、
+   * 書き出しの流れの中で同じ刻みで回せるようにするため。
+   */
+  blockSeconds?: number;
+}
+
+/** 区間の既定（秒）。 */
+export const DEFAULT_LIMITER_BLOCK_SECONDS = 5;
+
+/**
+ * 天井を超えるところだけを下げる。**区間ごとに流すので、メモリが尺に比例しない。**
+ *
+ * 出てきた標本は `onBlock(channels, from)` で順に渡す（絶対位置 `from` から
+ * `channels[0].length` 標本ぶん）。
+ *
+ * **渡す列は使い回す。** 呼ばれた側がそのまま持ち続けると次の区間で書き換わるので、
+ * 持つなら写しを取ること（`limitTruePeakInBlocks` が `set` で写しているのがその形）。
+ * 毎回作り直す形にもできるが、**それだと捨てた列が溜まってメモリの山がそこで決まる**
+ * （実測で 10 分 1ch の山が 20MB 対 136MB。測った表は `README.md`）。
+ * 書き出しの相手（エンコーダ・WAV に落とす口）はその場で飲み込むので、ここは使い回しでよい。
+ *
+ * ## 「重ねて繋ぐ」ではなく「状態を持ち越す」
+ *
+ * 2026-09-20 の注には「先読みの窓 L ぶん重ねて繋げば分割できる」と書いてあったが、
+ * **それだと一括と同じ値にはならない。** 倍率の 3 段のうち、
+ *
+ *   1. `need`（許される倍率）— その標本の前後（`TP_CONTEXT`）しか見ない。**重なりで足りる。**
+ *   2. `minAhead`（先読みの窓の最小）— 先 L 標本を見る。**重なりで足りる。**
+ *   3. 戻りの制限 — `u[i] = max(1 - minAhead[i], u[i-1] * alpha)` と**後ろへ無限に続く**。
+ *      重なりで消せるのは `alpha` の指数ぶんだけで、**ぴたりには消えない。**
+ *
+ * 3 の畳み込み（移動平均）も同じで、累積に足し引きしていく形なので、
+ * 前の区間と**同じ足し算の順**を踏まないと最後の桁が違う。
+ * なので重ねるのではなく、**前へ順に流して状態（`g` と移動平均の累積）を持ち越す。**
+ * そうすれば一括とまったく同じ順で同じ演算をするので、**ビット単位で同じ**になる。
+ * のりしろが要るのは 1 と 2（と出口の真のピークの測り直し）だけで、どれも定数ぶん。
+ *
+ * どれくらい重ねれば「重ねるだけ」でも合うのかは測ってある（`npm run lab:limit:stream`）。
+ */
+export function limitTruePeakStream(
+  source: BlockSource,
+  onBlock: (channels: Float32Array[], from: number) => void,
+  options: StreamLimiterOptions = {},
+): LimiterReport {
+  const { ceilingDb, lookAheadMs, releaseMs, maxReductionDb } = { ...DEFAULT_LIMITER, ...options };
+  const { sampleRate, numberOfChannels, length } = source;
+  const ceiling = Math.pow(10, ceilingDb / 20);
+  const floor = maxReductionDb > 0 ? Math.pow(10, -maxReductionDb / 20) : 0;
+  const look = Math.max(1, Math.round((lookAheadMs / 1000) * sampleRate));
+  const releaseSamples = Math.max(1, Math.round((releaseMs / 1000) * sampleRate));
+  const releaseAlpha = Math.exp(-1 / releaseSamples);
+  const window = look; // 一括と同じ。ここを変えると天井の保証が壊れる。
+  // 素材より長い区間を頼まれても、素材のぶんしか入れ物を作らない
+  // （`blockSeconds: Infinity` ＝「一括と同じに」が素直に通るようにしてある）。
+  const asked = Math.round((options.blockSeconds ?? DEFAULT_LIMITER_BLOCK_SECONDS) * sampleRate);
+  const block = Math.max(1, Math.min(Number.isFinite(asked) ? asked : length, Math.max(1, length)));
+
+  const back = TP_CONTEXT.back;
+  const forward = TP_CONTEXT.forward;
+  // 入力ののりしろ: need を先 L まで作るので、その先 `forward` までの標本が要る。
+  const ahead = look + forward;
+  // 出口の真のピークは、出てきた標本の前後を見る。**だから 1 区間ぶん遅れて測る。**
+  const tailKeep = back + forward;
+
+  const activeGain = Math.pow(10, -ACTIVE_DB / 20);
+
+  // --- 持ち回る入れ物（どれも区間の長さで頭打ち。尺には比例しない）---
+  const inBuf: Float32Array[] = [];
+  const outTail: Float32Array[] = [];
+  const scratch: Float32Array[] = [];
+  for (let c = 0; c < numberOfChannels; c += 1) {
+    inBuf.push(new Float32Array(back + block + ahead));
+    outTail.push(new Float32Array(tailKeep));
+    scratch.push(new Float32Array(tailKeep + block));
+  }
+  const need = new Float64Array(block + look);
+  const idx = new Int32Array(block + look);
+  const minAhead = new Float64Array(block);
+  const gain = new Float64Array(block);
+  const ring = new Float64Array(window);
+  const envScratch = new Float64Array(block + look);
+  // 最後の区間だけは、遅らせていた `forward` ぶんも一緒に測るので区間より長くなる。
+  const outEnvScratch = new Float64Array(block + forward);
+  // 出口の列も使い回す（上の注のとおり）。最後の区間だけ短いので眺めで渡す。
+  const outBuf: Float32Array[] = [];
+  for (let c = 0; c < numberOfChannels; c += 1) outBuf.push(new Float32Array(block));
+  const outBlock: Float32Array[] = new Array(numberOfChannels);
+
+  // --- 持ち越す状態（ここが「重ねるだけ」では作れないもの）---
+  let g = 1;
+  let acc = 0;
+
+  let bufFrom = 0; // inBuf[*][0] の絶対位置
+  let filled = 0; // inBuf に入っている標本数
+  let tailHave = 0; // outTail に入っている標本数
+  let pending = 0; // 出口の真のピークを、ここまで測り終えた
+
+  let clamped = false;
+  let activeSamples = 0;
+  let minGain = 1;
+  let sumDb = 0;
+  let after = 0;
+
+  for (let o = 0; o < length; o = Math.min(length, o + block)) {
+    const oEnd = Math.min(length, o + block);
+    const bLen = oEnd - o;
+    const needTo = Math.min(length, oEnd + look);
+    const nLen = needTo - o;
+    const want = Math.min(length, needTo + forward);
+    const keepFrom = Math.max(0, o - back);
+
+    // 入力を左へ寄せて、足りないぶんだけ読む。**読むのは前へ進む方向だけ。**
+    if (bufFrom < keepFrom) {
+      const shift = keepFrom - bufFrom;
+      if (shift < filled) {
+        for (let c = 0; c < numberOfChannels; c += 1) inBuf[c].copyWithin(0, shift, filled);
+        filled -= shift;
+      } else {
+        filled = 0;
+      }
+      bufFrom = keepFrom;
+    }
+    if (bufFrom + filled < want) {
+      const from = bufFrom + filled;
+      const got = source.read(from, want);
+      for (let c = 0; c < numberOfChannels; c += 1) {
+        if (got[c].length !== want - from) {
+          throw new Error(`read が頼んだ長さを返しません（要 ${want - from} / 返り ${got[c].length}）`);
+        }
+        inBuf[c].set(got[c], filled);
+      }
+      filled = want - bufFrom;
+    }
+
+    // --- 1. 許される倍率（この区間ぶん＋先読みのぶん）---
+    need.fill(1, 0, nLen);
+    for (let c = 0; c < numberOfChannels; c += 1) {
+      // **`subarray(0, filled)` で渡すのが肝。** 入れ物の長さで渡すと、まだ読んでいない
+      // 0 の並びが「素材の中身」として門を通ってしまう。
+      const env = truePeakEnvelopeRange(inBuf[c].subarray(0, filled), bufFrom, length, o, needTo, envScratch);
+      for (let i = 0; i < nLen; i += 1) {
+        if (env[i] > ceiling) {
+          const q = ceiling / env[i];
+          if (q < need[i]) need[i] = q;
+        }
+      }
+    }
+    if (floor > 0) {
+      for (let i = 0; i < nLen; i += 1) {
+        if (need[i] < floor) {
+          need[i] = floor;
+          clamped = true;
+        }
+      }
+    }
+
+    // --- 2. 先読みの窓の最小（一括と同じ単調な両端キュー）---
+    {
+      let head = 0;
+      let tail = 0;
+      let next = 0;
+      for (let i = 0; i < bLen; i += 1) {
+        const until = Math.min(nLen - 1, i + look);
+        while (next <= until) {
+          while (tail > head && need[idx[tail - 1]] >= need[next]) tail -= 1;
+          idx[tail] = next;
+          tail += 1;
+          next += 1;
+        }
+        while (idx[head] < i) head += 1;
+        minAhead[i] = need[idx[head]];
+      }
+    }
+
+    // --- 3. 戻りの制限 → 移動平均（**どちらも状態を持ち越す**）---
+    for (let i = 0; i < bLen; i += 1) {
+      const abs = o + i;
+      g = Math.min(minAhead[i], 1 - (1 - g) * releaseAlpha);
+      // 一括は `acc += held[i]; if (i >= window) acc -= held[i - window];` の順。
+      // 足し算の順が変わると最後の桁が動くので、同じ順を踏む。
+      acc += g;
+      if (abs >= window) acc -= ring[abs % window];
+      ring[abs % window] = g;
+      gain[i] = acc / Math.min(abs + 1, window);
+    }
+
+    // --- 当てて渡す ---
+    for (let c = 0; c < numberOfChannels; c += 1) {
+      const out = bLen === block ? outBuf[c] : outBuf[c].subarray(0, bLen);
+      const src = inBuf[c];
+      for (let i = 0; i < bLen; i += 1) out[i] = src[o + i - bufFrom] * gain[i];
+      outBlock[c] = out;
+    }
+
+    // --- どれだけ手を出したか（足す順は一括と同じ）---
+    for (let i = 0; i < bLen; i += 1) {
+      if (gain[i] < activeGain) {
+        activeSamples += 1;
+        sumDb += -20 * Math.log10(gain[i]);
+      }
+      if (gain[i] < minGain) minGain = gain[i];
+    }
+
+    // --- 出口の真のピーク（前の区間の尻を継いで、`forward` ぶん遅らせて測る）---
+    const tailFrom = o - tailHave;
+    const limit = oEnd >= length ? length : Math.max(pending, oEnd - forward);
+    for (let c = 0; c < numberOfChannels; c += 1) {
+      scratch[c].set(outTail[c].subarray(0, tailHave), 0);
+      scratch[c].set(outBlock[c], tailHave);
+      if (limit > pending) {
+        const env = truePeakEnvelopeRange(scratch[c].subarray(0, tailHave + bLen), tailFrom, length, pending, limit, outEnvScratch);
+        for (let i = 0; i < env.length; i += 1) if (env[i] > after) after = env[i];
+      }
+      const keep = Math.min(tailKeep, oEnd - tailFrom);
+      outTail[c].set(scratch[c].subarray(tailHave + bLen - keep, tailHave + bLen), 0);
+    }
+    if (limit > pending) pending = limit;
+    tailHave = Math.min(tailKeep, oEnd);
+
+    onBlock(outBlock, o);
+    if (oEnd === length) break;
+  }
+
+  return {
+    maxReductionDb: minGain < 1 ? -20 * Math.log10(minGain) : 0,
+    activeSeconds: activeSamples / sampleRate,
+    activeRatio: length > 0 ? activeSamples / length : 0,
+    meanReductionDb: activeSamples > 0 ? sumDb / activeSamples : 0,
+    clamped,
+    truePeakDb: after > 0 ? Math.max(SILENCE_DB, 20 * Math.log10(after)) : SILENCE_DB,
+  };
+}
+
+/**
+ * `AudioLike` を `BlockSource` として見せる（すでにぜんぶ起こしてある素材を流す形で通すとき）。
+ *
+ * **これを使うとメモリの得は出ない**（元の列を丸ごと抱えているので）。
+ * 使い所は検算と、一括と流す形を突き合わせるとき。
+ * 本当に長尺を通すなら、デコーダ側に `read` を実装すること。
+ */
+export function blockSourceOf(buffer: AudioLike): BlockSource {
+  return {
+    sampleRate: buffer.sampleRate,
+    numberOfChannels: buffer.numberOfChannels,
+    length: buffer.length,
+    read(from: number, to: number) {
+      const out: Float32Array[] = [];
+      for (let c = 0; c < buffer.numberOfChannels; c += 1) out.push(buffer.getChannelData(c).subarray(from, to));
+      return out;
+    },
+  };
+}
+
+/**
+ * 区間ごとに流して、出てきたものを 1 本に繋ぎ直す（`limitTruePeak` と同じ形で返す）。
+ *
+ * **これもメモリの得は出ない**（出口を丸ごと持つので）。検算用。
+ */
+export function limitTruePeakInBlocks(buffer: AudioLike, options: StreamLimiterOptions = {}): LimiterResult {
+  const channels: Float32Array[] = [];
+  for (let c = 0; c < buffer.numberOfChannels; c += 1) channels.push(new Float32Array(buffer.length));
+  const report = limitTruePeakStream(
+    blockSourceOf(buffer),
+    (blocks, from) => {
+      for (let c = 0; c < blocks.length; c += 1) channels[c].set(blocks[c], from);
+    },
+    options,
+  );
+  return {
+    buffer: {
+      sampleRate: buffer.sampleRate,
+      numberOfChannels: buffer.numberOfChannels,
+      length: buffer.length,
+      getChannelData: (c: number) => channels[c],
+    },
+    report,
   };
 }
