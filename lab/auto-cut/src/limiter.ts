@@ -44,7 +44,13 @@
  * DOM にも WebAudio にも依存しない（`lufs.ts` と同じ方針）。Node でそのまま検算できる。
  */
 
-import { SILENCE_DB, type AudioLike } from './loudness.ts';
+import { SILENCE_DB, blockSourceOf, type AudioLike, type BlockSource } from './loudness.ts';
+
+// 入り口（`BlockSource` / `blockSourceOf`）は 2026-10-02 にここで作ったが、
+// ラウドネスの測りも同じ入り口を使うようになったので `loudness.ts`（`AudioLike` の隣）へ移した。
+// ここから読んでいた呼び出し側をそのまま通すため、名前はここにも残してある。
+export { blockSourceOf };
+export type { BlockSource };
 import { TP_CONTEXT, truePeakEnvelope, truePeakEnvelopeRange } from './lufs.ts';
 
 export interface LimiterOptions {
@@ -290,21 +296,6 @@ export function limitTruePeak(buffer: AudioLike, options: LimiterOptions = {}): 
 
 // ---------- 長尺（区間ごとに流す形。2026-10-02） ----------
 
-/**
- * 標本を**要る範囲だけ**返せる入り口。`AudioLike` との違いは、
- * 「ぜんぶ起こしてから渡す」必要が無いこと。
- *
- * `read` は**前へ進む方向にしか呼ばれない**（同じ範囲を二度読まない）ので、
- * デコーダをそのまま繋げる。`export-cost` の `planAssetDecodes`（2026-09-30）と同じ向き。
- */
-export interface BlockSource {
-  sampleRate: number;
-  numberOfChannels: number;
-  length: number;
-  /** 絶対位置 `[from, to)` の標本を、チャンネルの並びで返す。**必ず `to - from` 標本ぶん返すこと。** */
-  read(from: number, to: number): Float32Array[];
-}
-
 export interface StreamLimiterOptions extends LimiterOptions {
   /**
    * 1 区間の長さ（秒）。**メモリはここで決まり、尺では決まらない。**
@@ -543,26 +534,6 @@ export function limitTruePeakStream(
     meanReductionDb: activeSamples > 0 ? sumDb / activeSamples : 0,
     clamped,
     truePeakDb: after > 0 ? Math.max(SILENCE_DB, 20 * Math.log10(after)) : SILENCE_DB,
-  };
-}
-
-/**
- * `AudioLike` を `BlockSource` として見せる（すでにぜんぶ起こしてある素材を流す形で通すとき）。
- *
- * **これを使うとメモリの得は出ない**（元の列を丸ごと抱えているので）。
- * 使い所は検算と、一括と流す形を突き合わせるとき。
- * 本当に長尺を通すなら、デコーダ側に `read` を実装すること。
- */
-export function blockSourceOf(buffer: AudioLike): BlockSource {
-  return {
-    sampleRate: buffer.sampleRate,
-    numberOfChannels: buffer.numberOfChannels,
-    length: buffer.length,
-    read(from: number, to: number) {
-      const out: Float32Array[] = [];
-      for (let c = 0; c < buffer.numberOfChannels; c += 1) out.push(buffer.getChannelData(c).subarray(from, to));
-      return out;
-    },
   };
 }
 

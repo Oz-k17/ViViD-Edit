@@ -17,7 +17,7 @@
  * DOM にも WebAudio にも依存しない（`loudness.ts` と同じ方針）。Node でそのまま検算できる。
  */
 
-import { SILENCE_DB, type AudioLike } from './loudness.ts';
+import { SILENCE_DB, type AudioLike, type BlockSource } from './loudness.ts';
 
 /** 双 2 次フィルタ 1 段。係数は規格の並びに合わせてある（y = b0x+b1x₁+b2x₂ − a1y₁ − a2y₂）。 */
 export interface Biquad {
@@ -90,33 +90,86 @@ export function kWeighting(sampleRate: number): [Biquad, Biquad] {
 }
 
 /**
- * 1 段通す。倍精度で持つのは、2 段目が直流に近いところで極めて鋭く、
- * 単精度だと 13 秒でも誤差が目に見えて積もるため（0.1 LU 級）。
+ * 1 段ぶんの履歴（入力 2 つ・出力 2 つ）。
+ *
+ * **区間に割るときはこれを持ち越す。** IIR は後ろへ無限に続くので、
+ * のりしろを重ねるだけでは一括と同じ値にならない（2026-10-02 にリミッタで踏んだのと同じ形）。
+ * 持ち越せば**同じ順で同じ演算**になるので、ビット単位で一致する。
  */
-function runBiquad(input: Float64Array, f: Biquad): Float64Array {
-  const out = new Float64Array(input.length);
-  let x1 = 0;
-  let x2 = 0;
-  let y1 = 0;
-  let y2 = 0;
-  for (let i = 0; i < input.length; i += 1) {
-    const x = input[i];
+export interface BiquadState {
+  x1: number;
+  x2: number;
+  y1: number;
+  y2: number;
+}
+
+export function newBiquadState(): BiquadState {
+  return { x1: 0, x2: 0, y1: 0, y2: 0 };
+}
+
+/**
+ * 1 段を**その場で**通す（`buf[0..len)` を書き換え、履歴を `s` へ残す）。
+ *
+ * その場で書き換えてよいのは、`buf[i]` を読んだあとに `buf[i]` しか書かないため
+ * （前の入力は `x1` / `x2` が持っている）。入れ物を 1 本で済ませたいのは
+ * 流す形のメモリがここで決まるから。
+ *
+ * 倍精度で持つのは、2 段目が直流に近いところで極めて鋭く、
+ * 単精度だと 13 秒でも誤差が目に見えて積もるため（0.1 LU 級）。
+ *
+ * **漸化式はこの関数にしか書かない。** 一括と流す形で別々に書くと、
+ * 片方だけ直したときに黙ってずれる（突き合わせの検算で気づくが、原因を探すのは高い）。
+ */
+function runBiquadInPlace(buf: Float64Array, len: number, f: Biquad, s: BiquadState): void {
+  let { x1, x2, y1, y2 } = s;
+  for (let i = 0; i < len; i += 1) {
+    const x = buf[i];
     const y = f.b0 * x + f.b1 * x1 + f.b2 * x2 - f.a1 * y1 - f.a2 * y2;
     x2 = x1;
     x1 = x;
     y2 = y1;
     y1 = y;
-    out[i] = y;
+    buf[i] = y;
   }
-  return out;
+  s.x1 = x1;
+  s.x2 = x2;
+  s.y1 = y1;
+  s.y2 = y2;
+}
+
+/** K 特性 2 段ぶんの履歴。 */
+export interface KWeightingState {
+  shelf: BiquadState;
+  highpass: BiquadState;
+}
+
+export function newKWeightingState(): KWeightingState {
+  return { shelf: newBiquadState(), highpass: newBiquadState() };
+}
+
+/**
+ * K 特性を**その場で**通す（履歴を持ち越す形）。
+ *
+ * 2 段を「区間ごとに 1 段目 → 2 段目」で通しても、
+ * 「全体に 1 段目 → 全体に 2 段目」と同じ値になる。
+ * 2 段目の入力は 1 段目の出力そのもので、どちらも位置 `i` の値しか見ないため。
+ */
+export function applyKWeightingInto(
+  buf: Float64Array,
+  len: number,
+  filters: [Biquad, Biquad],
+  state: KWeightingState,
+): void {
+  runBiquadInPlace(buf, len, filters[0], state.shelf);
+  runBiquadInPlace(buf, len, filters[1], state.highpass);
 }
 
 /** K 特性を通したあとの列を返す（検算から中身を見たいので外に出してある）。 */
 export function applyKWeighting(samples: Float32Array | Float64Array, sampleRate: number): Float64Array {
-  const [shelf, highpass] = kWeighting(sampleRate);
-  const copy = new Float64Array(samples.length);
-  copy.set(samples);
-  return runBiquad(runBiquad(copy, shelf), highpass);
+  const out = new Float64Array(samples.length);
+  out.set(samples);
+  applyKWeightingInto(out, out.length, kWeighting(sampleRate), newKWeightingState());
+  return out;
 }
 
 export interface LoudnessMeasurement {
@@ -238,6 +291,44 @@ export function measureLoudness(buffer: AudioLike, options: LoudnessOptions = {}
     }
   }
 
+  return summarizeSubBlockSums(sums, subBlocks, {
+    samplePeak,
+    truePeak,
+    skipTruePeak: options.skipTruePeak === true,
+    duration,
+    channels: numberOfChannels,
+  });
+}
+
+/** `summarizeSubBlockSums` へ渡す、標本を 1 周なめた結果。 */
+interface SubBlockTotals {
+  /** 標本そのものの最大（線形）。 */
+  samplePeak: number;
+  /** 打ち直して見つけた最大（線形）。`skipTruePeak` のときは 0。 */
+  truePeak: number;
+  skipTruePeak: boolean;
+  duration: number;
+  channels: number;
+}
+
+/**
+ * 0.1 秒ごとの二乗和（`sums`）から先の段を、**1 か所にまとめてある。**
+ *
+ * 窓・ゲート・分位点はどれも `sums` しか見ないので、
+ * 一括（`measureLoudness`）と流す形（`measureLoudnessStream`）は
+ * **ここを共有すれば同じ結果になることが、測るまでもなく決まる。**
+ * 2 つ書いて突き合わせる形にしないのは、**片方だけ直したときに黙ってずれる**から。
+ *
+ * ここが尺に比例して持つものは `sums`（0.1 秒あたり 8 バイト ＝ 1 時間で 288KB）と、
+ * そこから作る `blockPowers` だけ。**標本の側の列を一切持たない**ので、
+ * 流す形のメモリは区間の長さで決まる。
+ */
+function summarizeSubBlockSums(
+  sums: Float64Array,
+  subBlocks: number,
+  totals: SubBlockTotals,
+): LoudnessMeasurement {
+  const { samplePeak, truePeak, skipTruePeak, duration, channels } = totals;
   const blockSteps = Math.round(BLOCK_SECONDS / STEP_SECONDS); // 4
   const shortSteps = Math.round(SHORT_TERM_SECONDS / STEP_SECONDS); // 30
 
@@ -297,11 +388,11 @@ export function measureLoudness(buffer: AudioLike, options: LoudnessOptions = {}
     momentaryMaxLufs: Number.isFinite(momentaryMax) ? momentaryMax : null,
     shortTermMaxLufs: Number.isFinite(shortTermMax) ? shortTermMax : null,
     samplePeakDb: peakDb(samplePeak),
-    truePeakDb: options.skipTruePeak ? peakDb(samplePeak) : peakDb(Math.max(truePeak, samplePeak)),
+    truePeakDb: skipTruePeak ? peakDb(samplePeak) : peakDb(Math.max(truePeak, samplePeak)),
     gatedBlocks,
     droppedBlocks: blockPowers.length - gatedBlocks,
     duration,
-    channels: numberOfChannels,
+    channels,
   };
 }
 
@@ -499,6 +590,187 @@ export function truePeakOf(data: Float32Array): number {
     }
   }
   return peak;
+}
+
+/**
+ * 窓の**始点**が `[iFrom, iTo]` に入るぶんだけ打ち直して、その最大を返す（線形）。
+ *
+ * `data` は絶対位置 `dataFrom` から始まる切れ端。`truePeakOf` の内側そのもので、
+ * **区間に割るときに「どの窓を誰が数えるか」を呼ぶ側に決めさせる**ために外に出してある。
+ * 最大なので数える順は値に効かないが、**数え落とすと黙って小さく出る**ので、
+ * 呼ぶ側は区間どうしで隙間を作らないこと（`measureLoudnessStream` の注を参照）。
+ */
+function truePeakOverWindows(data: Float32Array, dataFrom: number, iFrom: number, iTo: number): number {
+  let peak = 0;
+  for (let p = 1; p < TP_PHASES; p += 1) {
+    const taps = TP_FILTER[p];
+    for (let i = iFrom; i <= iTo; i += 1) {
+      let acc = 0;
+      for (let k = 0; k < TP_TAPS; k += 1) acc += taps[k] * data[i + k - dataFrom];
+      const a = Math.abs(acc);
+      if (a > peak) peak = a;
+    }
+  }
+  return peak;
+}
+
+// ---------- 長尺（区間ごとに流す形。2026-10-02・2 回目） ----------
+
+export interface StreamLoudnessOptions extends LoudnessOptions {
+  /**
+   * 1 区間の長さ（秒）。**標本の側のメモリはここで決まり、尺では決まらない。**
+   *
+   * 既定の 5 秒は、リミッタ（`limiter.ts`）とミックスを窓に割ったとき（2026-09-26・3 回目）と
+   * 同じ刻み。書き出しの流れの中で、同じ刻みで回せるように揃えてある。
+   * 測った表は `README.md` の「長尺のラウドネスの測り」。
+   */
+  blockSeconds?: number;
+}
+
+/** 区間の既定（秒）。リミッタの `DEFAULT_LIMITER_BLOCK_SECONDS` と同じ値に揃えてある。 */
+export const DEFAULT_LOUDNESS_BLOCK_SECONDS = 5;
+
+/**
+ * ラウドネスを測る。**区間ごとに流すので、標本の側のメモリが尺に比例しない。**
+ *
+ * 一括の `measureLoudness` と**ビット単位で同じ値**を返す（検算で素材 6 本 × 区間 6 通りを固定）。
+ * 同じになる根拠は 3 つで、どれも「重ねる」ではなく「持ち越す」から来ている:
+ *
+ *   1. **K 特性（IIR）は履歴を持ち越す。** 後ろへ無限に続くので、のりしろを重ねる形では
+ *      近似にしかならない（2026-10-02 にリミッタの戻りで踏んだのと同じ形）。
+ *      持ち越せば一括と同じ順で同じ演算になる。
+ *   2. **0.1 秒ごとの二乗和は、継ぎ目で部分和を持ち越す。** 足し算の順が変わると最後の桁が動くので、
+ *      区間がどこで切れても同じ順を踏む。
+ *   3. **真のピークだけは、のりしろで足りる**（打ち直す窓は 12 標本の幅しか持たない）。
+ *      ここは「窓の終わりが入る区間がその窓を数える」形にしてあるので、要るのは手前 11 標本だけ。
+ *
+ * ## まだ尺に比例して持つもの
+ *
+ * `sums`（0.1 秒ごとの二乗和）は**ぜんぶ持つ。** 相対ゲートが「全部の窓の平均から 10 LU 下」を
+ * 線にするので、**1 周めの終わりまで線が決まらない**（＝捨てる窓を決められない）。
+ * ただし 0.1 秒あたり 8 バイト ＝ **1 時間で 288KB** なので、標本の側（1 時間 2ch で 5.5GB）
+ * とは桁が違う。**2 周読めば消せるが、読み直しはデコードをやり直すことなので高い。**
+ *
+ * `read` は前へ進む方向にしか呼ばない。ここが読むのは `[0, length)` を 1 回ずつで、
+ * 真のピークのための手前 11 標本は**こちらで持ち回す**（読み直さない）。
+ */
+export function measureLoudnessStream(
+  source: BlockSource,
+  options: StreamLoudnessOptions = {},
+): LoudnessMeasurement {
+  const { sampleRate, numberOfChannels, length } = source;
+  const stepSamples = Math.max(1, Math.round(STEP_SECONDS * sampleRate));
+  const subBlocks = Math.floor(length / stepSamples);
+  const duration = length / sampleRate;
+  const dualMono = options.monoAsDualMono === true && numberOfChannels === 1;
+  const weightSum = dualMono ? 2 : 1;
+  const skipTruePeak = options.skipTruePeak === true;
+
+  const sums = new Float64Array(Math.max(0, subBlocks));
+  let samplePeak = 0;
+  let truePeak = 0;
+
+  // 素材より長い区間を頼まれても、素材のぶんしか入れ物を作らない
+  // （`blockSeconds: Infinity` ＝「一括と同じに」が素直に通るようにしてある）。
+  const asked = Math.round((options.blockSeconds ?? DEFAULT_LOUDNESS_BLOCK_SECONDS) * sampleRate);
+  const block = Math.max(1, Math.min(Number.isFinite(asked) ? asked : Math.max(1, length), Math.max(1, length)));
+
+  // 打ち直す窓の幅ぶんだけ手前を残す。**素材が 12 標本に満たないときは一括も畳み込まない**ので
+  // そこも 0 にする（切れ端の長さで判断すると、継ぎ目が全部「素材の端」になる）。
+  const back = skipTruePeak || length < TP_TAPS ? 0 : TP_TAPS - 1;
+
+  const filters = kWeighting(sampleRate);
+  const inBuf: Float32Array[] = [];
+  const kState: KWeightingState[] = [];
+  // 継ぎ目をまたいだ部分和（チャンネルごと）。**ここが「重ねる」では作れないもの。**
+  const partial = new Float64Array(numberOfChannels);
+  for (let c = 0; c < numberOfChannels; c += 1) {
+    inBuf.push(new Float32Array(back + block));
+    kState.push(newKWeightingState());
+  }
+  // K 特性を通す入れ物は 1 本でよい（その場で書き換え、チャンネルごとに使い回す）。
+  const work = new Float64Array(block);
+
+  let bufFrom = 0; // inBuf[*][0] の絶対位置
+  let filled = 0; // inBuf に入っている標本数
+
+  for (let o = 0; o < length; o = Math.min(length, o + block)) {
+    const oEnd = Math.min(length, o + block);
+    const bLen = oEnd - o;
+    const keepFrom = Math.max(0, o - back);
+
+    // 入力を左へ寄せて、足りないぶんだけ読む。**読むのは前へ進む方向だけ。**
+    if (bufFrom < keepFrom) {
+      const shift = keepFrom - bufFrom;
+      if (shift < filled) {
+        for (let c = 0; c < numberOfChannels; c += 1) inBuf[c].copyWithin(0, shift, filled);
+        filled -= shift;
+      } else {
+        filled = 0;
+      }
+      bufFrom = keepFrom;
+    }
+    if (bufFrom + filled < oEnd) {
+      const from = bufFrom + filled;
+      const got = source.read(from, oEnd);
+      for (let c = 0; c < numberOfChannels; c += 1) {
+        if (got[c].length !== oEnd - from) {
+          throw new Error(`read が頼んだ長さを返しません（要 ${oEnd - from} / 返り ${got[c].length}）`);
+        }
+        inBuf[c].set(got[c], filled);
+      }
+      filled = oEnd - bufFrom;
+    }
+
+    const off = o - bufFrom;
+    for (let c = 0; c < numberOfChannels; c += 1) {
+      const src = inBuf[c];
+      // 標本そのものの最大。**重み 0 のチャンネル（LFE）も数える**のは一括と同じ。
+      for (let i = 0; i < bLen; i += 1) {
+        const a = Math.abs(src[off + i]);
+        if (a > samplePeak) samplePeak = a;
+      }
+      if (back > 0) {
+        // 窓の**終わり**がこの区間に入るものを、この区間で数える
+        // ＝ 始点が [o - 11, oEnd - 12]。前の区間は `o - 12` までを数えているので、
+        // **隙間も重なりも出ない**（重なっても最大なので値は同じだが、無駄に重い）。
+        const iFrom = Math.max(0, o - TP_TAPS + 1);
+        const iTo = Math.min(length - TP_TAPS, oEnd - TP_TAPS);
+        if (iTo >= iFrom) {
+          const tp = truePeakOverWindows(src, bufFrom, iFrom, iTo);
+          if (tp > truePeak) truePeak = tp;
+        }
+      }
+      const weight = channelWeight(c, numberOfChannels);
+      if (weight === 0) continue;
+      for (let i = 0; i < bLen; i += 1) work[i] = src[off + i];
+      applyKWeightingInto(work, bLen, filters, kState[c]);
+      // 0.1 秒ごとの二乗和。部分和を持ち越すので、**区間がどこで切れても足す順が同じ。**
+      let acc = partial[c];
+      let i = 0;
+      while (i < bLen) {
+        const b = Math.floor((o + i) / stepSamples);
+        if (b >= subBlocks) break; // 末尾の端切れは一括も数えていない
+        const end = Math.min(bLen, (b + 1) * stepSamples - o);
+        for (; i < end; i += 1) acc += work[i] * work[i];
+        if (o + i === (b + 1) * stepSamples) {
+          sums[b] += weight * weightSum * (acc / stepSamples);
+          acc = 0;
+        }
+      }
+      partial[c] = acc;
+    }
+
+    if (oEnd === length) break;
+  }
+
+  return summarizeSubBlockSums(sums, subBlocks, {
+    samplePeak,
+    truePeak,
+    skipTruePeak,
+    duration,
+    channels: numberOfChannels,
+  });
 }
 
 // ---------- 目標へ揃える ----------

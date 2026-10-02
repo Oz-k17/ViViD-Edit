@@ -16,6 +16,46 @@ export interface AudioLike {
   getChannelData(channel: number): Float32Array;
 }
 
+/**
+ * 標本を**要る範囲だけ**返せる入り口。`AudioLike` との違いは、
+ * 「ぜんぶ起こしてから渡す」必要が無いこと。
+ *
+ * `read` は**前へ進む方向にしか呼ばれない**（同じ範囲を二度読まない）ので、
+ * デコーダをそのまま繋げる。`export-cost` の `planAssetDecodes`（2026-09-30）と同じ向き。
+ *
+ * **ここに置いてあるのは `AudioLike` の隣だから。** 2026-10-02 に `limiter.ts` で作ったが、
+ * ラウドネスの測り（`lufs.ts`）も同じ入り口を使うようになり、
+ * `lufs.ts` → `limiter.ts` の向きで読むと輪になる（`limiter.ts` が `lufs.ts` を読んでいる）。
+ * 入り口は「音をどう渡すか」の取り決めなので、処理の側ではなくこちらが持ち主。
+ */
+export interface BlockSource {
+  sampleRate: number;
+  numberOfChannels: number;
+  length: number;
+  /** 絶対位置 `[from, to)` の標本を、チャンネルの並びで返す。**必ず `to - from` 標本ぶん返すこと。** */
+  read(from: number, to: number): Float32Array[];
+}
+
+/**
+ * `AudioLike` を `BlockSource` として見せる（すでにぜんぶ起こしてある素材を流す形で通すとき）。
+ *
+ * **これを使うとメモリの得は出ない**（元の列を丸ごと抱えているので）。
+ * 使い所は検算と、一括と流す形を突き合わせるとき。
+ * 本当に長尺を通すなら、デコーダ側に `read` を実装すること。
+ */
+export function blockSourceOf(buffer: AudioLike): BlockSource {
+  return {
+    sampleRate: buffer.sampleRate,
+    numberOfChannels: buffer.numberOfChannels,
+    length: buffer.length,
+    read(from: number, to: number) {
+      const out: Float32Array[] = [];
+      for (let c = 0; c < buffer.numberOfChannels; c += 1) out.push(buffer.getChannelData(c).subarray(from, to));
+      return out;
+    },
+  };
+}
+
 export interface LoudnessTrack {
   /** 1 コマの長さ（秒）。 */
   hop: number;

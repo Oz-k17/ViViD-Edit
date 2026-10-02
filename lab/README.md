@@ -31,6 +31,7 @@ npm run lab:bench      # その素材で「実際どれくらい効くか」を�
 npm run lab:loudness   # 素材の大きさ（LUFS）を測り、目標へ揃えたらどうなるかを並べる
 npm run lab:clipmatch  # クリップどうしの大きさを揃える（正解つきで「声が揃ったか」まで見る）
 npm run lab:limit:stream  # リミッタを長尺に当てる（区間ごとに流す形 対 一括。メモリと時間）
+npm run lab:loudness:stream  # ラウドネスの測りを長尺に当てる（同上。倍率はこちらで決まる）
 npm run lab:uitest     # 画面まで通して確かめる（playwright が無ければ飛ばす）
 npm run lab:typecheck  # 型だけ確認する
 npm run lab:build      # 単体で配れる形にする（lab/auto-cut/dist）

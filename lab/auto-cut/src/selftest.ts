@@ -34,14 +34,20 @@ import {
 import { fftScratch, magnitudes } from './fft.ts';
 import {
   applyGain,
+  applyKWeighting,
+  applyKWeightingInto,
+  DEFAULT_LOUDNESS_BLOCK_SECONDS,
   DEFAULT_NORMALIZATION,
   kWeighting,
   measureLoudness,
+  measureLoudnessStream,
+  newKWeightingState,
   planLoudnessNormalization,
   TP_CONTEXT,
   truePeakEnvelope,
   truePeakEnvelopeRange,
   truePeakOf,
+  type LoudnessMeasurement,
 } from './lufs.ts';
 import {
   blockSourceOf,
@@ -3100,6 +3106,277 @@ export function runSelfTest(): TestResult[] {
         '区間に割っても天井を超えない',
         measured <= DEFAULT_LIMITER.ceilingDb + 0.01 && out.report.truePeakDb <= DEFAULT_LIMITER.ceilingDb + 0.01,
         `測り直し ${measured.toFixed(4)} / 報告 ${out.report.truePeakDb.toFixed(4)} dBTP`,
+      );
+    }
+  }
+
+  // --- 長尺のラウドネスの測り（区間ごとに流す形。2026-10-02・2 回目）---
+  //
+  // ここも確かめたいのは「それらしく動くか」ではない。**一括とビット単位で同じか**だけ。
+  // 一括のほうは規格の試験信号と突き合わせてある側（上の「ラウドネス（LUFS）」の節）なので、
+  // 流す形がそこから 1 ビットでも動いたら、規格に合っているという根拠がそのぶん崩れる。
+  //
+  // **返ってくる 10 個の欄をぜんぶ見る。** `integratedLufs` だけ比べると、
+  // 瞬間の最大やゲートの数がずれていても気づけない（そこは倍率の決め方に効く）。
+  {
+    const sr = 48000;
+
+    const mono = (length: number, fill: (i: number) => number, rate = sr) => {
+      const data = new Float32Array(length);
+      for (let i = 0; i < length; i += 1) data[i] = fill(i);
+      return { sampleRate: rate, numberOfChannels: 1, length, getChannelData: () => data } as AudioLike;
+    };
+    const multi = (length: number, channels: number, fill: (i: number, c: number) => number, rate = sr) => {
+      const data: Float32Array[] = [];
+      for (let c = 0; c < channels; c += 1) {
+        const a = new Float32Array(length);
+        for (let i = 0; i < length; i += 1) a[i] = fill(i, c);
+        data.push(a);
+      }
+      return { sampleRate: rate, numberOfChannels: channels, length, getChannelData: (c: number) => data[c] } as AudioLike;
+    };
+    /** 土台の正弦波に、天井を超える打点をまばらに置いた素材。 */
+    const hits = (length: number, every: number, rate = sr) =>
+      mono(
+        length,
+        (i) => 0.4 * Math.sin((2 * Math.PI * 180 * i) / rate) + (i % every < 5 ? 1.3 : 0),
+        rate,
+      );
+    const KEYS = [
+      'integratedLufs',
+      'momentaryMaxLufs',
+      'shortTermMaxLufs',
+      'samplePeakDb',
+      'truePeakDb',
+      'quietBlockLufs',
+      'gatedBlocks',
+      'droppedBlocks',
+      'duration',
+      'channels',
+    ] as const;
+    /** 違う欄の名前を返す（`null` どうしは同じ扱い）。 */
+    const diffKeys = (a: LoudnessMeasurement, b: LoudnessMeasurement) =>
+      KEYS.filter((k) => !(a[k] === b[k] || (a[k] === null && b[k] === null)));
+
+    // ① K 特性を履歴ごと持ち越せば、区間に割っても**同じ列**になる。
+    //    ここがずれると以降の「同じ」は全部意味を失う（二乗和の素がずれているので）。
+    {
+      const data = hits(4000, 977).getChannelData(0);
+      const ref = applyKWeighting(data, sr);
+      let worst = 0;
+      let cases = 0;
+      for (const block of [1, 7, 12, 13, 97, 1000, 4000]) {
+        const got = new Float64Array(data.length);
+        const state = newKWeightingState();
+        const filters = kWeighting(sr);
+        const work = new Float64Array(block);
+        for (let o = 0; o < data.length; o += block) {
+          const len = Math.min(block, data.length - o);
+          for (let i = 0; i < len; i += 1) work[i] = data[o + i];
+          applyKWeightingInto(work, len, filters, state);
+          for (let i = 0; i < len; i += 1) got[o + i] = work[i];
+        }
+        for (let i = 0; i < data.length; i += 1) if (got[i] !== ref[i]) worst += 1;
+        cases += 1;
+      }
+      check('K 特性は履歴を持ち越せば区間に割っても同じ列になる', worst === 0, `${cases} 通り / 違う標本 ${worst}`);
+    }
+
+    // ①' のりしろで重ねるだけでは**どれだけ重ねても 0 にならない**。
+    //
+    //    最初に書いた主張（「IIR は後ろへ無限に続くから合わない」）は**半分外れていた。**
+    //    2 段目の極の大きさは 0.995024 なので、ずれは 1 標本ごとに 0.498% 減る。
+    //    倍精度の床（1e-16）まで減るのに要るのは **7385 標本 ＝ 0.154 秒**で、
+    //    実測もそこでずれが 6.4e-11 → 3.7e-13 へ落ちる。**つまり重ねれば収束はする。**
+    //    合わないのはその先で、**3e-13 で止まって下がらない。**
+    //    止まる床は、極が直流のすぐ近くにあるぶん丸め誤差が `1/(1-r)²` ＝ 4 万倍に
+    //    増幅される値（1e-17 × 4e4 ≈ 4e-13）で、重ね方では消せない。
+    //    **持ち越す形はこれが 0 になる。** 同じ順で同じ演算をするので、増幅する相手が無い。
+    //
+    //    （「単精度だと 13 秒でも 0.1 LU 級の誤差が積もる」と `lufs.ts` に書いてあるのも同じ根。）
+    //
+    //    区間の頭が素材の頭と重なると**一括そのもの**になって「合った」と嘘をつくので、
+    //    そこは数えない。一度それで通した。
+    {
+      const data = hits(sr * 3, 4801).getChannelData(0);
+      const ref = applyKWeighting(data, sr);
+      const block = Math.round(0.25 * sr);
+      const worst = (overlap: number) => {
+        let n = 0;
+        let max = 0;
+        for (let o = block; o < data.length; o += block) {
+          const from = Math.max(0, o - overlap);
+          if (from === 0) continue; // 一括と同じになる区間は数えない
+          const to = Math.min(data.length, o + block);
+          const part = applyKWeighting(data.subarray(from, to), sr);
+          for (let i = o; i < to; i += 1) {
+            const d = Math.abs(part[i - from] - ref[i]);
+            if (d > 0) n += 1;
+            if (d > max) max = d;
+          }
+        }
+        return { n, max };
+      };
+      const none = worst(0);
+      const settled = worst(7400); // 0.154 秒ぶん（極の大きさから出した値）
+      const more = worst(48000); // 1 秒。ここから先は下がらない
+      check(
+        'のりしろで重ねる形は、どれだけ重ねても 0 にならない（床は丸めの増幅で決まる）',
+        none.n > 0 && settled.n > 0 && more.n > 0 && settled.max < none.max * 1e-9 && more.max > settled.max * 0.1,
+        `重ねない ${none.max.toExponential(1)} → 0.15s ${settled.max.toExponential(1)} → 1s ${more.max.toExponential(1)}`,
+      );
+    }
+
+    // ② 素材・つまみ・区間を振って、一括と**全欄が一致**する。
+    {
+      const cases: [string, AudioLike][] = [
+        ['打点つき 1ch', hits(sr * 2 + 1234, 38400)],
+        ['同じものを 2ch', multi(sr * 2 + 1234, 2, (i, c) => (0.4 * Math.sin((2 * Math.PI * 180 * i) / sr) + (i % 38400 < 5 ? 1.3 : 0)) * (c ? 0.82 : 1))],
+        ['鳴りっぱなし', mono(sr * 4, (i) => 0.2 * Math.sin((2 * Math.PI * 997 * i) / sr))],
+        ['間が長い（ゲートが落とす）', mono(sr * 6, (i) => (i % sr < sr / 10 ? 0.5 * Math.sin((2 * Math.PI * 440 * i) / sr) : 0))],
+        ['無音', mono(sr * 2, () => 0)],
+      ];
+      let bad = 0;
+      let n = 0;
+      const names = new Set<string>();
+      for (const [name, buffer] of cases) {
+        for (const monoAsDualMono of [false, true]) {
+          for (const skipTruePeak of [false, true]) {
+            const ref = measureLoudness(buffer, { monoAsDualMono, skipTruePeak });
+            for (const blockSeconds of [1 / sr, 0.01, 0.1, 1, 5, Infinity]) {
+              n += 1;
+              const got = measureLoudnessStream(blockSourceOf(buffer), { monoAsDualMono, skipTruePeak, blockSeconds });
+              const d = diffKeys(ref, got);
+              if (d.length > 0) {
+                bad += 1;
+                names.add(`${name}:${d.join('・')}`);
+              }
+            }
+          }
+        }
+      }
+      check(
+        '素材 5 本 × つまみ 4 通り × 区間 6 通りで、一括と全欄が一致する',
+        bad === 0,
+        `${n} 通り / 違い ${bad}${names.size > 0 ? `（${[...names].join(' / ')}）` : ''}`,
+      );
+    }
+
+    // ③ **継ぎ目をあらゆる位置へずらす。** 2026-10-02（1 回目）に、
+    //    区間が素材の長さをちょうど割り切るときだけ落ちる穴を踏んだので、ここは必ず書く。
+    //    手間を抑えるために 4.8kHz で回す（0.1 秒の格子が 480 標本になるだけで、交わり方は同じ）。
+    {
+      const rate = 4800;
+      const sweeps: [string, AudioLike][] = [
+        ['格子をまたいで端切れが出る', hits(480 * 3 + 37, 481, rate)],
+        ['格子をちょうど割り切る', hits(480 * 4, 97, rate)],
+        ['0.1 秒より短い', mono(479, (i) => 0.9 * Math.sin((2 * Math.PI * 997 * i) / rate), rate)],
+        ['打ち直す窓ちょうど（12 標本）', mono(12, (i) => (i % 2 ? 0.95 : -0.95), rate)],
+        ['窓に満たない（11 標本）', mono(11, (i) => (i % 2 ? 0.95 : -0.95), rate)],
+        ['長さ 0', mono(0, () => 0, rate)],
+      ];
+      let bad = 0;
+      let n = 0;
+      for (const [, buffer] of sweeps) {
+        const ref = measureLoudness(buffer);
+        const src = blockSourceOf(buffer);
+        for (let b = 1; b <= Math.max(1, buffer.length); b += 1) {
+          n += 1;
+          if (diffKeys(ref, measureLoudnessStream(src, { blockSeconds: b / rate })).length > 0) bad += 1;
+        }
+      }
+      check('継ぎ目を 1 標本きざみで総当たりしても一致する', bad === 0, `${n} 通り / 違い ${bad}`);
+    }
+
+    // ④ 標本化周波数を振っても同じ（K 特性はその場の周波数から作り直すので、
+    //    係数が変わると履歴の持ち越し方も変わる）。
+    {
+      let bad = 0;
+      let n = 0;
+      for (const rate of [8000, 44100, 48000, 96000]) {
+        const buffer = hits(Math.round(0.4 * rate), Math.round(0.08 * rate), rate);
+        const ref = measureLoudness(buffer);
+        for (const blockSeconds of [0.001, 0.05, 1]) {
+          n += 1;
+          if (diffKeys(ref, measureLoudnessStream(blockSourceOf(buffer), { blockSeconds })).length > 0) bad += 1;
+        }
+      }
+      check('標本化周波数を振っても一致する', bad === 0, `${n} 通り / 違い ${bad}`);
+    }
+
+    // ⑤ 3ch 以上（重み 0 のチャンネルがある並び）でも一致する。
+    //    **LFE は二乗和には入らないが、ピークには数える**という向きが、
+    //    区間に割ったときも守られているか。
+    {
+      const length = sr + 777;
+      const buffer = multi(length, 6, (i, c) => {
+        if (c === 5) return 0.99 * Math.sin((2 * Math.PI * 40 * i) / sr); // LFE。重み 0
+        return 0.2 * Math.sin((2 * Math.PI * (200 + c * 50) * i) / sr);
+      });
+      const ref = measureLoudness(buffer);
+      let bad = 0;
+      for (const blockSeconds of [0.01, 0.1, 1, Infinity]) {
+        if (diffKeys(ref, measureLoudnessStream(blockSourceOf(buffer), { blockSeconds })).length > 0) bad += 1;
+      }
+      check(
+        '重み 0 のチャンネル（LFE）があっても一致する。ピークには数え、二乗和には入れない',
+        bad === 0 && ref.samplePeakDb > -1,
+        `違い ${bad} / 標本の最大 ${ref.samplePeakDb.toFixed(2)} dBFS`,
+      );
+    }
+
+    // ⑥ 入り口が約束を破ったら断る（短く返す `read` を黙って受けると、
+    //    無音を混ぜたぶん小さく測って、**倍率を上げすぎる**向きに外れる）。
+    {
+      const base = blockSourceOf(hits(Math.round(0.3 * sr), 4801));
+      let threw = false;
+      try {
+        measureLoudnessStream({ ...base, read: (from, to) => base.read(from, Math.max(from, to - 1)) }, { blockSeconds: 0.01 });
+      } catch {
+        threw = true;
+      }
+      check('read が頼んだ長さを返さなければ断る', threw, `${threw}`);
+    }
+
+    // ⑦ `read` は**前へ進む方向にしか呼ばれない**（デコーダをそのまま繋げる根拠）。
+    //    打ち直す窓のためのりしろが要るが、それは入れ物の中で持ち回すので読み直さない。
+    {
+      const length = Math.round(0.5 * sr);
+      const base = blockSourceOf(hits(length, 4801));
+      const calls: [number, number][] = [];
+      measureLoudnessStream(
+        { ...base, read: (from, to) => { calls.push([from, to]); return base.read(from, to); } },
+        { blockSeconds: 0.02 },
+      );
+      let forward = true;
+      let read = 0;
+      for (let i = 0; i < calls.length; i += 1) {
+        read += calls[i][1] - calls[i][0];
+        if (i > 0 && calls[i][0] < calls[i - 1][1]) forward = false;
+      }
+      check('read は前へ進む方向にしか呼ばれない（同じ標本を二度読まない）', forward && read === length, `${calls.length} 回 / ${read} 標本`);
+    }
+
+    // ⑧ 区間の既定は、リミッタとミックスの刻みに揃えてある（動かすと書き出しの流れで合わなくなる）。
+    check(
+      '区間の既定は 5 秒（リミッタと同じ）',
+      DEFAULT_LOUDNESS_BLOCK_SECONDS === 5 && DEFAULT_LOUDNESS_BLOCK_SECONDS === DEFAULT_LIMITER_BLOCK_SECONDS,
+      `${DEFAULT_LOUDNESS_BLOCK_SECONDS}s / リミッタ ${DEFAULT_LIMITER_BLOCK_SECONDS}s`,
+    );
+
+    // ⑨ 測ったものから倍率を決めるところまで繋いでも同じ（使う側の値がずれていないこと）。
+    //    **流す形は素材を 2 回読む**（倍率は測り終わるまで決まらない）。
+    //    そこは得ではなく取り替えなので、約束として書いておく。
+    {
+      const buffer = hits(sr * 3, 24000);
+      const a = planLoudnessNormalization(measureLoudness(buffer), { limiterHeadroomDb: 12 });
+      const b = planLoudnessNormalization(measureLoudnessStream(blockSourceOf(buffer), { blockSeconds: 0.1 }), {
+        limiterHeadroomDb: 12,
+      });
+      check(
+        '倍率を決めるところまで繋いでも同じ',
+        a.gain === b.gain && a.limitedBy === b.limitedBy && a.neededReductionDb === b.neededReductionDb,
+        `${a.gainDb.toFixed(6)} / ${b.gainDb.toFixed(6)} dB（${a.limitedBy}）`,
       );
     }
   }
