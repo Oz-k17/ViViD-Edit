@@ -56,17 +56,24 @@ import {
   limitTruePeak,
   limitTruePeakInBlocks,
   limitTruePeakStream,
+  type BlockSource,
 } from './limiter.ts';
 import {
   applyClipGains,
+  applyClipGainSources,
   attachClipGains,
   clipLoudnessFrom,
   concatRanges,
+  concatRangesSource,
+  concatSources,
   DEFAULT_CLIP_MATCH,
+  gainSource,
   groupClips,
   measureClips,
+  measureClipsStream,
   planClipMatch,
   type ClipSource,
+  type ClipStreamSource,
 } from './clip-match.ts';
 
 export interface TestResult {
@@ -3718,6 +3725,412 @@ export function runSelfTest(): TestResult[] {
       );
     }
   }
+
+  // --- 長尺のクリップごとの音量合わせ（流す形。2026-10-03）---
+  //
+  // 確かめたいのは「それらしく動くか」ではない。**一括とビット単位で同じか**だけ。
+  // 一括の側は上の節（2026-09-20・2 回目）で振る舞いを固定してあるので、
+  // 流す形がそこから 1 ビットでも動いたら、固定してある意味がそのぶん消える。
+  //
+  // あわせて、**流す形でしか起きない壊れ方**を 3 つ固定する——
+  // 繋いだ入り口が元を後ろ向きに読むこと、倍率を元の列へ直に掛けてしまうこと、
+  // 区間の切り方で値が動くこと。
+  {
+    const sr = 8000;
+    const steady = (seconds: number, amp: number): AudioLike =>
+      makeTone(seconds, sr, [{ from: 0, to: seconds, amp }]);
+    /** 土台の音に、天井を超える打点をまばらに置いた素材（真のピークを動かす相手）。 */
+    const hits = (seconds: number, amp: number): AudioLike => {
+      const base = steady(seconds, amp);
+      const data = base.getChannelData(0);
+      const copy = new Float32Array(data.length);
+      copy.set(data);
+      for (let i = 0; i < copy.length; i += 1) if (i % 977 < 3) copy[i] += 1.1;
+      return { sampleRate: sr, numberOfChannels: 1, length: copy.length, getChannelData: () => copy };
+    };
+    const KEYS = [
+      'integratedLufs',
+      'momentaryMaxLufs',
+      'shortTermMaxLufs',
+      'samplePeakDb',
+      'truePeakDb',
+      'quietBlockLufs',
+      'gatedBlocks',
+      'droppedBlocks',
+      'duration',
+      'channels',
+    ] as const;
+    const sameMeasurement = (a: LoudnessMeasurement | null, b: LoudnessMeasurement | null) =>
+      a !== null && b !== null && KEYS.every((k) => a[k] === b[k] || (a[k] === null && b[k] === null));
+    /** `BlockSource` を丸ごと起こす（波そのものを突き合わせるため）。 */
+    const drain = (source: BlockSource, block: number) => {
+      const out: Float32Array[] = [];
+      for (let c = 0; c < source.numberOfChannels; c += 1) out.push(new Float32Array(source.length));
+      for (let o = 0; o < source.length; o += block) {
+        const to = Math.min(source.length, o + block);
+        const got = source.read(o, to);
+        for (let c = 0; c < source.numberOfChannels; c += 1) out[c].set(got[c], o);
+      }
+      return out;
+    };
+
+    // ① 一括と流す形で、クリップ 1 本ずつの測りが**ぜんぶの欄で**一致する。
+    {
+      const clips: ClipSource[] = [
+        { id: 'loud', buffer: hits(2, 0.5) },
+        { id: 'quiet', buffer: steady(2, 0.25) },
+        { id: 'tiny', buffer: steady(0.2, 0.5) }, // 窓が 1 つも立たない短さ
+        { id: 'mute', buffer: makeTone(1.5, sr, []) },
+      ];
+      const streamed: ClipStreamSource[] = clips.map((c) => ({ id: c.id, source: blockSourceOf(c.buffer) }));
+      let bad = 0;
+      let cases = 0;
+      for (const blockSeconds of [0.01, 0.1, 0.37, 1, 5, Infinity]) {
+        const a = measureClips(clips, {});
+        const b = measureClipsStream(streamed, { blockSeconds });
+        for (let i = 0; i < a.length; i += 1) {
+          cases += 1;
+          if (
+            a[i].id !== b[i].id ||
+            a[i].group !== b[i].group ||
+            a[i].lufs !== b[i].lufs ||
+            a[i].duration !== b[i].duration ||
+            a[i].gatedBlocks !== b[i].gatedBlocks ||
+            !sameMeasurement(a[i].measurement, b[i].measurement)
+          ) {
+            bad += 1;
+          }
+        }
+      }
+      check(
+        'クリップごとの測りは、流しても一括とぜんぶの欄で一致する',
+        bad === 0,
+        `${cases} 通り / 違い ${bad}`,
+      );
+    }
+
+    // ② 倍率も同じになる（測りが同じなら当たり前だが、**群のまとめ方を通した先**まで見る）。
+    {
+      const clips: ClipSource[] = [
+        { id: 'a1', buffer: steady(2, 0.5), group: 'a' },
+        { id: 'a2', buffer: steady(2, 0.45), group: 'a' },
+        { id: 'b1', buffer: steady(2, 0.125), group: 'b' },
+      ];
+      const streamed: ClipStreamSource[] = clips.map((c) => ({ id: c.id, source: blockSourceOf(c.buffer), group: c.group }));
+      const whole = planClipMatch(measureClips(clips, {}), {});
+      const flow = planClipMatch(measureClipsStream(streamed, { blockSeconds: 0.3 }), {});
+      check(
+        '群をまとめた先の倍率も、流す形と一括で同じ',
+        whole.referenceLufs === flow.referenceLufs &&
+          whole.gains.every((g, i) => g.gainDb === flow.gains[i].gainDb && g.limitedBy === flow.gains[i].limitedBy),
+        `基準 ${whole.referenceLufs?.toFixed(3)} / ${flow.referenceLufs?.toFixed(3)} LUFS`,
+      );
+    }
+
+    // ③ 区間を繋いだ波そのものが、一括の `concatRanges` と**1 標本も違わない。**
+    //    区間の切り方（読む幅）を振っても動かない——ここが動くと、繋ぎ目をまたぐ読みが壊れている。
+    {
+      const buffer = hits(3, 0.4);
+      const ranges = [
+        { start: 0.17, end: 0.53 },
+        { start: 0.53, end: 0.54 }, // 隣とくっついた区間（長さ 1 標本に近い）
+        { start: 1.1, end: 2.37 },
+        { start: 2.9, end: 3.4 }, // 後ろがはみ出す
+      ];
+      const want = concatRanges(buffer, ranges) as AudioLike;
+      const got = concatRangesSource(blockSourceOf(buffer), ranges) as BlockSource;
+      let bad = 0;
+      let cases = 0;
+      for (const block of [1, 2, 11, 64, 999, 1 << 20]) {
+        const planes = drain(got, block);
+        cases += 1;
+        if (planes[0].length !== want.length) bad += 1;
+        else for (let i = 0; i < want.length; i += 1) if (planes[0][i] !== want.getChannelData(0)[i]) bad += 1;
+      }
+      check(
+        '区間を繋いだ波は、流しても一括と 1 標本も違わない（読む幅を振っても）',
+        bad === 0 && got.length === want.length,
+        `${cases} 通り / ${want.length} 標本 / 違い ${bad}`,
+      );
+    }
+
+    // ④ 繋いだ入り口の上で測った値も、一括の繋いだ列を測った値とぜんぶの欄で一致する。
+    {
+      const buffer = hits(4, 0.4);
+      const ranges = [
+        { start: 0.0, end: 1.23 },
+        { start: 1.8, end: 2.0 },
+        { start: 2.05, end: 3.97 },
+      ];
+      const want = measureLoudness(concatRanges(buffer, ranges) as AudioLike, {});
+      let bad = 0;
+      let cases = 0;
+      for (const blockSeconds of [0.01, 0.1, 0.4, 1, Infinity]) {
+        const src = concatRangesSource(blockSourceOf(buffer), ranges) as BlockSource;
+        cases += 1;
+        if (!sameMeasurement(want, measureLoudnessStream(src, { blockSeconds }))) bad += 1;
+      }
+      check(
+        '繋いだ入り口の上の測りは、繋いだ列の測りと一致する',
+        bad === 0,
+        `${cases} 通り / 違い ${bad}`,
+      );
+    }
+
+    // ⑤ **繋いだ入り口は、元を前へしか読まない。**
+    //    `BlockSource` の約束（`loudness.ts`）がここで破れると、デコーダを繋いだ瞬間に壊れる。
+    //    一括の列の上では絶対に出ない壊れ方なので、ここで固定しておく。
+    {
+      const buffer = hits(3, 0.4);
+      let back = 0;
+      let last = 0;
+      const watched: BlockSource = {
+        sampleRate: sr,
+        numberOfChannels: 1,
+        length: buffer.length,
+        read(from, to) {
+          if (from < last) back += 1;
+          last = to;
+          return [buffer.getChannelData(0).subarray(from, to)];
+        },
+      };
+      const src = concatRangesSource(watched, [
+        { start: 0.1, end: 0.9 },
+        { start: 1.0, end: 1.05 },
+        { start: 2.2, end: 3.0 },
+      ]) as BlockSource;
+      measureLoudnessStream(src, { blockSeconds: 0.07 });
+      check('繋いだ入り口も、元を前へしか読まない', back === 0, `後ろ向きの読み ${back} 回`);
+    }
+
+    // ⑥ 後ろ向き・重なりのある並びは、**その場で落とす。**
+    //    黙って並べ替えると繋ぎ目の位置が変わり、値だけが静かに違うものになる。
+    //    一括の `concatRanges` はそのまま通る（列を作るので読む向きが無い）ので、逃げ道はある。
+    {
+      const buffer = steady(3, 0.4);
+      const back = [
+        { start: 2.0, end: 2.5 },
+        { start: 0.5, end: 1.0 },
+      ];
+      const overlap = [
+        { start: 0.5, end: 1.5 },
+        { start: 1.0, end: 2.0 },
+      ];
+      const threw = (ranges: { start: number; end: number }[]) => {
+        try {
+          concatRangesSource(blockSourceOf(buffer), ranges);
+          return false;
+        } catch {
+          return true;
+        }
+      };
+      const wholeBack = concatRanges(buffer, back);
+      check(
+        '後ろ向き・重なりのある並びは流せないと断る（一括は通る）',
+        threw(back) && threw(overlap) && wholeBack !== null && wholeBack.length === Math.round(sr),
+        `流す形 ${threw(back) ? '断る' : '通す'} / 一括 ${wholeBack ? (wholeBack.length / sr).toFixed(2) : '—'}s`,
+      );
+    }
+
+    // ⑥' **自動カットが返す区間は、この縛りをもともと守っている。**
+    //    縛りを足した以上、実際に使う側が引っかからないことまで見ておく
+    //    （引っかかるなら、縛りではなく設計のほうが間違っている）。
+    {
+      const voice = makeTone(6, sr, [
+        { from: 0.2, to: 1.1, amp: 0.5 },
+        { from: 2.0, to: 2.9, amp: 0.45 },
+        { from: 4.3, to: 5.6, amp: 0.5 },
+      ]);
+      const ranges = planJetCut(analyzeLoudness(voice), {}).keep;
+      let bad = 0;
+      for (let i = 1; i < ranges.length; i += 1) if (ranges[i].start < ranges[i - 1].end) bad += 1;
+      const src = concatRangesSource(blockSourceOf(voice), ranges);
+      check(
+        '自動カットが返す区間は昇順で重ならない（そのまま流せる）',
+        ranges.length > 1 && bad === 0 && src !== null,
+        `${ranges.length} 区間 / 逆転 ${bad}`,
+      );
+    }
+
+    // ⑦ **倍率を当てる入り口は、元の列を書き換えない。**
+    //    `blockSourceOf` は元の `Float32Array` の `subarray` を返すので、
+    //    `a[i] *= gain` と書くと元の素材が静かに育つ（2 回測ると 2 回掛かる）。
+    //    その場で書き換える形も並べて、**壊れることまで**見せておく。
+    {
+      const buffer = steady(1, 0.4);
+      const base = blockSourceOf(buffer);
+      const safe = gainSource(base, 0.5);
+      const first = measureLoudnessStream(safe, { blockSeconds: 0.1 }).integratedLufs;
+      const second = measureLoudnessStream(safe, { blockSeconds: 0.1 }).integratedLufs;
+      const raw = measureLoudness(buffer, {}).integratedLufs;
+      // その場で書き換える形（やってはいけないほう）。
+      const unsafe: BlockSource = {
+        sampleRate: sr,
+        numberOfChannels: 1,
+        length: buffer.length,
+        read(from, to) {
+          const got = base.read(from, to);
+          for (const a of got) for (let i = 0; i < a.length; i += 1) a[i] *= 0.5;
+          return got;
+        },
+      };
+      const u1 = measureLoudnessStream(unsafe, { blockSeconds: 0.1 }).integratedLufs as number;
+      const u2 = measureLoudnessStream(unsafe, { blockSeconds: 0.1 }).integratedLufs as number;
+      check(
+        '倍率の入り口は元を書き換えない（その場で掛ける形は 2 回目が 6dB 下がる）',
+        first === second && near((first as number) - (raw as number), -6.0206, 0.01) && near(u2 - u1, -6.0206, 0.01),
+        `安全 ${first?.toFixed(3)} → ${second?.toFixed(3)} / 危険 ${u1.toFixed(3)} → ${u2.toFixed(3)} LUFS`,
+      );
+    }
+
+    // ⑧ クリップを繋いだ入り口（＝タイムライン）が、一括で繋いだ列と一致する。
+    //    倍率を当ててから繋ぐ順も、一括の `applyClipGains` → `concatRanges` と同じになる。
+    {
+      const clips: ClipSource[] = [
+        { id: 'a', buffer: hits(1.3, 0.5) },
+        { id: 'b', buffer: steady(0.9, 0.2) },
+        { id: 'c', buffer: hits(2.1, 0.35) },
+      ];
+      const streamed: ClipStreamSource[] = clips.map((c) => ({ id: c.id, source: blockSourceOf(c.buffer) }));
+      const plan = planClipMatch(measureClips(clips, {}), {});
+      const wholeTimeline = applyClipGains(clips, plan);
+      const total = wholeTimeline.reduce((sum, b) => sum + b.length, 0);
+      const wantData = new Float32Array(total);
+      let k = 0;
+      for (const b of wholeTimeline) {
+        wantData.set(b.getChannelData(0), k);
+        k += b.length;
+      }
+      const flow = concatSources(applyClipGainSources(streamed, plan)) as BlockSource;
+      let bad = 0;
+      for (const block of [1, 13, 500, 1 << 20]) {
+        const planes = drain(flow, block);
+        for (let i = 0; i < total; i += 1) if (planes[0][i] !== wantData[i]) bad += 1;
+      }
+      const wantM = measureLoudness(
+        { sampleRate: sr, numberOfChannels: 1, length: total, getChannelData: () => wantData },
+        {},
+      );
+      const gotM = measureLoudnessStream(concatSources(applyClipGainSources(streamed, plan)) as BlockSource, {
+        blockSeconds: 0.3,
+      });
+      check(
+        '倍率を当てて繋いだタイムラインが、一括と 1 標本も違わない',
+        bad === 0 && flow.length === total && sameMeasurement(wantM, gotM),
+        `${total} 標本 / 違い ${bad} / ${wantM.integratedLufs?.toFixed(3)} LUFS`,
+      );
+    }
+
+    // ⑨ 端。拾えるものが無ければ `null`、形の違うものを繋ごうとしたら落とす、
+    //    1 標本だけの区間でも落ちない（繋ぎ目が全部「端」になる形）。
+    {
+      const buffer = steady(1, 0.4);
+      const none = concatRangesSource(blockSourceOf(buffer), []);
+      const empty = concatRangesSource(blockSourceOf(buffer), [{ start: 1, end: 1 }, { start: 2, end: 0.5 }]);
+      const nothing = concatSources([]);
+      let mismatch = false;
+      try {
+        concatSources([blockSourceOf(buffer), blockSourceOf(makeTone(1, 16000, [{ from: 0, to: 1 }]))]);
+      } catch {
+        mismatch = true;
+      }
+      const single = concatRangesSource(blockSourceOf(buffer), [
+        { start: 0.1, end: 0.1 + 1 / sr },
+        { start: 0.5, end: 0.5 + 1 / sr },
+        { start: 0.8, end: 0.8 + 1 / sr },
+      ]) as BlockSource;
+      const planes = drain(single, 1);
+      const src0 = buffer.getChannelData(0);
+      // 外へはみ出した読みは、黙って断片の列から落ちずにその場で落とす。
+      const outside = (() => {
+        const src = concatRangesSource(blockSourceOf(buffer), [{ start: 0.1, end: 0.2 }]) as BlockSource;
+        let caught = 0;
+        for (const [a, b] of [[-1, 10], [0, src.length + 1], [src.length - 1, src.length + 5]]) {
+          try {
+            src.read(a, b);
+          } catch {
+            caught += 1;
+          }
+        }
+        return caught === 3;
+      })();
+      check(
+        '端（空・形違い・1 標本の区間・外へはみ出した読み）でも落ちない',
+        none === null &&
+          empty === null &&
+          nothing === null &&
+          mismatch &&
+          single.length === 3 &&
+          outside &&
+          planes[0][0] === src0[Math.round(0.1 * sr)] &&
+          planes[0][2] === src0[Math.round(0.8 * sr)],
+        `空 ${none === null ? 'null' : '値'} / 形違い ${mismatch ? '断る' : '通す'} / 1 標本 ×3 = ${single.length} / はみ出し ${outside ? '断る' : '通す'}`,
+      );
+    }
+
+    // ⑨' **倍率で包んでも、同じ元を 2 回並べたことは見つかる。**
+    //    ここを素通りさせると、**倍率がたまたま 1 倍のときだけ見つかる／見つからない**という
+    //    いちばん嫌な形になる（差分を読み直していて気づいた穴）。
+    {
+      const buffer = steady(1, 0.4);
+      const twice = (gain: number) => {
+        const base = blockSourceOf(buffer);
+        try {
+          concatSources([gainSource(base, gain), gainSource(base, gain)]);
+          return false;
+        } catch {
+          return true;
+        }
+      };
+      // 包まずに 2 回並べても同じ（こちらは元から見つかる）。
+      const bare = (() => {
+        const base = blockSourceOf(buffer);
+        try {
+          concatSources([base, base]);
+          return false;
+        } catch {
+          return true;
+        }
+      })();
+      check(
+        '倍率で包んでも、同じ元を 2 回並べたことは見つかる（1 倍でも）',
+        twice(1) && twice(0.5) && bare,
+        `1 倍 ${twice(1) ? '断る' : '通す'} / 0.5 倍 ${twice(0.5) ? '断る' : '通す'} / 包まない ${bare ? '断る' : '通す'}`,
+      );
+    }
+
+    // ⑩ **繋ぎ目を 1 標本きざみで総当たり。** 2026-10-02（1 回目）に、区間が長さを
+    //    割り切るときだけ落ちる穴を踏んだので、ここは端を疑って全部踏む。
+    {
+      const buffer = hits(0.5, 0.4); // 4000 標本
+      const ranges = [
+        { start: 0.05, end: 0.21 },
+        { start: 0.3, end: 0.47 },
+      ];
+      const want = measureLoudness(concatRanges(buffer, ranges) as AudioLike, {});
+      const wantData = (concatRanges(buffer, ranges) as AudioLike).getChannelData(0);
+      let bad = 0;
+      let cases = 0;
+      for (let block = 1; block <= 400; block += 1) {
+        const src = concatRangesSource(blockSourceOf(buffer), ranges) as BlockSource;
+        cases += 1;
+        if (!sameMeasurement(want, measureLoudnessStream(src, { blockSeconds: block / sr }))) bad += 1;
+        const planes = drain(concatRangesSource(blockSourceOf(buffer), ranges) as BlockSource, block);
+        for (let i = 0; i < wantData.length; i += 1) {
+          if (planes[0][i] !== wantData[i]) {
+            bad += 1;
+            break;
+          }
+        }
+      }
+      check(
+        '繋ぎ目を 1 標本きざみで総当たりしても、値も波も動かない',
+        bad === 0,
+        `${cases} 通り（幅 1〜400 標本）/ 違い ${bad}`,
+      );
+    }
+  }
+
 
   return results;
 }

@@ -22,9 +22,15 @@
  * （区間を指定したいときのために `concatRanges` は置いてある。使うかは呼ぶ側の判断。）
  */
 
-import type { AudioLike } from './loudness.ts';
+import type { AudioLike, BlockSource } from './loudness.ts';
 import type { ClipEdit } from './edits.ts';
-import { measureLoudness, type LoudnessMeasurement, type LoudnessOptions } from './lufs.ts';
+import {
+  measureLoudness,
+  measureLoudnessStream,
+  type LoudnessMeasurement,
+  type LoudnessOptions,
+  type StreamLoudnessOptions,
+} from './lufs.ts';
 
 /** 揃える対象 1 本。`group` が同じものは**ひとまとめに測って、同じ倍率を当てる**。 */
 export interface ClipSource {
@@ -186,6 +192,228 @@ export function concatRanges(buffer: AudioLike, ranges: { start: number; end: nu
     length: total,
     getChannelData: (c: number) => planes[c],
   };
+}
+
+// ---------- 長尺（クリップごとに流す形。2026-10-03） ----------
+//
+// 一括の道（`measureClips` → `concatRanges` → `applyClipGains`）は、**どれも
+// 「標本の列が丸ごと手元にある」ことを前提にしている。** とくに `measureClips` は
+// 引数が `ClipSource[]` なので、**測り始める前に全部のクリップが同時に起きている。**
+// 測ってみると山は「いちばん長い 1 本」ではなく**同時に抱えている合計**で決まる。
+// 合計 120 秒を固定して 1 本から 16 本まで刻んでも山は動かず、本数を固定して合計を振ると
+// そのまま比例した（README の表）。**刻み方では逃げられない。**
+//
+// 下の道は `BlockSource`（`loudness.ts`）の上に乗せ替えたもので、**標本の列をどこにも持たない。**
+// 入り口も出口も `BlockSource` なので、繋ぎ合わせても列は生えない。
+
+/** 揃える対象 1 本（流す形）。`ClipSource` の `buffer` が `source` に変わっただけ。 */
+export interface ClipStreamSource {
+  id: string;
+  source: BlockSource;
+  /** `ClipSource.group` と同じ意味。かけらには必ず同じ鍵を渡すこと。 */
+  group?: string;
+}
+
+/** 繋ぐ材料 1 つ。`[from, to)` は `source` の中の絶対位置。 */
+interface JoinPiece {
+  source: BlockSource;
+  from: number;
+  to: number;
+}
+
+/**
+ * 「これは何の入り口を包んだものか」の印。
+ *
+ * **後ろ向きの読みを見つけるのに、包んだ相手の正体が要る。** `gainSource` で包むと
+ * 別のものになるので、同じ素材を 2 回並べても気づけなくなる（倍率が 1 倍かどうかで
+ * 落ちたり落ちなかったりする、といういちばん嫌な形になる）。
+ * **位置をずらさない包み**だけがこの印を引き継ぐ。繋いだ入り口（`joinPieces`）は
+ * 座標が変わるので引き継がない。
+ */
+const SOURCE_ROOT = Symbol('包む前の入り口');
+
+const rootOf = (source: BlockSource): unknown =>
+  (source as unknown as Record<symbol, unknown>)[SOURCE_ROOT] ?? source;
+
+/**
+ * 断片を順に繋いだ `BlockSource` を作る。**列は作らない**（読まれたときに元から取り出す）。
+ *
+ * ## 「繋ぐ順」と「読む向き」は同じではない
+ *
+ * `BlockSource.read` は**前へ進む方向にしか呼ばれない**約束（`loudness.ts`）なので、
+ * 繋いだ側が前へ進んでも、**同じ元から後ろ向きに取りにいく並びは作れない。**
+ * 一括の `concatRanges` は列を作るので逆順でも平気で、ここだけが狭い。
+ * なので**同じ元を続けて使うときは、前の終わり以降から始まること**を要求して、
+ * 破っていたらその場で落とす（黙って並べ替えると、繋ぎ目の位置が変わって値が変わる）。
+ * 逆順で繋ぎたいときは一括の `concatRanges` を使うこと。
+ *
+ * 元が違えばこの縛りは無い（それぞれが自分の中で前へ進む）。
+ */
+function joinPieces(pieces: JoinPiece[]): BlockSource | null {
+  const kept = pieces.filter((p) => p.to > p.from);
+  if (kept.length === 0) return null;
+
+  const first = kept[0].source;
+  for (const p of kept) {
+    if (p.source.sampleRate !== first.sampleRate || p.source.numberOfChannels !== first.numberOfChannels) {
+      throw new Error(
+        `繋ぐ材料の形が揃っていません（${first.sampleRate}Hz ${first.numberOfChannels}ch と ` +
+          `${p.source.sampleRate}Hz ${p.source.numberOfChannels}ch）`,
+      );
+    }
+  }
+  for (let i = 1; i < kept.length; i += 1) {
+    if (rootOf(kept[i].source) === rootOf(kept[i - 1].source) && kept[i].from < kept[i - 1].to) {
+      throw new Error(
+        `同じ元を後ろ向きに読む並びは流せません（${kept[i - 1].to} の次が ${kept[i].from}）。` +
+          '逆順や重なりのある並びは一括の concatRanges を使ってください。',
+      );
+    }
+  }
+
+  // 繋いだ座標での各断片の先頭。読むたびに探すので、昇順の列として持つ。
+  const starts: number[] = [];
+  let total = 0;
+  for (const p of kept) {
+    starts.push(total);
+    total += p.to - p.from;
+  }
+
+  /** 繋いだ座標 `at` を含む断片の番号。 */
+  const pieceAt = (at: number) => {
+    let lo = 0;
+    let hi = kept.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid] <= at) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  };
+
+  const channels = first.numberOfChannels;
+  return {
+    sampleRate: first.sampleRate,
+    numberOfChannels: channels,
+    length: total,
+    read(from: number, to: number) {
+      const n = to - from;
+      if (n <= 0) return new Array(channels).fill(null).map(() => new Float32Array(0));
+      // **外へはみ出した読みは、その場で落とす。** 黙って断片の列から落ちると
+      // `undefined` を触って落ちるので、どこで間違えたかが分からなくなる。
+      if (from < 0 || to > total) {
+        throw new Error(`繋いだ入り口の外を読もうとしています（[${from}, ${to}) / 長さ ${total}）`);
+      }
+      let si = pieceAt(from);
+      // 断片 1 つに収まるなら、写さずにそのまま渡す（**ここが効く**。
+      // 既定の区間 5 秒に対して繋ぎ目は数えるほどしかないので、ほとんどの読みがこちら）。
+      const inPiece = from - starts[si];
+      if (inPiece + n <= kept[si].to - kept[si].from) {
+        return kept[si].source.read(kept[si].from + inPiece, kept[si].from + inPiece + n);
+      }
+      const out: Float32Array[] = [];
+      for (let c = 0; c < channels; c += 1) out.push(new Float32Array(n));
+      let k = 0;
+      let at = from;
+      while (k < n) {
+        const p = kept[si];
+        const off = at - starts[si];
+        const take = Math.min(n - k, p.to - p.from - off);
+        const got = p.source.read(p.from + off, p.from + off + take);
+        for (let c = 0; c < channels; c += 1) out[c].set(got[c], k);
+        k += take;
+        at += take;
+        si += 1;
+      }
+      return out;
+    },
+  };
+}
+
+/**
+ * 区間の並びを繋いだ入り口を作る（`concatRanges` の、列を作らない版）。
+ *
+ * 範囲外の切り詰めと「長さ 0 は落とす」は一括と同じ。拾えるものが無ければ `null`。
+ * **逆順・重なりのある並びは流せない**（`joinPieces` の注）ので、そこだけ振る舞いが違う。
+ */
+export function concatRangesSource(source: BlockSource, ranges: { start: number; end: number }[]): BlockSource | null {
+  const sr = source.sampleRate;
+  const pieces: JoinPiece[] = [];
+  for (const r of ranges) {
+    const from = Math.max(0, Math.min(source.length, Math.round(r.start * sr)));
+    const to = Math.max(0, Math.min(source.length, Math.round(r.end * sr)));
+    if (to > from) pieces.push({ source, from, to });
+  }
+  return joinPieces(pieces);
+}
+
+/**
+ * クリップを順に繋いだ入り口を作る（＝タイムライン 1 本ぶん）。
+ *
+ * 「クリップごとに揃える → **繋ぐ** → 全体を目標へ → 均す」の 2 番目。
+ * ここで列を作ってしまうと、せっかく流した測りの得がその場で消える。
+ */
+export function concatSources(sources: BlockSource[]): BlockSource | null {
+  return joinPieces(sources.map((source) => ({ source, from: 0, to: source.length })));
+}
+
+/**
+ * 倍率を当てた入り口を返す（`applyClipGains` の、列を作らない版の 1 本ぶん）。
+ *
+ * **返ってきた列をその場で書き換えてはいけない。** `blockSourceOf` は元の
+ * `Float32Array` の `subarray` を返すので、`a[i] *= gain` と書くと**元の素材が静かに育つ。**
+ * 2 回測ると 2 回掛かる、という壊れ方をする（検算で固定してある）。
+ * なので新しい列へ写す。区間ぶんしか作らないので、尺には比例しない。
+ */
+export function gainSource(source: BlockSource, gain: number): BlockSource {
+  // **1 倍でも包む。** 素通りさせると、倍率がたまたま 1 倍のときだけ
+  // 「同じ入り口を 2 回並べた」が見つかる／見つからないが変わる。
+  const wrapped: BlockSource = {
+    sampleRate: source.sampleRate,
+    numberOfChannels: source.numberOfChannels,
+    length: source.length,
+    read(from: number, to: number) {
+      const got = source.read(from, to);
+      const out: Float32Array[] = [];
+      for (const a of got) {
+        const b = new Float32Array(a.length);
+        for (let i = 0; i < a.length; i += 1) b[i] = a[i] * gain;
+        out.push(b);
+      }
+      return out;
+    },
+  };
+  (wrapped as unknown as Record<symbol, unknown>)[SOURCE_ROOT] = rootOf(source);
+  return wrapped;
+}
+
+/** クリップを 1 本ずつ測る（流す形）。`measureClips` と同じ `ClipLoudness` を返す。 */
+export function measureClipsStream(clips: ClipStreamSource[], options: StreamLoudnessOptions = {}): ClipLoudness[] {
+  return clips.map((clip) => {
+    const m = measureLoudnessStream(clip.source, options);
+    return {
+      id: clip.id,
+      group: clip.group ?? clip.id,
+      lufs: m.integratedLufs,
+      duration: clip.source.length / clip.source.sampleRate,
+      gatedBlocks: m.gatedBlocks,
+      measurement: m,
+    };
+  });
+}
+
+/**
+ * 決めた倍率を当てた入り口を返す（`applyClipGains` の、列を作らない版）。
+ *
+ * 引き方は一括と同じ——**並びで引き、合わないときだけ id に落とす。**
+ * id で引くと、同じ id のクリップが 2 本あったときに黙って片方の倍率が両方へ当たる。
+ */
+export function applyClipGainSources(clips: ClipStreamSource[], plan: ClipMatchPlan): BlockSource[] {
+  const byId = new Map(plan.gains.map((g) => [g.id, g]));
+  return clips.map((clip, i) => {
+    const decided = plan.gains.length === clips.length ? plan.gains[i] : byId.get(clip.id);
+    return gainSource(clip.source, decided?.gain ?? 1);
+  });
 }
 
 /** LUFS ↔ パワー。群をまとめるときに「dB のまま足さない」ためだけに要る。 */

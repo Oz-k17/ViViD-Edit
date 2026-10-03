@@ -32,6 +32,7 @@ npm run lab:loudness   # 素材の大きさ（LUFS）を測り、目標へ揃え
 npm run lab:clipmatch  # クリップどうしの大きさを揃える（正解つきで「声が揃ったか」まで見る）
 npm run lab:limit:stream  # リミッタを長尺に当てる（区間ごとに流す形 対 一括。メモリと時間）
 npm run lab:loudness:stream  # ラウドネスの測りを長尺に当てる（同上。倍率はこちらで決まる）
+npm run lab:clipmatch:stream  # クリップごとの音量合わせを長尺に当てる（同上。道すじは 3 周読む）
 npm run lab:uitest     # 画面まで通して確かめる（playwright が無ければ飛ばす）
 npm run lab:typecheck  # 型だけ確認する
 npm run lab:build      # 単体で配れる形にする（lab/auto-cut/dist）
@@ -121,6 +122,7 @@ Node だけで全部測れる（ブラウザも素材も要らない）。本体
 **「声が揃ったか」を測り直して**出します（2026-09-20・2 回目）。
 
 `lab:limit:stream` はこの 2 つとも別で、**出来ではなく費用**を見ます（2026-10-02）。
+`lab:loudness:stream` と `lab:clipmatch:stream` も同じ列です（2026-10-02・2 回目 / 2026-10-03）。
 リミッタを区間ごとに流す形と一括を突き合わせ、**出口がビット単位で同じことを確かめた上で**
 メモリと時間を並べます。**先に「同じ」を確かめない費用の比べ合いは意味を持ちません**
 （速くて軽い別物を作っただけになるので）。
