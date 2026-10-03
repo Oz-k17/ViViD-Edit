@@ -44,6 +44,7 @@ import {
   newKWeightingState,
   planLoudnessNormalization,
   TP_CONTEXT,
+  truePeakAcrossJoin,
   truePeakEnvelope,
   truePeakEnvelopeRange,
   truePeakOf,
@@ -62,15 +63,19 @@ import {
   applyClipGains,
   applyClipGainSources,
   attachClipGains,
+  clipCarryLeads,
   clipLoudnessFrom,
+  combineClipCarries,
   concatRanges,
   concatRangesSource,
   concatSources,
   DEFAULT_CLIP_MATCH,
   gainSource,
   groupClips,
+  joinTruePeak,
   measureClips,
   measureClipsStream,
+  measureTimelineFromClips,
   planClipMatch,
   type ClipSource,
   type ClipStreamSource,
@@ -4128,6 +4133,326 @@ export function runSelfTest(): TestResult[] {
         bad === 0,
         `${cases} 通り（幅 1〜400 標本）/ 違い ${bad}`,
       );
+    }
+
+    // ---- 0.1 秒ごとの二乗和を持ち出して、「繋いで測り直す」1 周を省く（2026-10-03・2 回目） ----
+    //
+    // 道すじの 3 周めを省くには、**ゲートの手前の値**を持ち出すしかない
+    // （ゲートを通したあとの値からは組み立て直せないことは 1 回目に測って確定した）。
+    // ここで固定するのは 4 つ——**既定を 1 欄も動かしていないこと**、
+    // **繋いで測り直したのと合うこと**、**格子の手当てが実際に要ること**、
+    // **残る誤差が K 特性の履歴だけで、低い帯域にしか出ないこと**。
+
+    const step = Math.round(0.1 * sr); // 800
+    /** 25Hz の正弦波。K 特性の 2 段目（38Hz）の尾がいちばん長く残る相手。 */
+    const low = (seconds: number, amp: number): AudioLike => {
+      const L = Math.round(seconds * sr);
+      const d = new Float32Array(L);
+      for (let i = 0; i < L; i += 1) d[i] = amp * Math.sin((2 * Math.PI * 25 * i) / sr + Math.PI / 2);
+      return { sampleRate: sr, numberOfChannels: 1, length: L, getChannelData: () => d };
+    };
+    /** クリップを並べて、繋いだタイムラインを 1 本の列にする。 */
+    const timelineOf = (clips: ClipSource[]) => {
+      const plan = planClipMatch(measureClips(clips, {}), {});
+      const gained = applyClipGains(clips, plan);
+      const total = gained.reduce((sum, b) => sum + b.length, 0);
+      const data = new Float32Array(total);
+      let k = 0;
+      for (const b of gained) {
+        data.set(b.getChannelData(0), k);
+        k += b.length;
+      }
+      return {
+        plan,
+        buffer: { sampleRate: sr, numberOfChannels: 1, length: total, getChannelData: () => data } as AudioLike,
+      };
+    };
+
+    // ⑪ `carryForTimeline` を立てても、**クリップ単体の測りは 1 欄も動かない。**
+    //    持ち出しは「ついでに数える」だけなので、ここが動いたら作りを間違えている。
+    {
+      const clips: ClipSource[] = [
+        { id: 'a', buffer: hits(1.347, 0.5) },
+        { id: 'b', buffer: steady(0.9, 0.2) },
+        { id: 'c', buffer: low(2.047, 0.6) },
+      ];
+      const plainWhole = measureClips(clips, {});
+      const carriedWhole = measureClips(clips, { carryForTimeline: true });
+      const streamed: ClipStreamSource[] = clips.map((c) => ({ id: c.id, source: blockSourceOf(c.buffer) }));
+      const plainStream = measureClipsStream(streamed, { blockSeconds: 0.37 });
+      const carriedStream = measureClipsStream(streamed, { blockSeconds: 0.37, carryForTimeline: true });
+      let bad = 0;
+      for (let i = 0; i < clips.length; i += 1) {
+        if (!sameMeasurement(plainWhole[i].measurement, carriedWhole[i].measurement)) bad += 1;
+        if (!sameMeasurement(plainStream[i].measurement, carriedStream[i].measurement)) bad += 1;
+        if (plainWhole[i].measurement?.carry !== null) bad += 1; // 既定では持ち出さない
+        if (carriedWhole[i].measurement?.carry === null) bad += 1;
+      }
+      check(
+        '二乗和を持ち出しても、クリップ単体の測りは 1 欄も動かない（既定では持ち出さない）',
+        bad === 0,
+        `${clips.length} 本 × 一括と流す形 / 違い ${bad}`,
+      );
+    }
+
+    // ⑫ 一括と流す形で、持ち出した列が**ビット単位で同じ**。
+    //    区間の切り方で足す順が変わると最後の桁が動くので、継ぎ目を踏む幅を並べる。
+    {
+      const clips: ClipSource[] = [
+        { id: 'a', buffer: hits(1.347, 0.5) },
+        { id: 'b', buffer: low(2.047, 0.6) },
+      ];
+      const want = measureClips(clips, { carryForTimeline: true });
+      let bad = 0;
+      let cases = 0;
+      for (const blockSeconds of [0.01, 0.1, 0.13, 0.37, 1, Infinity]) {
+        const got = measureClipsStream(
+          clips.map((c) => ({ id: c.id, source: blockSourceOf(c.buffer) })),
+          { blockSeconds, carryForTimeline: true },
+        );
+        for (let i = 0; i < clips.length; i += 1) {
+          cases += 1;
+          const a = want[i].measurement!.carry!;
+          const b = got[i].measurement!.carry!;
+          if (a.lead !== b.lead || a.length !== b.length || a.head !== b.head || a.tail !== b.tail) bad += 1;
+          else if (a.full.length !== b.full.length) bad += 1;
+          else for (let k = 0; k < a.full.length; k += 1) if (a.full[k] !== b.full[k]) bad += 1;
+        }
+      }
+      check(
+        '持ち出した二乗和が、一括と流す形でビット単位で同じ（区間の幅を振る）',
+        bad === 0,
+        `${cases} 通り / 違い ${bad}`,
+      );
+    }
+
+    // ⑬ **格子を合わせれば、繋いで測り直したのと合う。**
+    //    尺を半端にしても（＝升がクリップの頭で振り出しに戻る形でも）合うことが肝。
+    {
+      const sets: { name: string; clips: ClipSource[] }[] = [
+        {
+          name: '升の倍数',
+          clips: [
+            { id: 'a', buffer: hits(1.6, 0.5) },
+            { id: 'b', buffer: steady(0.8, 0.2) },
+            { id: 'c', buffer: hits(2.4, 0.35) },
+          ],
+        },
+        {
+          name: '半端',
+          clips: [
+            { id: 'a', buffer: hits(1.347, 0.5) },
+            { id: 'b', buffer: steady(0.913, 0.2) },
+            { id: 'c', buffer: hits(2.047, 0.35) },
+          ],
+        },
+        {
+          name: '1 升より短いのが混ざる',
+          clips: [
+            { id: 'a', buffer: hits(1.347, 0.5) },
+            { id: 'tiny', buffer: steady(0.05, 0.4) },
+            { id: 'b', buffer: steady(0.913, 0.2) },
+            { id: 'tiny2', buffer: steady(0.03, 0.4) },
+            { id: 'c', buffer: hits(2.047, 0.35) },
+          ],
+        },
+      ];
+      let worst = 0;
+      const detail: string[] = [];
+      for (const set of sets) {
+        const { plan, buffer } = timelineOf(set.clips);
+        const exact = measureLoudness(buffer, {});
+        const measured = measureClips(set.clips, { carryForTimeline: true });
+        const got = measureTimelineFromClips(measured, plan, {
+          joinTruePeak: joinTruePeak(
+            set.clips.map((c) => blockSourceOf(c.buffer)),
+            plan.gains.map((g) => g.gain),
+          ),
+        });
+        const diff = Math.abs((got.integratedLufs as number) - (exact.integratedLufs as number));
+        if (diff > worst) worst = diff;
+        // 升の数と真のピークも合っていること（どちらも黙ってずれる側）。
+        const blocks = got.gatedBlocks + got.droppedBlocks === exact.gatedBlocks + exact.droppedBlocks;
+        const peak = near(got.truePeakDb, exact.truePeakDb, 1e-9);
+        if (!blocks || !peak) worst = Infinity;
+        detail.push(`${set.name} ${diff.toFixed(4)} LU${blocks ? '' : '・升の数がずれ'}${peak ? '' : '・ピークがずれ'}`);
+      }
+      check(
+        '格子を合わせて繋げば、繋いで測り直したのと 0.01 LU 以内で合う（升の数も真のピークも一致）',
+        worst <= 0.01,
+        detail.join(' / '),
+      );
+    }
+
+    // ⑭ **格子の手当ては、実際に要る。** 手当てしない（lead を全部 0 にする）と、
+    //    末尾の端切れが落ちて升が減り、値もずれる。**要らないものを足していない**ことの裏取り。
+    {
+      let worstLost = 0;
+      let worstDiff = 0;
+      /**
+       * **後ろ 1 升だけ大きい**素材。落ちる端切れがちょうどそこに当たるので、
+       * 「升が減る」が値にそのまま出る。平らな素材だと落ちても平均が動かないので見えない
+       * （＝**ずれの大きさは素材しだい。構造として升が減ることのほうが確か**）。
+       */
+      const backLoud = (seconds: number, amp: number): AudioLike => {
+        const L = Math.round(seconds * sr);
+        const d = new Float32Array(L);
+        for (let i = 0; i < L; i += 1) {
+          d[i] = amp * (i >= L - step ? 1 : 0.02) * Math.sin((2 * Math.PI * 400 * i) / sr);
+        }
+        return { sampleRate: sr, numberOfChannels: 1, length: L, getChannelData: () => d };
+      };
+      // 端切れの幅で効きが変わる（升の切れ目をどこで踏み外すかで変わる）ので、何通りか振る。
+      for (const extra of [0.2, 0.4, 0.6, 0.75, 0.9]) {
+        const seconds = (8 * step + Math.round(extra * step)) / sr;
+        const clips: ClipSource[] = Array.from({ length: 8 }, (_, i) => ({ id: `c${i}`, buffer: backLoud(seconds, 0.5) }));
+        const { plan, buffer } = timelineOf(clips);
+        const exact = measureLoudness(buffer, {});
+        const plain = measureClips(clips, { carryLead: 0 });
+        const naive = combineClipCarries(
+          plain.map((m, i) => ({
+            carry: { ...m.measurement!.carry!, tail: 0, length: Math.floor(m.measurement!.carry!.length / step) * step },
+            gain: plan.gains[i].gain,
+            measurement: m.measurement!,
+          })),
+        );
+        worstLost = Math.max(worstLost, exact.gatedBlocks + exact.droppedBlocks - (naive.gatedBlocks + naive.droppedBlocks));
+        worstDiff = Math.max(worstDiff, Math.abs((naive.integratedLufs as number) - (exact.integratedLufs as number)));
+      }
+      check(
+        '格子を合わせないと升が減り、値もずれる（＝手当ては要る）',
+        worstLost > 0 && worstDiff > 0.1,
+        `升が最大 ${worstLost} 個減り、最大 ${worstDiff.toFixed(3)} LU ずれる`,
+      );
+    }
+
+    // ⑮ **残るのは K 特性の履歴だけで、それは低い帯域にしか出ない。**
+    //    25Hz（2 段目の折れ点の下）と 500Hz を同じ刻み方で並べて、桁が変わることを固定する。
+    {
+      const run = (make: (seconds: number, amp: number) => AudioLike) => {
+        const clips: ClipSource[] = Array.from({ length: 16 }, (_, i) => ({
+          id: `c${i}`,
+          buffer: make(0.4, 0.9),
+        }));
+        const { plan, buffer } = timelineOf(clips);
+        const exact = measureLoudness(buffer, {});
+        const got = measureTimelineFromClips(measureClips(clips, { carryForTimeline: true }), plan);
+        return Math.abs((got.integratedLufs as number) - (exact.integratedLufs as number));
+      };
+      const mid = (seconds: number, amp: number): AudioLike => {
+        const L = Math.round(seconds * sr);
+        const d = new Float32Array(L);
+        for (let i = 0; i < L; i += 1) d[i] = amp * Math.sin((2 * Math.PI * 500 * i) / sr + Math.PI / 2);
+        return { sampleRate: sr, numberOfChannels: 1, length: L, getChannelData: () => d };
+      };
+      const lowDiff = run(low);
+      const midDiff = run(mid);
+      check(
+        '残る誤差は低い帯域にしか出ない（25Hz と 500Hz で桁が変わる）',
+        lowDiff > midDiff * 5 && midDiff < 0.01,
+        `25Hz ${lowDiff.toFixed(4)} LU 対 500Hz ${midDiff.toFixed(4)} LU`,
+      );
+    }
+
+    // ⑯ **繋ぎ目をまたぐ窓は、前後 11 標本だけで拾える。**
+    //    クリップごとの最大では段差が入らない（位相差 0.5π で 1.07dB 低く出る）。
+    {
+      const tone = (seconds: number, amp: number, phase: number): AudioLike => {
+        const L = Math.round(seconds * sr);
+        const d = new Float32Array(L);
+        for (let i = 0; i < L; i += 1) d[i] = amp * Math.sin((2 * Math.PI * 997 * i) / sr + phase);
+        return { sampleRate: sr, numberOfChannels: 1, length: L, getChannelData: () => d };
+      };
+      let worst = 0;
+      let gap = 0;
+      for (const phase of [0, Math.PI / 4, Math.PI / 2, Math.PI]) {
+        const clips: ClipSource[] = [
+          { id: 'a', buffer: tone(1, 0.9, 0) },
+          { id: 'b', buffer: tone(1, 0.9, phase) },
+        ];
+        const { plan, buffer } = timelineOf(clips);
+        const exact = measureLoudness(buffer, {});
+        const measured = measureClips(clips, { carryForTimeline: true });
+        const sources = clips.map((c) => blockSourceOf(c.buffer));
+        const gains = plan.gains.map((g) => g.gain);
+        const withJoin = measureTimelineFromClips(measured, plan, { joinTruePeak: joinTruePeak(sources, gains) });
+        const without = measureTimelineFromClips(measured, plan);
+        worst = Math.max(worst, Math.abs(withJoin.truePeakDb - exact.truePeakDb));
+        gap = Math.max(gap, exact.truePeakDb - without.truePeakDb);
+      }
+      check(
+        '繋ぎ目をまたぐ窓を前後 11 標本で拾える（拾わないと真のピークが低く出る）',
+        worst < 1e-9 && gap > 0.5,
+        `拾えば差 ${worst.toExponential(1)} dB / 拾わないと最大 ${gap.toFixed(4)} dB 低い`,
+      );
+    }
+
+    // ⑰ 端。**黙って 1 升ずれるほうが、落ちるより悪い**ので門にしてある。
+    {
+      const a = hits(1.347, 0.5);
+      const b = steady(0.913, 0.2);
+      const ma = measureLoudness(a, { carryLead: 0 });
+      const mb = measureLoudness(b, { carryLead: 0 }); // 本当は a の尺から決まる lead が要る
+      const part = (m: LoudnessMeasurement) => ({ carry: m.carry!, gain: 1, measurement: m });
+      const threw = (fn: () => unknown) => {
+        try {
+          fn();
+          return false;
+        } catch {
+          return true;
+        }
+      };
+      const wrongLead = threw(() => combineClipCarries([part(ma), part(mb)]));
+      const emptyParts = threw(() => combineClipCarries([]));
+      const badRate = threw(() =>
+        measureClips(
+          [
+            { id: 'a', buffer: a },
+            {
+              id: 'b',
+              buffer: { sampleRate: sr * 2, numberOfChannels: 1, length: 100, getChannelData: () => new Float32Array(100) },
+            },
+          ],
+          { carryForTimeline: true },
+        ),
+      );
+      const badLeadValue = threw(() => measureLoudness(a, { carryLead: step }));
+      const noCarry = threw(() => measureTimelineFromClips(measureClips([{ id: 'a', buffer: a }], {}), planClipMatch(measureClips([{ id: 'a', buffer: a }], {}), {})));
+      // 1 本だけ・lead が 0 の形は素直に通る（繋ぎ目が無いので升の手当ても要らない）。
+      const one = (() => {
+        const clips: ClipSource[] = [{ id: 'a', buffer: a }];
+        const { plan, buffer } = timelineOf(clips);
+        const exact = measureLoudness(buffer, {});
+        const got = measureTimelineFromClips(measureClips(clips, { carryForTimeline: true }), plan, {
+          joinTruePeak: joinTruePeak([blockSourceOf(a)], [1]),
+        });
+        // ピークの 2 欄は**倍率を dB で足して線形へ戻している**ので、往復ぶんの端数が出る
+        // （値そのものではなく最後の桁の話なので、ここだけ `near` で見る）。
+        return (
+          exact.integratedLufs === got.integratedLufs &&
+          exact.gatedBlocks === got.gatedBlocks &&
+          exact.droppedBlocks === got.droppedBlocks &&
+          near(got.samplePeakDb, exact.samplePeakDb, 1e-9) &&
+          near(got.truePeakDb, exact.truePeakDb, 1e-9)
+        );
+      })();
+      // `truePeakAcrossJoin` は 11 標本より短い列を渡しても落ちない（またぐ窓が無ければ 0）。
+      const tiny = truePeakAcrossJoin(new Float32Array(3).fill(0.5), new Float32Array(0));
+      check(
+        '端を門にしてある（並びと合わない lead・空・周波数ちがい・範囲外・carry 無し）',
+        wrongLead && emptyParts && badRate && badLeadValue && noCarry && one && Number.isFinite(tiny),
+        `lead ${wrongLead ? '断る' : '通す'} / 空 ${emptyParts ? '断る' : '通す'} / Hz ${badRate ? '断る' : '通す'} / ` +
+          `範囲外 ${badLeadValue ? '断る' : '通す'} / carry 無し ${noCarry ? '断る' : '通す'} / 1 本 ${one ? '一致' : 'ずれ'} / 短い列 ${tiny}`,
+      );
+    }
+
+    // ⑱ `clipCarryLeads` が「前のクリップの升の残り」をそのまま返す。
+    {
+      // 1 本目は升ちょうど → 次も 0。2 本目は 1 標本余るので 3 本目は step-1。
+      // 3 本目まで足すと余りは 4 なので、4 本目は step-4。
+      const leads = clipCarryLeads([step, step + 1, 3, step * 2 - 4], step);
+      const ok = leads[0] === 0 && leads[1] === 0 && leads[2] === step - 1 && leads[3] === step - 4;
+      check('`clipCarryLeads` が前のクリップの升の残りを返す', ok, leads.join(' / '));
     }
   }
 

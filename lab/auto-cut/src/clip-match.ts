@@ -27,9 +27,13 @@ import type { ClipEdit } from './edits.ts';
 import {
   measureLoudness,
   measureLoudnessStream,
+  summarizeSubBlockSums,
+  truePeakAcrossJoin,
+  STEP_SECONDS,
+  TP_TAPS,
   type LoudnessMeasurement,
-  type LoudnessOptions,
   type StreamLoudnessOptions,
+  type SubBlockCarry,
 } from './lufs.ts';
 
 /** 揃える対象 1 本。`group` が同じものは**ひとまとめに測って、同じ倍率を当てる**。 */
@@ -387,10 +391,16 @@ export function gainSource(source: BlockSource, gain: number): BlockSource {
   return wrapped;
 }
 
-/** クリップを 1 本ずつ測る（流す形）。`measureClips` と同じ `ClipLoudness` を返す。 */
-export function measureClipsStream(clips: ClipStreamSource[], options: StreamLoudnessOptions = {}): ClipLoudness[] {
-  return clips.map((clip) => {
-    const m = measureLoudnessStream(clip.source, options);
+/**
+ * クリップを 1 本ずつ測る（流す形）。`measureClips` と同じ `ClipLoudness` を返す。
+ *
+ * `carryForTimeline` を立てると、**この並びでそのまま繋ぐ前提**で 0.1 秒ごとの二乗和も持ち出す
+ * （`measurement.carry`）。`lead` はここで数えるので、呼ぶ側が数え間違える余地が無い。
+ */
+export function measureClipsStream(clips: ClipStreamSource[], options: ClipMeasureOptions = {}): ClipLoudness[] {
+  const leads = timelineLeads(clips.map((c) => ({ length: c.source.length, sampleRate: c.source.sampleRate })), options);
+  return clips.map((clip, i) => {
+    const m = measureLoudnessStream(clip.source, leads === null ? options : { ...options, carryLead: leads[i] });
     return {
       id: clip.id,
       group: clip.group ?? clip.id,
@@ -416,14 +426,230 @@ export function applyClipGainSources(clips: ClipStreamSource[], plan: ClipMatchP
   });
 }
 
+// ---------- 1 周減らす（0.1 秒ごとの二乗和を持ち出して繋ぐ。2026-10-03・2 回目） ----------
+//
+// 流す形の道すじは素材を **3 周**読む（クリップごとに測る → 揃えて繋ぐ → 全体を測る → 均す）。
+// 3 周めを「クリップごとの **LUFS** の足し算」で代われないことは 1 回目に測って確定した
+// （相対ゲートがぜんたいを見るので、ゲートを通したあとの値からは組み立て直せない）。
+//
+// **ゲートの手前なら持ち出せる。** 0.1 秒ごとの二乗和（`SubBlockCarry`）を繋いでから
+// 窓とゲートを掛け直せば、ゲートは一括と同じ仕事をする。倍率は K 特性が線形なので後から g² 倍でよい。
+// 費用は 0.1 秒あたり 8 バイト ＝ **1 時間で 288KB**。
+//
+// **ただし一致はしない。** 残るのは K 特性の履歴で、繋いだ列なら前のクリップの終わりが
+// IIR の履歴として入ってくるのに、クリップごとに測ると毎回 0 から始まる。
+// 履歴に乗る倍率と、いま掛ける倍率が違うので**原理的に埋められない**。
+// どれくらい違うかは `npm run lab:clipmatch:carry` で測ってある（README の表）。
+
+/**
+ * クリップの並びから、それぞれの `carryLead`（繋いだ格子の最初の切れ目までの標本数）を出す。
+ *
+ * **ここを間違えると升が 1 つずれる**（それでいて測りはもっともらしい値を返す）ので、
+ * 呼ぶ側に数えさせずに道具にしてある。
+ */
+export function clipCarryLeads(lengths: number[], stepSamples: number): number[] {
+  const leads: number[] = [];
+  let offset = 0;
+  for (const length of lengths) {
+    leads.push((stepSamples - (offset % stepSamples)) % stepSamples);
+    offset += length;
+  }
+  return leads;
+}
+
+/** `measureClips` / `measureClipsStream` の選べること。 */
+export interface ClipMeasureOptions extends StreamLoudnessOptions {
+  /**
+   * クリップを**この並びでそのまま繋ぐ**前提で、0.1 秒ごとの二乗和も一緒に持ち出す。
+   *
+   * 立てると `measurement.carry` が埋まり、`measureTimelineFromClips` でタイムライン全体の
+   * 測りを**素材を読み直さずに**組み立てられる（道すじが 3 周 → 2 周になる）。
+   * `carryLead` を自分で渡すときは立てないこと（こちらが上書きする）。
+   */
+  carryForTimeline?: boolean;
+}
+
+/** `carryForTimeline` が立っていれば、並びから `lead` を数えて返す。立っていなければ null。 */
+function timelineLeads(shapes: { length: number; sampleRate: number }[], options: ClipMeasureOptions): number[] | null {
+  if (options.carryForTimeline !== true || shapes.length === 0) return null;
+  const sampleRate = shapes[0].sampleRate;
+  for (const shape of shapes) {
+    if (shape.sampleRate !== sampleRate) {
+      throw new Error(`標本化周波数が違うクリップは同じ格子に載せられません（${sampleRate}Hz と ${shape.sampleRate}Hz）`);
+    }
+  }
+  return clipCarryLeads(shapes.map((shape) => shape.length), Math.max(1, Math.round(STEP_SECONDS * sampleRate)));
+}
+
+/** 繋ぐ材料 1 本。 */
+export interface ClipCarryPart {
+  /** `carryLead` を渡して測ったときに返ってくる列。 */
+  carry: SubBlockCarry;
+  /** このクリップへ当てる倍率（線形）。 */
+  gain: number;
+  /** そのクリップの測り（ピークとチャンネル数をここから拾う）。 */
+  measurement: LoudnessMeasurement;
+}
+
+export interface CombineCarryOptions {
+  /**
+   * 繋ぎ目をまたぐ窓の真のピーク（線形）。`joinTruePeak` で出せる。
+   *
+   * **渡さないと、真のピークは低く出る。** クリップごとの最大には繋ぎ目の段差が入らないので、
+   * 位相差 0.5π の例で **1.07dB** 低かった（2026-10-03・1 回目）。
+   * 書き出しの倍率を決めるのに使うなら、必ず渡すこと。
+   */
+  joinTruePeak?: number;
+}
+
+/**
+ * クリップごとの `carry` を繋いで、タイムライン全体の測りを組み立てる。
+ *
+ * **素材を読み直さない。** 窓・ゲート・分位点は `summarizeSubBlockSums` がやるので、
+ * 繋いで測り直したときと**同じ取り決め**が当たる。
+ *
+ * 並びは `clipCarryLeads` が出した `lead` と揃っていること（違えば落ちる）。
+ * **黙って 1 升ずれるほうが、落ちるより悪い。**
+ */
+export function combineClipCarries(parts: ClipCarryPart[], options: CombineCarryOptions = {}): LoudnessMeasurement {
+  if (parts.length === 0) {
+    throw new Error('繋ぐ材料がありません');
+  }
+  const step = parts[0].carry.stepSamples;
+  const channels = parts[0].measurement.channels;
+  let total = 0;
+  for (let i = 0; i < parts.length; i += 1) {
+    const c = parts[i].carry;
+    if (c.stepSamples !== step) {
+      throw new Error(`升の大きさが揃っていません（${step} と ${c.stepSamples}）。標本化周波数が違う素材は繋げません。`);
+    }
+    const want = (step - (total % step)) % step;
+    if (c.lead !== want) {
+      throw new Error(`${i} 本目の carryLead が並びと合いません（要 ${want} / 渡された ${c.lead}）`);
+    }
+    total += c.length;
+  }
+
+  const subBlocks = Math.floor(total / step);
+  const sums = new Float64Array(subBlocks);
+  let k = 0;
+  // 升の途中（倍率と重みは掛け済み・`step` で割る前）。**切れ目をまたぐ升はここで左右が出会う。**
+  let open = 0;
+  let samplePeak = 0;
+  let truePeak = 0;
+  let duration = 0;
+  for (const part of parts) {
+    const g2 = part.gain * part.gain;
+    const c = part.carry;
+    open += g2 * c.head;
+    // 先頭の端数が升を閉じるのは、**その切れ目までクリップが届いているときだけ**。
+    // 1 升より短いクリップは升を閉じずに、次のクリップへ持ち越す。
+    if (c.lead > 0 && c.length >= c.lead) {
+      if (k < subBlocks) sums[k] = open / step;
+      k += 1;
+      open = 0;
+    }
+    for (let b = 0; b < c.full.length; b += 1) {
+      if (k < subBlocks) sums[k] = (g2 * c.full[b]) / step;
+      k += 1;
+    }
+    open += g2 * c.tail;
+
+    const db = 20 * Math.log10(part.gain > 0 ? part.gain : Number.MIN_VALUE);
+    samplePeak = Math.max(samplePeak, Math.pow(10, (part.measurement.samplePeakDb + db) / 20));
+    truePeak = Math.max(truePeak, Math.pow(10, (part.measurement.truePeakDb + db) / 20));
+    duration += part.measurement.duration;
+  }
+  if (k !== subBlocks) {
+    throw new Error(`升の数が合いません（組み立て ${k} / 繋いだ長さから ${subBlocks}）`);
+  }
+  // 最後に残った `open` は、タイムラインの末尾の端切れ。一括も数えていないので捨てる。
+
+  return summarizeSubBlockSums(sums, subBlocks, {
+    samplePeak,
+    truePeak: Math.max(truePeak, options.joinTruePeak ?? 0),
+    skipTruePeak: false,
+    carry: null,
+    duration,
+    channels,
+  });
+}
+
+/**
+ * `carryForTimeline` で測ったクリップの列から、タイムライン全体の測りを組み立てる。
+ *
+ * **素材を読み直さない。** 倍率は `plan` のものを当てる（並びで引く。`planClipMatch` は
+ * 渡した `measured` と同じ並び・同じ数で返すので、ここは並びだけで足りる）。
+ */
+export function measureTimelineFromClips(
+  measured: ClipLoudness[],
+  plan: ClipMatchPlan,
+  options: CombineCarryOptions = {},
+): LoudnessMeasurement {
+  if (plan.gains.length !== measured.length) {
+    throw new Error(`倍率の数がクリップの数と合いません（倍率 ${plan.gains.length} / クリップ ${measured.length}）`);
+  }
+  return combineClipCarries(
+    measured.map((m, i) => {
+      if (m.measurement === null || m.measurement.carry === null) {
+        throw new Error(`${i} 本目に carry がありません（carryForTimeline を立てて測ってください）`);
+      }
+      return { carry: m.measurement.carry, gain: plan.gains[i].gain, measurement: m.measurement };
+    }),
+    options,
+  );
+}
+
+/**
+ * 繋ぎ目をまたぐ窓だけを打ち直して、真のピークを返す（線形）。
+ *
+ * クリップの中に収まる窓は、クリップごとの測りがもう数えている。
+ * **足りないのは繋ぎ目をまたぐ窓だけ**なので、前後 11 標本ずつ読めば済む
+ * （1 か所あたり 22 標本。1 周読み直すのとは桁が違う）。
+ *
+ * 受けるのは**倍率を当てる前**の入り口（倍率は `gains` でここで掛ける）。
+ *
+ * ## 2 つ、気をつけること
+ *
+ * **これは `BlockSource` を後ろ向きに読む。** 読む向きの約束（前へ進むだけ）の外なので、
+ * クリップごとに測り終えたあとに**末尾へ戻って 11 標本を読む**ことになる。
+ * すでに起こしてある素材（`blockSourceOf`）なら何も起きないが、
+ * **デコーダに `read` を実装する側では、ここだけ戻りの読みが来る**（1 か所 22 標本）。
+ * 本体へ持っていくときに決める話として、ここに書いておく。
+ *
+ * **11 標本より短いクリップがあると、そこを挟む窓を数え落とす。**
+ * `clip-match` は 0.4 秒より短いクリップを触らない（`minDuration`）ので実際には起きないが、
+ * 数え落としは黙って小さい値になるため、ここに書いておく。
+ */
+export function joinTruePeak(sources: BlockSource[], gains: number[]): number {
+  let peak = 0;
+  for (let i = 1; i < sources.length; i += 1) {
+    const left = sources[i - 1];
+    const right = sources[i];
+    const n = TP_TAPS - 1;
+    const a = left.read(Math.max(0, left.length - n), left.length)[0];
+    const b = right.read(0, Math.min(n, right.length))[0];
+    const gl = gains[i - 1] ?? 1;
+    const gr = gains[i] ?? 1;
+    const la = new Float32Array(a.length);
+    for (let j = 0; j < a.length; j += 1) la[j] = a[j] * gl;
+    const rb = new Float32Array(b.length);
+    for (let j = 0; j < b.length; j += 1) rb[j] = b[j] * gr;
+    const p = truePeakAcrossJoin(la, rb);
+    if (p > peak) peak = p;
+  }
+  return peak;
+}
+
 /** LUFS ↔ パワー。群をまとめるときに「dB のまま足さない」ためだけに要る。 */
 const toPower = (lufs: number) => Math.pow(10, (lufs + 0.691) / 10);
 const fromPower = (power: number) => (power > 0 ? -0.691 + 10 * Math.log10(power) : null);
 
-/** クリップを 1 本ずつ測る。 */
-export function measureClips(clips: ClipSource[], options: LoudnessOptions = {}): ClipLoudness[] {
-  return clips.map((clip) => {
-    const m = measureLoudness(clip.buffer, options);
+/** クリップを 1 本ずつ測る。`carryForTimeline` の意味は `measureClipsStream` と同じ。 */
+export function measureClips(clips: ClipSource[], options: ClipMeasureOptions = {}): ClipLoudness[] {
+  const leads = timelineLeads(clips.map((c) => ({ length: c.buffer.length, sampleRate: c.buffer.sampleRate })), options);
+  return clips.map((clip, i) => {
+    const m = measureLoudness(clip.buffer, leads === null ? options : { ...options, carryLead: leads[i] });
     return {
       id: clip.id,
       group: clip.group ?? clip.id,

@@ -20,6 +20,7 @@
     "lab:loudness": "node lab/auto-cut/loudness.mjs",
     "lab:clipmatch": "node lab/auto-cut/clipmatch.mjs",
     "lab:clipmatch:stream": "node lab/auto-cut/clipmatch-stream.mjs",
+    "lab:clipmatch:carry": "node lab/auto-cut/clipmatch-carry.mjs",
     "lab:limit:stream": "node lab/auto-cut/limit-stream.mjs",
     "lab:loudness:stream": "node lab/auto-cut/loudness-stream.mjs",
     "lab:uitest": "node lab/auto-cut/uitest.mjs && node lab/beat/uitest.mjs && node lab/scene-cut/uitest.mjs && node lab/thumbnail/uitest.mjs && node lab/reframe/uitest.mjs && node lab/keyframe/uitest.mjs",

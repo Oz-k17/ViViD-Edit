@@ -172,6 +172,60 @@ export function applyKWeighting(samples: Float32Array | Float64Array, sampleRate
   return out;
 }
 
+/**
+ * 「0.1 秒ごとの二乗和」を、**繋いだときの格子に載せて**持ち出したもの。
+ *
+ * ## 何のためにあるか
+ *
+ * クリップごとの音量合わせの道すじ（揃える → 繋ぐ → 全体を測る → 均す）は素材を **3 周**読む。
+ * その 3 周めを「クリップごとの **LUFS** を足す」で代われるかは 2026-10-03（1 回目）に測って、
+ * **代われなかった**——相対ゲートが「ぜんたいの平均から 10 LU 下」に線を引くので、
+ * **ゲートを通したあとの値からは組み立て直せない。**
+ *
+ * **なら持ち出すのはゲートの手前**、窓にも dB にも掛ける前の素の二乗和でよい。
+ * 繋いでからゲートを掛け直せば、ゲートは一括と同じ仕事をする。
+ *
+ * 倍率は**あとから掛けられる**。K 特性は線形なので、通してから g 倍しても g 倍してから
+ * 通しても同じで、二乗和なら **g² 倍**。クリップごとの倍率が決まるのは測り終わったあとなので、
+ * ここが「あとから掛けられる」ことがこの手の成否そのものになる。
+ *
+ * ## なぜ「格子に載せて」なのか
+ *
+ * 升の切れ目はタイムラインの先頭から 0.1 秒ごとに並ぶ。クリップの尺が 0.1 秒の倍数でないと、
+ * **クリップの頭で格子が振り出しに戻って**升がずれる（しかもクリップごとに末尾の端切れが落ちる）。
+ * 手当てしないと、合成波で **0.28 LU**、落ちる端切れが大きいところに当たる素材では **9.05 LU**
+ * ずれた（2026-10-03・2 回目に測った。実素材 43 本では 0.025 LU で、**素材で 2 桁振れる**）ので、
+ * ここは **lead（前のクリップの升の残り）**を受け取って、
+ * 切れ目を跨ぐぶんを `head` / `tail` に分けて持つ形にしてある。
+ * **分けて持つから、左右でそれぞれ別の倍率を掛けられる。**
+ *
+ * ## 残る誤差
+ *
+ * **K 特性の履歴だけは、この形でも埋められない。** 繋いだ列なら前のクリップの終わりが
+ * IIR の履歴として入ってくるが、クリップごとに測ると毎回 0 から始まる。
+ * 履歴に乗っているのは前のクリップの倍率で、いま掛けるのは自分の倍率なので、
+ * **倍率が違う以上どう持ち出しても合わない。** 実測は `README.md` の表。
+ */
+export interface SubBlockCarry {
+  /** 1 升の標本数（`round(0.1 * 標本化周波数)`）。繋ぐ側が同じ格子かを確かめるのに要る。 */
+  stepSamples: number;
+  /** この音の標本数。 */
+  length: number;
+  /** 先頭から、繋いだ格子の最初の切れ目までの標本数（0 以上 `stepSamples` 未満）。 */
+  lead: number;
+  /**
+   * 格子にちょうど収まった升の二乗和。
+   *
+   * **`stepSamples` で割っていない**（割るのは繋いだあと。切れ目を跨ぐ升は
+   * 左右を足してから 1 回だけ割る）。チャンネルの重みと `monoAsDualMono` はもう掛かっている。
+   */
+  full: Float64Array;
+  /** 先頭の、升に満たないぶん（`lead` 標本ぶん）。前のクリップの升へ足される。 */
+  head: number;
+  /** 末尾の、升に満たないぶん。次のクリップの `head` と足されて 1 升になる。 */
+  tail: number;
+}
+
 export interface LoudnessMeasurement {
   /** 全体のラウドネス（LUFS）。ゲートを通る窓が 1 つも無ければ null。 */
   integratedLufs: number | null;
@@ -198,6 +252,10 @@ export interface LoudnessMeasurement {
    * 素材にどれだけ「黙っている所」があるかの目安として読むこと。
    */
   quietBlockLufs: number | null;
+  /**
+   * 0.1 秒ごとの二乗和（`carryLead` を渡したときだけ。既定は null）。詳しくは `SubBlockCarry`。
+   */
+  carry: SubBlockCarry | null;
   /** ゲートを通った 0.4 秒窓の数。 */
   gatedBlocks: number;
   /** ゲートで落ちた 0.4 秒窓の数。**ここが大きい素材は「間」が長い。** */
@@ -221,6 +279,16 @@ export interface LoudnessOptions {
    * **立てると `truePeakDb` は標本の最大になる。** 書き出しの倍率を決めるときは立てないこと。
    */
   skipTruePeak?: boolean;
+  /**
+   * 0.1 秒ごとの二乗和を、**繋いだときの格子に載せて**持ち出す（`carry`）。
+   *
+   * 値は「この音の先頭から、繋いだ格子の最初の切れ目までの標本数」（0 以上 1 升未満）。
+   * タイムラインの先頭に置くクリップなら 0。詳しくは `SubBlockCarry`。
+   *
+   * 既定で持ち出さないのは、呼ぶ側が気づかずに抱え続けると
+   * **「尺に比例しない」ために流した意味が消える**ため。
+   */
+  carryLead?: number;
 }
 
 /**
@@ -246,6 +314,59 @@ function toLufs(power: number): number {
 }
 
 /**
+ * `carryLead` から `SubBlockCarry` の入れ物を作る（渡されていなければ null）。
+ *
+ * **升の数をここで決め打つ**ので、あとから足りなくなることがない。
+ */
+function newCarry(lead: number | undefined, length: number, stepSamples: number): SubBlockCarry | null {
+  if (lead === undefined) return null;
+  if (!Number.isInteger(lead) || lead < 0 || lead >= stepSamples) {
+    throw new Error(`carryLead は 0 以上 ${stepSamples} 未満の整数で渡してください（渡された ${lead}）`);
+  }
+  const fullCount = Math.max(0, Math.floor((length - lead) / stepSamples));
+  return { stepSamples, length, lead, full: new Float64Array(fullCount), head: 0, tail: 0 };
+}
+
+/**
+ * 繋いだ格子の升へ、K 特性を通した列の二乗を足し込む。
+ *
+ * `work[0]` がクリップの中の位置 `at` にあたる。`partial`（升の途中までの合計・重みを掛ける前）は
+ * 呼ぶ側が持ち回し、返ってきた値を次の呼びへ渡す。**区間に割っても足す順が変わらない**ようにするため。
+ * 重みは升を閉じるときに 1 回だけ掛ける（チャンネルごとに固定なので、どこで掛けても同じ）。
+ */
+function accumulateCarry(
+  carry: SubBlockCarry,
+  work: Float64Array,
+  at: number,
+  n: number,
+  weight: number,
+  partial: number,
+): number {
+  const { stepSamples, lead } = carry;
+  let acc = partial;
+  let i = 0;
+  while (i < n) {
+    const pos = at + i;
+    // 次の升の切れ目（クリップの中の位置）。先頭の端数だけ `lead`、あとは `lead + k*step`。
+    const next = pos < lead ? lead : lead + (Math.floor((pos - lead) / stepSamples) + 1) * stepSamples;
+    const end = Math.min(n, next - at);
+    for (; i < end; i += 1) acc += work[i] * work[i];
+    if (at + i === next) {
+      if (next === lead) carry.head += weight * acc;
+      else carry.full[(next - lead) / stepSamples - 1] += weight * acc;
+      acc = 0;
+    }
+  }
+  return acc;
+}
+
+/** 最後に残った「升の途中」を、先頭の端数か末尾の端数のどちらかへ落とす。 */
+function finishCarry(carry: SubBlockCarry, weight: number, partial: number): void {
+  if (carry.length <= carry.lead) carry.head += weight * partial;
+  else carry.tail += weight * partial;
+}
+
+/**
  * ラウドネスを測る。
  *
  * 0.1 秒ずつの部分和をいったん作ってから足し合わせているのは、
@@ -268,6 +389,7 @@ export function measureLoudness(buffer: AudioLike, options: LoudnessOptions = {}
   let samplePeak = 0;
   let truePeak = 0;
   const weightSum = dualMono ? 2 : 1;
+  const carry = newCarry(options.carryLead, length, stepSamples);
 
   for (let c = 0; c < numberOfChannels; c += 1) {
     const weight = channelWeight(c, numberOfChannels);
@@ -289,24 +411,32 @@ export function measureLoudness(buffer: AudioLike, options: LoudnessOptions = {}
       for (let i = from; i < to; i += 1) acc += filtered[i] * filtered[i];
       sums[b] += weight * weightSum * (acc / stepSamples);
     }
+    // 繋いだ格子のぶんは**別に数える**。この素材の格子（上の `sums`）とは切れ目がずれるので、
+    // 片方からもう片方を作ることはできない（升をまたいで割り直すことになる）。
+    if (carry !== null) {
+      finishCarry(carry, weight * weightSum, accumulateCarry(carry, filtered, 0, length, weight * weightSum, 0));
+    }
   }
 
   return summarizeSubBlockSums(sums, subBlocks, {
     samplePeak,
     truePeak,
     skipTruePeak: options.skipTruePeak === true,
+    carry,
     duration,
     channels: numberOfChannels,
   });
 }
 
 /** `summarizeSubBlockSums` へ渡す、標本を 1 周なめた結果。 */
-interface SubBlockTotals {
+export interface SubBlockTotals {
   /** 標本そのものの最大（線形）。 */
   samplePeak: number;
   /** 打ち直して見つけた最大（線形）。`skipTruePeak` のときは 0。 */
   truePeak: number;
   skipTruePeak: boolean;
+  /** 繋いだ格子に載せた二乗和（`carryLead` を渡したときだけ）。 */
+  carry: SubBlockCarry | null;
   duration: number;
   channels: number;
 }
@@ -323,12 +453,12 @@ interface SubBlockTotals {
  * そこから作る `blockPowers` だけ。**標本の側の列を一切持たない**ので、
  * 流す形のメモリは区間の長さで決まる。
  */
-function summarizeSubBlockSums(
+export function summarizeSubBlockSums(
   sums: Float64Array,
   subBlocks: number,
   totals: SubBlockTotals,
 ): LoudnessMeasurement {
-  const { samplePeak, truePeak, skipTruePeak, duration, channels } = totals;
+  const { samplePeak, truePeak, skipTruePeak, carry, duration, channels } = totals;
   const blockSteps = Math.round(BLOCK_SECONDS / STEP_SECONDS); // 4
   const shortSteps = Math.round(SHORT_TERM_SECONDS / STEP_SECONDS); // 30
 
@@ -384,6 +514,7 @@ function summarizeSubBlockSums(
 
   return {
     integratedLufs: integrated,
+    carry,
     quietBlockLufs,
     momentaryMaxLufs: Number.isFinite(momentaryMax) ? momentaryMax : null,
     shortTermMaxLufs: Number.isFinite(shortTermMax) ? shortTermMax : null,
@@ -400,8 +531,8 @@ function summarizeSubBlockSums(
 
 /** 位相の数。規格の付則と同じ 4 倍。 */
 const TP_PHASES = 4;
-/** 位相ごとのタップ数。合計 48 タップ。 */
-const TP_TAPS = 12;
+/** 位相ごとのタップ数。合計 48 タップ。**繋ぎ目で要るのりしろの幅がここで決まる。** */
+export const TP_TAPS = 12;
 
 /**
  * 4 倍に打ち直すための係数。
@@ -593,6 +724,41 @@ export function truePeakOf(data: Float32Array): number {
 }
 
 /**
+ * 2 つの列の**繋ぎ目をまたぐ窓だけ**を打ち直して、真のピークを返す（線形）。
+ *
+ * クリップを繋ぐと、**クリップの中には無かったピークが繋ぎ目に立つ**
+ * （段差そのものが山になる。位相差 0.5π で 1.07dB、位相差 0 と π では 0.00dB。
+ * 2026-10-03・1 回目に測った）。クリップごとの最大を取るだけでは、そのぶん低く出る。
+ *
+ * クリップの中に収まる窓はクリップごとの測りがもう数えているので、
+ * **ここが数えるのは窓が繋ぎ目をまたぐものだけ**（始点が左側の最後の 11 標本に入るもの）。
+ * `left` は繋ぎ目の手前の**末尾** 11 標本まで、`right` は繋ぎ目の後ろの**先頭** 11 標本まで
+ * （それより長く渡しても、またがない窓は数えない）。倍率は呼ぶ側が掛けておくこと。
+ */
+export function truePeakAcrossJoin(left: Float32Array, right: Float32Array): number {
+  const n = TP_TAPS - 1;
+  const l = left.length > n ? left.subarray(left.length - n) : left;
+  const r = right.length > n ? right.subarray(0, n) : right;
+  const joined = new Float32Array(l.length + r.length);
+  joined.set(l, 0);
+  joined.set(r, l.length);
+  // 繋ぎ目は `l.length`。窓 `[i, i+12)` がまたぐのは `i < l.length` かつ `i + 12 > l.length`。
+  const from = Math.max(0, l.length - TP_TAPS + 1);
+  const to = Math.min(l.length - 1, joined.length - TP_TAPS);
+  let peak = 0;
+  for (let p = 1; p < TP_PHASES; p += 1) {
+    const taps = TP_FILTER[p];
+    for (let i = from; i <= to; i += 1) {
+      let acc = 0;
+      for (let k = 0; k < TP_TAPS; k += 1) acc += taps[k] * joined[i + k];
+      const a = Math.abs(acc);
+      if (a > peak) peak = a;
+    }
+  }
+  return peak;
+}
+
+/**
  * 窓の**始点**が `[iFrom, iTo]` に入るぶんだけ打ち直して、その最大を返す（線形）。
  *
  * `data` は絶対位置 `dataFrom` から始まる切れ端。`truePeakOf` の内側そのもので、
@@ -669,6 +835,9 @@ export function measureLoudnessStream(
   const sums = new Float64Array(Math.max(0, subBlocks));
   let samplePeak = 0;
   let truePeak = 0;
+  const carry = newCarry(options.carryLead, length, stepSamples);
+  // 繋いだ格子の「升の途中」。区間の継ぎ目でも足す順を変えないよう、チャンネルごとに持ち回す。
+  const carryPartial = new Float64Array(numberOfChannels);
 
   // 素材より長い区間を頼まれても、素材のぶんしか入れ物を作らない
   // （`blockSeconds: Infinity` ＝「一括と同じに」が素直に通るようにしてある）。
@@ -759,15 +928,27 @@ export function measureLoudnessStream(
         }
       }
       partial[c] = acc;
+      // 繋いだ格子のぶん。**素材の格子とは切れ目がずれる**ので、同じ列をもう一度なめる。
+      // （二乗は安く、重いのは上の IIR のほう。読み直しは起きない。）
+      if (carry !== null) carryPartial[c] = accumulateCarry(carry, work, o, bLen, weight * weightSum, carryPartial[c]);
     }
 
     if (oEnd === length) break;
+  }
+
+  if (carry !== null) {
+    for (let c = 0; c < numberOfChannels; c += 1) {
+      const weight = channelWeight(c, numberOfChannels);
+      if (weight === 0) continue;
+      finishCarry(carry, weight * weightSum, carryPartial[c]);
+    }
   }
 
   return summarizeSubBlockSums(sums, subBlocks, {
     samplePeak,
     truePeak,
     skipTruePeak,
+    carry,
     duration,
     channels: numberOfChannels,
   });
