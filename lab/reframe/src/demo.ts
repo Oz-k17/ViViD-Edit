@@ -23,15 +23,32 @@
  * **枠の列**（`toCropRects`）なので、絵は元の動画を横へずらして覗くだけで足りる。
  * つまり縮めたコマは測るためだけに使い、人が見るほうは `<video>` がそのまま持っている。
  * **出口が「値」なのか「絵」なのかで、画面に要る読み込みの数が変わる。**
+ *
+ * ## 軸は 2 つあるが、画面は 1 枚（2026-10-04・2 回目に足した）
+ *
+ * 横（16:9 → 9:16・枠は横へ動く）と縦（9:16 → 1:1・枠は縦へ動く）を、同じページで切り替える。
+ * **2 枚に分けなかったのは、軸で変わるものと変わらないものが実際に測れているから**——
+ * 判定の側では枠を決める段（`planFromRaw`）が軸を知らず、入れ替わるのは
+ * 畳む向きと被写体を指す手だけだった（2026-10-04 の記録）。
+ * 画面の側も同じ形で、読み込み・時間軸の絵・つまみの配線・プレビューの骨格は共通で、
+ * **軸で入れ替わるのは「どっちの辺を動かすか」だけ**。
+ * 2 枚に分けると、この共通部分を直すときに 2 か所直すことになる。
+ *
+ * **ただし既定は軸ごとに別**（窓の幅 31.6% / 高さ 56.25%、見ない帯の置き所）なので、
+ * 軸を替えたらつまみへ写し直す。ここを共通にすると、
+ * **縦の軸に横の窓（31.6%）が残ったまま数字が出る**——画面だけが別の設定で動く形になる。
  */
 
 import { decodeVideoFrames, type DecodedClip } from '../../scene-cut/src/decode.ts';
-import type { ColumnStat } from './columns.ts';
+import type { Axis, ColumnStat } from './columns.ts';
 import {
   DEFAULT_REFRAME,
   REFRAME_ANALYSIS_FPS,
+  VERTICAL_REFRAME,
   planReframe,
+  planReframeVertical,
   summarizeForReframe,
+  summarizeForReframeVertical,
   toCropRects,
   type ReframeOptions,
   type ReframePlan,
@@ -43,12 +60,25 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 interface Loaded {
   name: string;
   clip: DecodedClip;
-  /** 列へ畳んだもの。**畳み方（`rowBand`）はつまみなので、そこが動いたら畳み直す。** */
+  /** 列（縦の軸では行）へ畳んだもの。**畳み方はつまみなので、そこが動いたら畳み直す。** */
   cols: ColumnStat[];
   band: number;
+  /** どちらの軸へ畳んだか。**軸を替えると畳む向きが変わる**ので、一緒に持つ。 */
+  axis: Axis;
   /** プレビュー用に持っておく元のファイル（`<video>` へ渡す）。 */
   url: string;
 }
+
+/**
+ * いま決めている軸。`u` は横（16:9 から 9:16 を切る）、`v` は縦（9:16 から 1:1 を切る）。
+ *
+ * **画面の側で軸を持っているのはここだけ。** 判定の入口（畳む・指す・計画する）も
+ * プレビューのずらし方も、全部この 1 つを見て選ぶ。
+ */
+let axis: Axis = 'u';
+
+/** その軸の既定。**画面に直書きしない**ための入口（既定は判定の側が持っている）。 */
+const defaultsFor = (a: Axis): ReframeOptions => (a === 'v' ? VERTICAL_REFRAME : DEFAULT_REFRAME);
 
 let loaded: Loaded | null = null;
 /** いまの設定で出した計画。**この 1 つだけを全部が見る。** */
@@ -85,8 +115,9 @@ async function load(file: Blob & { name?: string }) {
     loaded = {
       name: file.name ?? '素材',
       clip,
-      cols: summarizeForReframe(clip.frames, clip.times, bandOption(band)),
+      cols: fold(clip, band),
       band,
+      axis,
       url: URL.createObjectURL(file),
     };
     status.textContent =
@@ -108,11 +139,23 @@ async function load(file: Blob & { name?: string }) {
 
 // ---------- 判定（呼ぶのはここ 1 か所だけ） ----------
 
-function bandOption(half: number): Partial<ReframeOptions> {
-  // 0 は「上下を落とさない」。`{ from: 0, to: 1 }` がそのまま全部を見る形なので、
+function band(half: number): { from: number; to: number } {
+  // 0 は「落とさない」。`{ from: 0, to: 1 }` がそのまま全部を見る形なので、
   // ここで場合分けは要らない（潰れた帯にならないよう 0.45 で頭打ちにしてある）。
   const h = Math.min(0.45, Math.max(0, half));
-  return { rowBand: { from: h, to: 1 - h } };
+  return { from: h, to: 1 - h };
+}
+
+function bandOption(half: number): Partial<ReframeOptions> {
+  return { rowBand: band(half) };
+}
+
+/** いまの軸へ畳む。**入口を 1 つにしてある**のは、呼び分けを増やすと片方が古くなるから。 */
+function fold(clip: DecodedClip, half: number): ColumnStat[] {
+  const opt = bandOption(half);
+  return axis === 'v'
+    ? summarizeForReframeVertical(clip.frames, clip.times, opt)
+    : summarizeForReframe(clip.frames, clip.times, opt);
 }
 
 function currentOptions(): Partial<ReframeOptions> {
@@ -124,6 +167,9 @@ function currentOptions(): Partial<ReframeOptions> {
     maxSpeed: Number($<HTMLInputElement>('max-speed').value),
     smooth: Number($<HTMLInputElement>('smooth').value),
     leadIn: $<HTMLInputElement>('lead-in').checked,
+    // 軸の上で探してよい範囲。**横の軸では読まれない**（`rawTargets` が帯を取らない）が、
+    // 渡す側で場合分けすると「渡したつもりの値」と「効いた値」が食い違うので、常に渡す。
+    axisBand: band(Number($<HTMLInputElement>('axis-band').value)),
     ...bandOption(Number($<HTMLInputElement>('row-band').value)),
   };
 }
@@ -136,12 +182,15 @@ function currentOptions(): Partial<ReframeOptions> {
  */
 function refresh() {
   if (!loaded) return;
-  const band = Number($<HTMLInputElement>('row-band').value);
-  if (band !== loaded.band) {
-    loaded.cols = summarizeForReframe(loaded.clip.frames, loaded.clip.times, bandOption(band));
-    loaded.band = band;
+  const half = Number($<HTMLInputElement>('row-band').value);
+  // **軸が変わったときも畳み直し**（畳む向きそのものが変わるので、前の列は使えない）。
+  if (half !== loaded.band || axis !== loaded.axis) {
+    loaded.cols = fold(loaded.clip, half);
+    loaded.band = half;
+    loaded.axis = axis;
   }
-  plan = planReframe(loaded.cols, currentOptions());
+  const options = currentOptions();
+  plan = axis === 'v' ? planReframeVertical(loaded.cols, options) : planReframe(loaded.cols, options);
   draw();
   showStats();
   layoutPreview();
@@ -286,17 +335,37 @@ function attachPreview(l: Loaded) {
   $<HTMLButtonElement>('rf-play').disabled = false;
 }
 
-/** 覗き窓の大きさを、いまの窓の幅から決める。 */
+/**
+ * 覗き窓の大きさを、いまの窓の幅（縦の軸では高さ）から決める。
+ *
+ * **基準の高さは `data-height` から読む。`clientHeight` は使えない**——
+ * 縦の軸ではこの関数自身が高さを書き換えるので、2 度目に呼ぶと
+ * **前回の答えが基準になって、呼ぶたびに窓が縮んでいく**（キャンバスの `fit()` と同じ形で、
+ * あちらも高さを `data-height` から取っている）。
+ */
 function layoutPreview() {
   if (!loaded || !plan) return;
   const crop = $<HTMLDivElement>('rf-crop');
   const out = $<HTMLVideoElement>('rf-video-out');
+  const base = Number(crop.dataset.height) || 320;
   const aspect = loaded.clip.width / Math.max(1, loaded.clip.height);
-  const height = crop.clientHeight || 320;
-  // 出来上がりの形は「もとの形 × 窓の幅」。16:9 を 31.6% で切ると 9:16 になる。
-  crop.style.width = `${height * aspect * plan.options.cropWidth}px`;
-  out.style.width = `${height * aspect}px`;
-  out.style.height = `${height}px`;
+  const videoWidth = base * aspect;
+  out.style.width = `${videoWidth}px`;
+  out.style.height = `${base}px`;
+  // 元の画は欄の幅いっぱいに描く（窓は割合で重ねるので大きさに依らない）。
+  // **縦の素材だけは幅で決めると高さが欄の幅の 1.8 倍**になり、画面の大半を元の画が占める
+  // （2026-10-04・2 回目に撮った画面で、元の画が 1600px 近くまで伸びていた）。
+  // 縦長の素材では出来上がりの 2 倍の高さに抑える。
+  $<HTMLDivElement>('rf-source').style.maxWidth = aspect < 1 ? `${base * 2 * aspect}px` : '';
+  if (axis === 'v') {
+    // 出来上がりの形は「もとの形 × 窓の高さ」。9:16 を 56.25% で切ると 1:1 になる。
+    crop.style.width = `${videoWidth}px`;
+    crop.style.height = `${base * plan.options.cropWidth}px`;
+  } else {
+    // 横は「もとの形 × 窓の幅」。16:9 を 31.6% で切ると 9:16 になる。
+    crop.style.width = `${videoWidth * plan.options.cropWidth}px`;
+    crop.style.height = `${base}px`;
+  }
 }
 
 /** いまの時刻の枠を、元の画の上と出来上がりの側の両方へ反映する。 */
@@ -307,14 +376,25 @@ function syncPreview() {
   const center = centerAt(plan.frames, t);
   const w = plan.options.cropWidth;
 
-  // 元の画に重ねる窓は、割合のまま置ける。
+  // 元の画に重ねる窓は、どちらの軸でも割合のまま置ける。
+  // **4 辺ぜんぶを JS から入れている**のは、片方の軸ぶんを CSS に残すと
+  // 軸を替えたときに前の軸の値が残って、窓が画面の外へ出るため。
   const win = $<HTMLDivElement>('rf-window');
-  win.style.left = `${(center - w / 2) * 100}%`;
-  win.style.width = `${w * 100}%`;
-
-  // 出来上がりの側は、動画そのものを横へずらす。
   const out = $<HTMLVideoElement>('rf-video-out');
-  out.style.transform = `translateX(${-(center - w / 2) * (out.clientWidth || 0)}px)`;
+  if (axis === 'v') {
+    win.style.left = '0';
+    win.style.width = '100%';
+    win.style.top = `${(center - w / 2) * 100}%`;
+    win.style.height = `${w * 100}%`;
+    // 出来上がりの側は、動画そのものを縦へずらす。
+    out.style.transform = `translateY(${-(center - w / 2) * (out.clientHeight || 0)}px)`;
+  } else {
+    win.style.top = '0';
+    win.style.height = '100%';
+    win.style.left = `${(center - w / 2) * 100}%`;
+    win.style.width = `${w * 100}%`;
+    out.style.transform = `translateX(${-(center - w / 2) * (out.clientWidth || 0)}px)`;
+  }
   $<HTMLOutputElement>('out-time').textContent = `${t.toFixed(2)}s`;
 }
 
@@ -389,11 +469,11 @@ function showStats() {
     stat('読んだコマ', `${loaded.clip.frames.length} 枚`),
     stat('解析の速さ', `${loaded.clip.fps.toFixed(1)} fps`),
     stat('素材の速さ', `${loaded.clip.sourceFps.toFixed(1)} fps`),
-    stat('窓の幅', `${(plan.options.cropWidth * 100).toFixed(1)}%`),
+    stat(axis === 'v' ? '窓の高さ' : '窓の幅', `${(plan.options.cropWidth * 100).toFixed(1)}%`),
     stat('泳いだ量', `${(seconds > 0 ? plan.travel / seconds : 0).toFixed(3)} / 秒`),
     stat('動いた回数', `${runs} 回`, runs === 0),
     stat('枠の振れ幅', `${(Math.max(...centers) - Math.min(...centers)).toFixed(3)}`),
-    stat('頭の置き所', `x ${rect.x.toFixed(3)}`),
+    stat('頭の置き所', `${axis === 'v' ? 'y' : 'x'} ${rect.x.toFixed(3)}`),
   ].join('');
 
   // 知らせるのは「そのまま読むと数字が変わる」ときだけ。
@@ -405,16 +485,25 @@ function showStats() {
     );
   }
   if (plan.options.cropWidth >= 1) {
-    messages.push('<strong>窓が画面と同じ幅です。</strong>切る余りが無いので、枠は真ん中で止まります。');
+    messages.push(
+      axis === 'v'
+        ? '<strong>窓が画面と同じ高さです。</strong>切る余りが無いので、枠は真ん中で止まります。'
+        : '<strong>窓が画面と同じ幅です。</strong>切る余りが無いので、枠は真ん中で止まります。',
+    );
   }
   // **泳ぎは「多い」ではなく「動く理由が無いのに動いた」が問題。** 数だけ出すと読めないので、
   // 測った台（被写体の居ない素材の中央値 0.006 / 秒）と並べて出す。
+  //
+  // **台は軸ごとに別の数字**（横は 20 本の中央値 0.006 / 秒、縦は 0.002 / 秒）。
+  // ここを 1 つにすると、縦で「台より 3 倍泳いでいる」形が台に埋もれる。
   const swim = seconds > 0 ? plan.travel / seconds : 0;
   if (swim > 0.1) {
+    const idle = axis === 'v' ? '0.002' : '0.006';
+    const worst = axis === 'v' ? 'チルト（tilt で 0.131 / 秒）' : 'パン・チルト（pan-reveal で 0.158 / 秒）';
     messages.push(
       `<strong>枠が 1 秒あたり ${swim.toFixed(3)} 泳いでいます。</strong>` +
-        '被写体の居ない素材で測った中央値は 0.006 / 秒で、0.1 を超えるのは' +
-        '<strong>カメラが動いている素材</strong>（パン・チルト）です。そこはまだ空いている穴です。',
+        `被写体の居ない素材で測った中央値は ${idle} / 秒で、0.1 を超えるのは` +
+        `<strong>カメラが動いている素材</strong>です（${worst}）。そこはまだ空いている穴です。`,
     );
   }
   warn.hidden = messages.length === 0;
@@ -434,15 +523,94 @@ function showAllValues() {
   showValue('settle', 'out-settle', (v) => `${v.toFixed(2)} 秒`);
   showValue('max-speed', 'out-speed', (v) => `${(v * 100).toFixed(0)}% / 秒`);
   showValue('smooth', 'out-smooth', (v) => `${v.toFixed(2)} 秒（${Math.max(1, Math.round(v * currentFps()))} コマ）`);
-  showValue('row-band', 'out-band', (v) => (v > 0 ? `上下 ${(v * 100).toFixed(0)}% を見ない` : '全部見る'));
+  showValue('row-band', 'out-band', (v) =>
+    v > 0 ? `${axis === 'v' ? '左右' : '上下'} ${(v * 100).toFixed(0)}% を見ない` : '全部見る',
+  );
+  showValue('axis-band', 'out-axis-band', (v) =>
+    v > 0 ? `上下 ${(v * 100).toFixed(0)}% には置かない` : '画面ぜんたいに置ける',
+  );
 }
+
+// ---------- 軸の切り替え ----------
+
+/**
+ * 軸で入れ替わる文字。**判定の側から来る数字と同じ所に置いている**ので、
+ * ここが抜けると「縦の軸なのに『元の画（16:9）』」のような、黙って嘘をつく画面になる。
+ */
+const AXIS_TEXT = {
+  u: {
+    out: '2. 切り出した縦型（9:16）を見る',
+    legend: '縦が<strong>画面の横位置</strong>（上が左端・下が右端）、横が時間です',
+    crop: '切り出す窓の幅',
+    band: '列へ畳むときに見る縦の範囲',
+    source: '元の画（16:9）と、いま切っている窓',
+    result: '出来上がり（9:16）',
+    axis: '枠は<strong>横</strong>へ動きます',
+  },
+  v: {
+    out: '2. 切り出した 1:1 を見る',
+    legend: '縦が<strong>画面の縦位置</strong>（上が上端・下が下端）、横が時間です',
+    crop: '切り出す窓の高さ',
+    band: '行へ畳むときに見る横の範囲',
+    source: '元の画（9:16）と、いま切っている窓',
+    result: '出来上がり（1:1）',
+    axis: '枠は<strong>縦</strong>へ動きます',
+  },
+} as const;
+
+/**
+ * つまみへ、その軸の既定を写す。
+ *
+ * **軸ごとに別の既定を持っているので、軸を替えたら写し直すほかない**
+ * （共通にすると、縦の軸に横の窓 31.6% が残ったまま数字が出る）。
+ * つまみを手で回したあとに軸を往復すると、その手入れは消える——
+ * **既定が食い違ったまま数字が出るより、消えるほうがましだと決めた。**
+ */
+function writeDefaults(a: Axis) {
+  const d = defaultsFor(a);
+  $<HTMLInputElement>('crop-width').value = String(d.cropWidth);
+  $<HTMLInputElement>('deadband').value = String(d.deadband);
+  $<HTMLInputElement>('settle').value = String(d.settle);
+  $<HTMLInputElement>('max-speed').value = String(d.maxSpeed);
+  $<HTMLInputElement>('smooth').value = String(d.smooth);
+  $<HTMLInputElement>('row-band').value = String(d.rowBand.from);
+  $<HTMLInputElement>('axis-band').value = String(d.axisBand.from);
+  $<HTMLInputElement>('lead-in').checked = d.leadIn;
+  $<HTMLSelectElement>('gate').value = d.gate;
+}
+
+function applyAxisText(a: Axis) {
+  const t = AXIS_TEXT[a];
+  $<HTMLElement>('sec-out').textContent = t.out;
+  $<HTMLElement>('legend-axis').innerHTML = t.legend;
+  $<HTMLElement>('label-crop').textContent = t.crop;
+  $<HTMLElement>('label-band').textContent = t.band;
+  $<HTMLElement>('cap-source').textContent = t.source;
+  $<HTMLElement>('cap-out').textContent = t.result;
+  $<HTMLElement>('axis-note').innerHTML = t.axis;
+  // 横の軸では `axisBand` が読まれないので、つまみも出さない
+  // （出したまま効かないつまみは、回してから「効かない」と気づくことになる）。
+  for (const el of document.querySelectorAll<HTMLElement>('[data-for-axis]')) {
+    el.hidden = el.dataset.forAxis !== a;
+  }
+}
+
+$<HTMLSelectElement>('axis').addEventListener('change', () => {
+  axis = $<HTMLSelectElement>('axis').value === 'v' ? 'v' : 'u';
+  writeDefaults(axis);
+  applyAxisText(axis);
+  showAllValues();
+  // **読み直しは要らない。** 畳む向きが変わるだけなので、`refresh()` の中で畳み直される
+  // （読み込みは軸を知らない——`decode.ts` は長辺を 128 に揃えるだけ）。
+  refresh();
+});
 
 /** いま何 fps で測っているか。**コマ数を秒でも見せる**ために要る（シーン検出の画面と同じ）。 */
 function currentFps(): number {
   return loaded?.clip.fps ?? Number($<HTMLInputElement>('fps').value) ?? REFRAME_ANALYSIS_FPS;
 }
 
-for (const id of ['crop-width', 'deadband', 'settle', 'max-speed', 'smooth', 'row-band']) {
+for (const id of ['crop-width', 'deadband', 'settle', 'max-speed', 'smooth', 'row-band', 'axis-band']) {
   $<HTMLElement>(id).addEventListener('input', () => {
     showAllValues();
     refresh();
@@ -478,14 +646,9 @@ window.addEventListener('resize', () => {
 
 // 既定は判定の側（`reframe.ts` / `decode.ts`）が持っている。**画面に直書きしたままにすると黙って食い違う**ので、
 // 起動時にそちらから写す（HTML に書いてある値は、この行が動く前の見た目のため）。
-$<HTMLInputElement>('crop-width').value = String(DEFAULT_REFRAME.cropWidth);
-$<HTMLInputElement>('deadband').value = String(DEFAULT_REFRAME.deadband);
-$<HTMLInputElement>('settle').value = String(DEFAULT_REFRAME.settle);
-$<HTMLInputElement>('max-speed').value = String(DEFAULT_REFRAME.maxSpeed);
-$<HTMLInputElement>('smooth').value = String(DEFAULT_REFRAME.smooth);
-$<HTMLInputElement>('row-band').value = String(DEFAULT_REFRAME.rowBand.from);
-$<HTMLInputElement>('lead-in').checked = DEFAULT_REFRAME.leadIn;
-$<HTMLSelectElement>('gate').value = DEFAULT_REFRAME.gate;
+$<HTMLSelectElement>('axis').value = axis;
+writeDefaults(axis);
+applyAxisText(axis);
 $<HTMLInputElement>('fps').value = String(REFRAME_ANALYSIS_FPS);
 showAllValues();
 
@@ -494,20 +657,29 @@ declare global {
   interface Window {
     __labReframe: {
       selfTest: typeof runSelfTest;
-      /** 画面が使っている既定（コマンドラインと同じ所から来ているかの確認用）。 */
-      defaults: { reframe: ReframeOptions; analysisFps: number };
+      /**
+       * 画面が使っている既定（コマンドラインと同じ所から来ているかの確認用）。
+       *
+       * **軸ごとに 2 つ出す。** 1 つにまとめて「いまの軸の既定」だけを返すと、
+       * 画面が既定を写し忘れていても**そのとき写っている値**が返ってきて、確認が素通りする。
+       */
+      defaults: { reframe: ReframeOptions; vertical: ReframeOptions; analysisFps: number };
       /** その秒の中心（プレビューが見ているのと同じ値）。 */
       centerAt: (t: number) => number;
       /**
-       * その秒のコマの、列ごとの明るさ（32 列）。
+       * その秒のコマの、**軸の上の**明るさ（32 本）。横の軸では列、縦の軸では行。
        *
        * **画面に映っている絵が本当に枠の所か**を確かめるために置いてある。
        * 枠の数字が合っていても、ずらす向きを間違えていれば人が見る絵は別の所になる。
+       * 畳んだものをそのまま返すので、**軸を替えれば中身も入れ替わる**
+       * （確かめる側は「軸の上に並んだ 32 本」として読めばよく、向きを知らなくて済む）。
        */
       columnLuma: (t: number) => number[];
       state: () => {
         /** 読み込みの最中か。**数字を読む前にこれが false であることを確かめる。** */
         loading: boolean;
+        /** いまどちらの軸で決めているか。 */
+        axis: Axis;
         duration: number | null;
         frames: number;
         width: number | null;
@@ -524,6 +696,8 @@ declare global {
         /** ならしたあと。 */
         targets: number[];
         cropWidth: number;
+        /** 畳むときに見た、軸と垂直の範囲（確かめる側が同じ所だけを見るために要る）。 */
+        rowBand: { from: number; to: number };
         travel: number;
       };
     };
@@ -531,7 +705,7 @@ declare global {
 }
 window.__labReframe = {
   selfTest: runSelfTest,
-  defaults: { reframe: DEFAULT_REFRAME, analysisFps: REFRAME_ANALYSIS_FPS },
+  defaults: { reframe: DEFAULT_REFRAME, vertical: VERTICAL_REFRAME, analysisFps: REFRAME_ANALYSIS_FPS },
   centerAt: (t: number) => centerAt(plan?.frames ?? [], t),
   columnLuma: (t: number) => {
     if (!loaded || !loaded.cols.length) return [];
@@ -543,6 +717,7 @@ window.__labReframe = {
   },
   state: () => ({
     loading,
+    axis,
     duration: loaded?.clip.duration ?? null,
     frames: loaded?.clip.frames.length ?? 0,
     width: loaded?.clip.width ?? null,
@@ -555,7 +730,8 @@ window.__labReframe = {
     centers: plan?.frames.map((f) => f.center) ?? [],
     raws: plan?.frames.map((f) => f.raw) ?? [],
     targets: plan?.frames.map((f) => f.target) ?? [],
-    cropWidth: plan?.options.cropWidth ?? DEFAULT_REFRAME.cropWidth,
+    cropWidth: plan?.options.cropWidth ?? defaultsFor(axis).cropWidth,
+    rowBand: plan?.options.rowBand ?? defaultsFor(axis).rowBand,
     travel: plan?.travel ?? 0,
   }),
 };

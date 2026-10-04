@@ -73,19 +73,50 @@
   height: auto;
 }
 
-/* 出来上がりの側。高さを決め打ちにして、幅は窓の形から JS で決める。 */
+/*
+ * 出来上がりの側。読み込む前の見た目のためだけに高さを置いてある。
+ * **本当の基準は `index.html` の `data-height`** で、幅も高さも JS が入れ直す
+ * （縦の軸では高さのほうが窓の形で決まるので、ここを基準にできない）。
+ */
 .preview-out .frame {
   height: 320px;
 }
 
+/*
+ * 元の画に重ねる窓。**4 辺ぜんぶを JS から入れる**ので、ここでは置き所を書かない。
+ * 片方の軸ぶんだけ CSS に残すと、軸を替えたときに前の軸の値が残って窓が画面の外へ出る。
+ */
 .window {
   position: absolute;
-  top: 0;
-  bottom: 0;
   border: 2px solid #b7d0a8;
   background: rgba(183, 208, 168, 0.08);
   box-shadow: 0 0 0 9999px rgba(16, 17, 20, 0.55);
   pointer-events: none;
+}
+
+/* 軸を選ぶ所。つまみの一覧とは離して、読み込みの前に置いてある。 */
+.axis {
+  display: block;
+  margin: 0 0 12px;
+}
+
+.axis > span {
+  display: block;
+  font-size: 0.9rem;
+  margin-bottom: 4px;
+}
+
+.axis select {
+  width: 100%;
+  max-width: 420px;
+}
+
+.axis small {
+  display: block;
+  margin-top: 6px;
+  color: #9aa0a6;
+  font-size: 0.8rem;
+  line-height: 1.6;
 }
 
 .small {

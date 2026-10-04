@@ -27,7 +27,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { REFRAME_FIXTURES, SCENE_FIXTURES, SCENE_FPS } from '../fixtures/scenes.mjs';
+import { REFRAME_FIXTURES, REFRAME_V_FIXTURES, SCENE_FIXTURES, SCENE_FPS } from '../fixtures/scenes.mjs';
 import { renderFixture } from '../fixtures/make-frames.mjs';
 import { launch, loadPlaywright, serve } from '../browser.mjs';
 import { scoreFollow, scoreSwim, totalSwim } from './score.mjs';
@@ -49,8 +49,15 @@ if (!playwright) {
   process.exit(0);
 }
 
-const { DEFAULT_REFRAME, REFRAME_ANALYSIS_FPS: DEFAULT_REFRAME_FPS, planReframe, summarizeForReframe } =
-  await import('./src/reframe.ts');
+const {
+  DEFAULT_REFRAME,
+  REFRAME_ANALYSIS_FPS: DEFAULT_REFRAME_FPS,
+  VERTICAL_REFRAME,
+  planReframe,
+  planReframeVertical,
+  summarizeForReframe,
+  summarizeForReframeVertical,
+} = await import('./src/reframe.ts');
 
 let failed = 0;
 const ok = (label, condition, detail = '') => {
@@ -59,7 +66,7 @@ const ok = (label, condition, detail = '') => {
 };
 
 const fixtureOf = (name) =>
-  [...SCENE_FIXTURES, ...REFRAME_FIXTURES].find((f) => f.name === name);
+  [...SCENE_FIXTURES, ...REFRAME_FIXTURES, ...REFRAME_V_FIXTURES].find((f) => f.name === name);
 
 /** コマンドライン側の答え（合成したコマをそのまま測る）。 */
 function commandLine(name, { fps = SCENE_FPS, options = {} } = {}) {
@@ -70,21 +77,56 @@ function commandLine(name, { fps = SCENE_FPS, options = {} } = {}) {
 }
 
 /**
+ * コマンドライン側の答え（**縦の軸**）。
+ *
+ * 焼く素材と同じ `aspect: 'native'`（最初から縦 9:16）で描く。
+ * **ここを `landscape` のままにすると、画面は縦の素材を読んでいるのに
+ * 比べる相手だけが横型**になり、ずれの原因が配線なのか素材なのか読めなくなる。
+ */
+function commandLineVertical(name, { fps = SCENE_FPS, options = {} } = {}) {
+  const clip = renderFixture(name, { fps, aspect: 'native' });
+  const rows = summarizeForReframeVertical(clip.frames, clip.times, options);
+  const centers = planReframeVertical(rows, options).frames.map((f) => f.center);
+  return { times: [...clip.times], centers, cuts: clip.cuts, fps };
+}
+
+/**
+ * 軸を切り替えて、判定が回りきるまで待つ。
+ *
+ * **読み直しは起きない**（畳む向きが変わるだけ）ので、待つのは `axis` が変わるところまで。
+ */
+async function setAxis(page, axis) {
+  await page.locator('#axis').selectOption(axis);
+  await page.waitForFunction((want) => window.__labReframe.state().axis === want, axis, { timeout: 30000 });
+  await page.waitForTimeout(300);
+}
+
+/**
  * 素材を本物の動画に焼いて、画面へ読ませ、判定が終わるまで待つ。
  *
  * 待ち方を「コマが揃ったか」にしてあるのは、**尺だけ見ると読み込み途中で通ってしまう**ため。
+ *
+ * `aspect` は焼くときの形。縦の軸の素材は `native`（最初から縦 9:16）で焼く
+ * ——`portrait`（横型から切り出す）ではないのは、**切り出しは横の動きを 3.2 倍に増幅する**ので
+ * 縦の軸の話にならないため（2026-09-22・3 回目に測ってある）。
  */
-async function feed(page, name, { fps, bitrate } = {}) {
+async function feed(page, name, { fps, bitrate, aspect } = {}) {
   const encoded = await page.evaluate(
-    ([n, f, b]) =>
-      window.__labReframeEncode(n, { ...(f ? { fps: f } : {}), ...(b ? { bitrate: b } : {}) }).then((r) => ({
-        bytes: [...r.bytes],
-        cuts: r.cuts,
-        fps: r.fps,
-        frames: r.frames,
-        codec: r.codec,
-      })),
-    [name, fps ?? null, bitrate ?? null],
+    ([n, f, b, a]) =>
+      window
+        .__labReframeEncode(n, {
+          ...(f ? { fps: f } : {}),
+          ...(b ? { bitrate: b } : {}),
+          ...(a ? { aspect: a } : {}),
+        })
+        .then((r) => ({
+          bytes: [...r.bytes],
+          cuts: r.cuts,
+          fps: r.fps,
+          frames: r.frames,
+          codec: r.codec,
+        })),
+    [name, fps ?? null, bitrate ?? null, aspect ?? null],
   );
   await page.locator('#rf-file').setInputFiles({
     name: `${name}.webm`,
@@ -459,6 +501,272 @@ try {
     `追う ${movedScore.inside.toFixed(1)}% 対 ずっと真ん中 ${fixedScore.inside.toFixed(1)}%（泳ぎ ${totalSwim(motion.state.times, motion.state.centers).toFixed(3)} 対 0.000）`,
   );
 
+  // ================================================================
+  // 縦の軸（2026-10-04・2 回目に足した）
+  //
+  // 最初から縦（9:16）で撮った素材から 1:1 を切る。判定の側は 1 回目に入っていて、
+  // **画面だけが無かった**（読み込む → 枠を決める → 1:1 を切って見せる、を通していない）。
+  // ここで見るのは横と同じ 3 つ——既定が判定の側から来ているか、
+  // 画面とコマンドラインで採点が揃うか、人が見る絵が本当に枠の所か。
+  // ================================================================
+
+  await setAxis(page, 'v');
+
+  // **既定は軸ごとに別**なので、切り替えたらつまみが縦の既定へ書き直されていなければならない。
+  // `defaults.vertical` は判定の側の値、つまみは画面が実際に持っている値。両方を突き合わせる。
+  const vDefaults = await page.evaluate(() => window.__labReframe.defaults.vertical);
+  const vKnobs = await page.evaluate(() => ({
+    crop: Number(document.getElementById('crop-width').value),
+    row: Number(document.getElementById('row-band').value),
+    axisBand: Number(document.getElementById('axis-band').value),
+    axisBandShown: !document.getElementById('axis-band').closest('label').hidden,
+  }));
+  ok(
+    '縦へ切り替えると、つまみが縦の既定へ書き直される（判定の側から来ている）',
+    Math.abs(vDefaults.cropWidth - 9 / 16) < 1e-12 &&
+      Math.abs(vKnobs.crop - VERTICAL_REFRAME.cropWidth) < 1e-12 &&
+      vKnobs.row === VERTICAL_REFRAME.rowBand.from &&
+      vKnobs.axisBand === VERTICAL_REFRAME.axisBand.from &&
+      vDefaults.axisBand.from === VERTICAL_REFRAME.axisBand.from,
+    `窓の高さ ${vKnobs.crop}（判定 ${VERTICAL_REFRAME.cropWidth}）・ 畳む帯 ${vKnobs.row} ・ 軸の上の帯 ${vKnobs.axisBand}`,
+  );
+  ok('縦の軸だけのつまみ（axisBand）が、縦で出ている', vKnobs.axisBandShown);
+
+  const vStatic = await feed(page, 'vsubject-static', { aspect: 'native' });
+  ok(
+    '縦の素材が縦として読めている（長辺 128 を高さで揃える）',
+    vStatic.state.width === 72 && vStatic.state.height === 128 && vStatic.state.axis === 'v',
+    `${vStatic.state.width}×${vStatic.state.height} ・ 軸 ${vStatic.state.axis} ・ ${vStatic.state.frames} コマ`,
+  );
+  ok(
+    '縦の窓の高さが、目盛りの上でも既定をちょうど表せている',
+    Math.abs(vStatic.state.cropWidth - VERTICAL_REFRAME.cropWidth) < 1e-12,
+    `画面 ${vStatic.state.cropWidth} / 判定 ${VERTICAL_REFRAME.cropWidth}`,
+  );
+  ok('縦でも枠の動きが描かれている', await hasInk(page, 'rf-canvas'));
+
+  // **突き合わせ（縦）。** 横と同じく 6 ポイントの幅で見る（理由は横の注）。
+  console.log('\n縦の軸: 画面（焼いた動画）とコマンドライン（合成コマ）の突き合わせ\n');
+  console.log('素材                   入れた率（画面 / CLI）      ずれ（画面 / CLI）');
+  console.log('-'.repeat(68));
+  const vScreen = {};
+  for (const name of ['vsubject-static', 'vsubject-pause', 'vsubject-tilt', 'vsubject-cuts', 'vsubject-captions', 'vsubject-horizon']) {
+    const { state } = name === 'vsubject-static' ? vStatic : await feed(page, name, { aspect: 'native' });
+    const cli = commandLineVertical(name);
+    const fixture = fixtureOf(name);
+    const screen = scoreFollow(fixture, state.times, state.centers, state.cropWidth, 'native', 'v');
+    const command = scoreFollow(fixture, cli.times, cli.centers, VERTICAL_REFRAME.cropWidth, 'native', 'v');
+    vScreen[name] = { state, screen, command };
+    console.log(
+      `${name.padEnd(20)} ${`${screen.inside.toFixed(1)}%`.padStart(8)} / ${`${command.inside.toFixed(1)}%`.padStart(7)}` +
+        `      ${screen.error.toFixed(3)} / ${command.error.toFixed(3)}`,
+    );
+    ok(
+      `${name}: 縦でも、画面とコマンドラインで入れた率が揃う`,
+      Math.abs(screen.inside - command.inside) <= 6,
+      `コマンドライン ${command.inside.toFixed(1)}% ・ 画面 ${screen.inside.toFixed(1)}%（ずれ ${command.error.toFixed(3)} / ${screen.error.toFixed(3)}）`,
+    );
+  }
+
+  // **縦の窓は横の 1.8 倍広いので、入れた率だけでは甘い**（1 回目の記録）。
+  // ずれでも突き合わせる。幅は**縦の窓の死に帯（0.03）ぶん**——生の位置が圧縮の粒で
+  // 1 行（3.1%）動くと、止まる所がそのぶん変わりうるので、それより細かくは求めない。
+  const vErr = Object.entries(vScreen).map(([n, v]) => [n, Math.abs(v.screen.error - v.command.error)]);
+  const vErrWorst = vErr.reduce((a, b) => (b[1] > a[1] ? b : a));
+  ok(
+    '縦でも、画面とコマンドラインでずれ（中央値）が死に帯の内で揃う',
+    vErrWorst[1] <= VERTICAL_REFRAME.deadband,
+    `いちばん離れた素材 ${vErrWorst[0]}：${vErrWorst[1].toFixed(3)}（死に帯 ${VERTICAL_REFRAME.deadband}）`,
+  );
+
+  // 被写体の居ない素材でも泳がないか（縦）。**字幕だけの素材は縦で意地悪が効く側**なので、
+  // `captions-only` を選んでいる（縦の軸では字幕が軸の上に載る）。
+  {
+    const name = 'captions-only';
+    const { state } = await feed(page, name, { aspect: 'native' });
+    const cli = commandLineVertical(name);
+    const fixture = fixtureOf(name);
+    const screen = scoreSwim(state.times, state.centers, fixture.cuts, SCENE_FPS);
+    const command = scoreSwim(cli.times, cli.centers, fixture.cuts, SCENE_FPS);
+    ok(
+      `${name}: 縦でも、被写体が居ないときに画面でコマンドラインより泳がない`,
+      screen.swim <= Math.max(command.swim, 0.01) + 0.02,
+      `コマンドライン ${command.swim.toFixed(3)} / 秒 ・ 画面 ${screen.swim.toFixed(3)} / 秒`,
+    );
+  }
+
+  // --- 自分の手を潰す素材（縦）: 軸の上の帯を外す ---
+  //
+  // `axisBand` を選んだ理由がここ。**字幕が軸の上に載っている**ので、締め出しを外すと
+  // 判定が被写体ではなく字幕を指す。画面からそのつまみが効いていることを、
+  // **守っていたものが壊れること**で確かめる。
+  const vCaps = await feed(page, 'vsubject-captions', { aspect: 'native' });
+  const vCapsDefault = scoreFollow(fixtureOf('vsubject-captions'), vCaps.state.times, vCaps.state.centers, vCaps.state.cropWidth, 'native', 'v');
+  await setRange(page, '#axis-band', '0');
+  const vCapsOpen = await page.evaluate(() => window.__labReframe.state());
+  const vCapsOpenScore = scoreFollow(fixtureOf('vsubject-captions'), vCapsOpen.times, vCapsOpen.centers, vCapsOpen.cropWidth, 'native', 'v');
+  ok(
+    '軸の上の帯を外すと、字幕の乗った縦の素材でずれが大きくなる（締め出しが画面から効いている）',
+    vCapsOpenScore.error > vCapsDefault.error * 3,
+    `ずれ ${vCapsDefault.error.toFixed(3)} → ${vCapsOpenScore.error.toFixed(3)}（入れた率 ${vCapsDefault.inside.toFixed(1)}% → ${vCapsOpenScore.inside.toFixed(1)}%）`,
+  );
+  await setRange(page, '#axis-band', String(VERTICAL_REFRAME.axisBand.from));
+
+  // --- 軸の往復で、同じ素材から同じ枠が出る ---
+  //
+  // 軸を替えると畳み直しになる。**往復して戻ったときに、前の軸で畳んだ列が残っていたら
+  // 縦の判定へ横の列を渡すことになる**（数字は出たままなので気づけない）。
+  //
+  // **往復して同じ、だけでは足りない。** 切り替えで 1 度も畳み直していなければ、
+  // 往復しても当然同じ列が出てくる（横のあいだ、横の判定に縦の行を渡していたことになる）。
+  //
+  // しかも**既定のままだと、この穴は既定の違いに隠れる**（2026-10-04・2 回目に壊して分かった）。
+  // 軸を替えると既定が写し直され、畳む帯が 0（縦）↔ 0.15（横）と必ず動くので、
+  // 「軸が変わったら畳み直す」を消しても**帯の違いだけで畳み直しが起きて、検査が素通りした。**
+  // なので縦のまま帯を横の既定（0.15）へ揃えてから替える。こうすると軸のほかに畳み直す理由が無い。
+  {
+    const lumaAt = () => window.__labReframe.columnLuma(6);
+    const before = await page.evaluate(() => window.__labReframe.state().centers);
+    await setRange(page, '#row-band', String(DEFAULT_REFRAME.rowBand.from));
+    const rowsV = await page.evaluate(lumaAt);
+    await setAxis(page, 'u');
+    const across = await page.evaluate(() => window.__labReframe.state());
+    const colsU = await page.evaluate(lumaAt);
+    await setAxis(page, 'v');
+    const after = await page.evaluate(() => window.__labReframe.state().centers);
+    const same = before.length === after.length && before.every((c, i) => Math.abs(c - after[i]) < 1e-12);
+    const refolded = rowsV.some((v, i) => Math.abs(v - colsU[i]) > 1e-3);
+    ok(
+      '軸を替えると畳み直している（畳む帯を揃えても、横のあいだの 32 本が縦のときと別物）',
+      refolded,
+      `6 秒の 32 本: 縦 ${rowsV.slice(0, 4).map((v) => v.toFixed(3)).join(',')}… / 横 ${colsU.slice(0, 4).map((v) => v.toFixed(3)).join(',')}…`,
+    );
+    ok(
+      '軸を往復しても、同じ素材から同じ枠が出る（前の軸の列を引きずらない）',
+      same && Math.abs(across.cropWidth - DEFAULT_REFRAME.cropWidth) < 1e-12,
+      `往復の差 ${same ? 0 : '有り'} ・ 横にいたあいだの窓 ${across.cropWidth.toFixed(4)}`,
+    );
+  }
+
+  // --- 出来上がり（縦）: 1:1 で、縦へずらしている ---
+  await feed(page, 'vsubject-pause', { aspect: 'native' });
+  const vShape = await page.evaluate(() => {
+    const crop = document.getElementById('rf-crop');
+    const out = document.getElementById('rf-video-out');
+    return { cropW: crop.clientWidth, cropH: crop.clientHeight, videoW: out.clientWidth, videoH: out.clientHeight };
+  });
+  ok(
+    '縦の出来上がりの覗き窓が 1:1 になっている',
+    Math.abs(vShape.cropW / vShape.cropH - 1) < 0.02 && Math.abs(vShape.videoW / vShape.videoH - 9 / 16) < 0.02,
+    `窓 ${vShape.cropW}×${vShape.cropH}（${(vShape.cropW / vShape.cropH).toFixed(3)}）・ 中の動画 ${vShape.videoW}×${vShape.videoH}`,
+  );
+
+  // **覗き窓を何度並べ直しても縮まない**（`clientHeight` を基準にしていたら、呼ぶたびに縮む）。
+  await page.evaluate(() => {
+    for (let i = 0; i < 4; i += 1) window.dispatchEvent(new Event('resize'));
+  });
+  await page.waitForTimeout(200);
+  const vShapeAgain = await page.evaluate(() => ({
+    cropW: document.getElementById('rf-crop').clientWidth,
+    cropH: document.getElementById('rf-crop').clientHeight,
+  }));
+  ok(
+    '並べ直しても、縦の覗き窓の大きさが変わらない（基準を自分の答えから取っていない）',
+    vShapeAgain.cropW === vShape.cropW && vShapeAgain.cropH === vShape.cropH,
+    `${vShape.cropW}×${vShape.cropH} → ${vShapeAgain.cropW}×${vShapeAgain.cropH}`,
+  );
+
+  // 秒を指して、そこの枠とずらし量（縦）が合っているか。
+  // **12 秒を選んだのは、枠が下寄り（0.7 あたり）に居る秒だから**——
+  // ずらしを消したときに映る「画面のいちばん上」と、はっきり離れていてほしい。
+  const vAt = await page.evaluate(async () => {
+    const video = document.getElementById('rf-video');
+    const out = document.getElementById('rf-video-out');
+    video.currentTime = 12;
+    out.currentTime = 12;
+    await new Promise((r) => setTimeout(r, 600));
+    const m = /translateY\((-?[\d.]+)px\)/.exec(out.style.transform || '');
+    const win = document.getElementById('rf-window');
+    return {
+      center: window.__labReframe.centerAt(video.currentTime),
+      shift: m ? Number(m[1]) : NaN,
+      transform: out.style.transform,
+      videoH: out.clientHeight,
+      windowTop: win.style.top,
+      windowLeft: win.style.left,
+      windowWidth: win.style.width,
+      cropWidth: window.__labReframe.state().cropWidth,
+    };
+  });
+  const vWant = -(vAt.center - vAt.cropWidth / 2) * vAt.videoH;
+  ok(
+    '縦のずらし量が、その秒の枠とぴったり合う（横ではなく縦へずらしている）',
+    Math.abs(vAt.shift - vWant) < 1 && !/translateX/.test(vAt.transform),
+    `枠の中心 ${vAt.center.toFixed(3)} → ${vAt.transform}（枠から出すと ${vWant.toFixed(1)}px）`,
+  );
+  ok(
+    '元の画に重ねた窓が、横いっぱいで縦に置かれている（横の軸の値を引きずっていない）',
+    (vAt.windowLeft === '0px' || vAt.windowLeft === '0') && vAt.windowWidth === '100%',
+    `left ${vAt.windowLeft} ・ width ${vAt.windowWidth} ・ top ${vAt.windowTop}`,
+  );
+  ok('下寄りに居る被写体を、真ん中では切っていない', vAt.center > 0.6, `枠の中心 ${vAt.center.toFixed(3)}`);
+
+  const vShown = await matchCrop(page);
+  ok(
+    '縦の出来上がりに映っているのが、枠の所の絵',
+    Math.abs(vShown.best - vShown.want) < 0.06,
+    `いちばん合う上端 ${vShown.best.toFixed(3)}（枠の上端 ${vShown.want.toFixed(3)} ・ 相関 ${vShown.r.toFixed(3)}）`,
+  );
+  // わざと壊す。ずらしを消すと、映るのは画面のいちばん上になる。
+  await page.evaluate(() => {
+    document.getElementById('rf-video-out').style.transform = 'translateY(0px)';
+  });
+  const vBroken = await matchCrop(page);
+  ok(
+    '縦のずらしを消すと、同じ検査が落ちる（検査が効いている）',
+    Math.abs(vBroken.best - vBroken.want) > 0.06 && vBroken.best < 0.1,
+    `いちばん合う上端 ${vBroken.best.toFixed(3)}（枠の上端 ${vBroken.want.toFixed(3)}）`,
+  );
+  // **向きを取り違えた壊し方も試す。** 縦の軸で横へずらすと、1:1 の窓の中で絵が横へ逃げるだけで、
+  // 縦の位置は画面のいちばん上のまま。数字（translate の量）は合っていても絵は別の所になる。
+  await page.evaluate((shift) => {
+    document.getElementById('rf-video-out').style.transform = `translateX(${shift}px)`;
+  }, vWant);
+  const vSideways = await matchCrop(page);
+  ok(
+    '縦の軸で横へずらすと、同じ検査が落ちる（向きの取り違えを見分けている）',
+    Math.abs(vSideways.best - vSideways.want) > 0.06,
+    `いちばん合う上端 ${vSideways.best.toFixed(3)}（枠の上端 ${vSideways.want.toFixed(3)}）`,
+  );
+
+  // 枠を真ん中に固定した列を、同じ採点へ通す（縦）。**`vsubject-tilt` はずっと真ん中で 55.7%** なので、
+  // 追っていなければここで落ちる。
+  {
+    const t = vScreen['vsubject-tilt'];
+    const fixed = scoreFollow(fixtureOf('vsubject-tilt'), t.state.times, t.state.centers.map(() => 0.5), t.state.cropWidth, 'native', 'v');
+    ok(
+      '縦でも、枠を真ん中に固定すると同じ採点が落ちる（検査が効いている）',
+      t.screen.inside > fixed.inside + 10,
+      `追う ${t.screen.inside.toFixed(1)}% 対 ずっと真ん中 ${fixed.inside.toFixed(1)}%`,
+    );
+  }
+
+  // --- 画面の記録（縦） ---
+  await page.evaluate(async () => {
+    const video = document.getElementById('rf-video');
+    const out = document.getElementById('rf-video-out');
+    video.currentTime = 6;
+    out.currentTime = 6;
+    await new Promise((r) => setTimeout(r, 400));
+  });
+  const vShot = path.join(here, '../fixtures/out/uitest-reframe-v.png');
+  fs.mkdirSync(path.dirname(vShot), { recursive: true });
+  await page.screenshot({ path: vShot, fullPage: true });
+  console.log(`\n画面の記録（縦）: ${vShot}`);
+
+  // 横へ戻す（下の記録は横の画面）。
+  await setAxis(page, 'u');
+
   // --- 画面の記録 ---
   await feed(page, 'subject-pause');
   const shot = path.join(here, '../fixtures/out/uitest-reframe.png');
@@ -479,11 +787,16 @@ if (failed > 0) {
 console.log('\nすべて通りました。');
 
 /**
- * 画面に映っている縦型が、元のコマのどこを切ったものかを当てる。
+ * 画面に映っている切り出しが、元のコマのどこを切ったものかを当てる。
  *
- * 撮った絵から明るさの形（10 本）を作り、元のコマの列（32 本）の上を
- * 1/256 きざみで滑らせて、いちばん相関の高い左端を返す。
+ * 撮った絵から明るさの形（10 本）を作り、元のコマの軸の上の 32 本の上を
+ * 1/256 きざみで滑らせて、いちばん相関の高い始まりを返す。
  * **中身を見ずに「ずらし量が合っているか」だけを見ると、向きを間違えても通る。**
+ *
+ * **軸は画面から読む**（`state().axis`）。縦の軸では標本を**行**で取り、
+ * 畳んだときに落とした帯も軸と垂直の側（横）になる。
+ * ここを横に決め打ちしたままだと、縦の軸では
+ * **「32 行を 10 列と比べる」形になって、相関がどこでも低いまま通ってしまう。**
  */
 async function matchCrop(page) {
   const png = await page.locator('#rf-crop').screenshot();
@@ -496,18 +809,23 @@ async function matchCrop(page) {
     const ctx = canvas.getContext('2d');
     ctx.drawImage(bitmap, 0, 0);
     const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    // 元の列（`columnLuma`）は上下 15% を落としてあるので、こちらも同じ所だけを見る。
-    const y0 = Math.floor(canvas.height * 0.15);
-    const y1 = Math.ceil(canvas.height * 0.85);
+    const vertical = window.__labReframe.state().axis === 'v';
+    // 元の 32 本（`columnLuma`）は軸と垂直の側で帯を落としてあるので、こちらも同じ所だけを見る
+    // （横の軸では上下 15%、縦の軸では既定で全部）。
+    const band = window.__labReframe.state().rowBand;
+    const across = vertical ? canvas.width : canvas.height;
+    const a0 = Math.floor(across * band.from);
+    const a1 = Math.max(a0 + 1, Math.ceil(across * band.to));
+    const along = vertical ? canvas.height : canvas.width;
     const shot = [];
     for (let j = 0; j < samples; j += 1) {
-      const x0 = Math.floor((j / samples) * canvas.width);
-      const x1 = Math.max(x0 + 1, Math.floor(((j + 1) / samples) * canvas.width));
+      const s0 = Math.floor((j / samples) * along);
+      const s1 = Math.max(s0 + 1, Math.floor(((j + 1) / samples) * along));
       let sum = 0;
       let n = 0;
-      for (let y = y0; y < y1; y += 1) {
-        for (let x = x0; x < x1; x += 1) {
-          const p = (y * canvas.width + x) * 4;
+      for (let u = s0; u < s1; u += 1) {
+        for (let v = a0; v < a1; v += 1) {
+          const p = ((vertical ? u * canvas.width + v : v * canvas.width + u)) * 4;
           sum += (0.2126 * data[p] + 0.7152 * data[p + 1] + 0.0722 * data[p + 2]) / 255;
           n += 1;
         }

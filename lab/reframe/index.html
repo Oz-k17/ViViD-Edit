@@ -12,10 +12,11 @@
   </head>
   <body>
     <header class="head">
-      <h1>自動リフレーム（横型の素材から、被写体を追って縦型を切り出す）</h1>
+      <h1>自動リフレーム（素材から、被写体を追って別の形を切り出す）</h1>
       <p>
-        16:9 で撮った素材から 9:16 を切り出すとき、クロップ枠を被写体に合わせて横へ動かします。
-        決めるのは「各コマで、幅 31.6% の窓を横のどこに置くか」の 1 本の列だけです。
+        <strong>軸は 2 つあります。</strong>16:9 で撮った素材から 9:16 を切るときは枠が<strong>横</strong>へ動き、
+        最初から縦（9:16）で撮った素材から 1:1 を切るときは枠が<strong>縦</strong>へ動きます。
+        どちらも決めるのは「各コマで、窓を軸のどこに置くか」の 1 本の列だけです。
         処理はすべてこのページの中で完結し、どこにも送信しません。
       </p>
     </header>
@@ -34,6 +35,21 @@
           （60fps まで読んでも上がらないので、そこで止めています）。
         </p>
 
+        <label class="axis">
+          <span>決める軸</span>
+          <select id="axis">
+            <option value="u">横 ・ 16:9 の素材から 9:16 を切る（既定）</option>
+            <option value="v">縦 ・ 最初から縦（9:16）の素材から 1:1 を切る</option>
+          </select>
+          <small>
+            <span id="axis-note"></span>。<strong>切り替えても読み直しは要りません</strong>——
+            読み込みは軸を知らず（長辺を 128 に揃えるだけ）、入れ替わるのは
+            <strong>畳む向きと、被写体を指す手</strong>だけです。枠を決める段
+            （死に帯・速さ・ならし・門）は 1 行も違いません。
+            <strong>既定は軸ごとに別</strong>なので、切り替えると下のつまみは書き直されます
+          </small>
+        </label>
+
         <label class="file">
           <span>動画を選ぶ</span>
           <input type="file" id="rf-file" accept="video/*" />
@@ -47,7 +63,7 @@
           <span class="swatch raw"></span>生の位置（その手が指した所）　<span class="swatch smoothed"></span>ならしたあと
           　<span class="swatch target"></span>枠の中心　<span class="swatch band"></span>窓の左端〜右端
           　<span class="swatch moving"></span>枠が動いている所
-          <br />縦が<strong>画面の横位置</strong>（上が左端・下が右端）、横が時間です
+          <br /><span id="legend-axis"></span>
         </p>
 
         <dl class="stats" id="rf-stats"></dl>
@@ -55,12 +71,13 @@
       </section>
 
       <section class="card">
-        <h2>2. 切り出した縦型を見る</h2>
+        <h2 id="sec-out">2. 切り出した縦型（9:16）を見る</h2>
         <p class="muted">
           この試作の出口です。<strong>絵は読み直していません</strong>——枠の列さえ出れば、
-          あとは元の動画を横へずらして見せるだけで済みます
+          あとは元の動画を軸の向きへずらして見せるだけで済みます
           （表紙の画面は「測るコマ」と「出す絵」で読み込みが 2 本要りましたが、こちらは要りません）。
-          右の細い枠が出来上がりで、左は元の画とそこに重ねた窓です。
+          <strong>軸が変わってもここは同じ</strong>で、横へずらすか縦へずらすかしか違いません。
+          右の枠が出来上がりで、左は元の画とそこに重ねた窓です。
         </p>
         <div class="preview">
           <div class="preview-source">
@@ -68,13 +85,13 @@
               <video id="rf-video" muted playsinline></video>
               <div class="window" id="rf-window"></div>
             </div>
-            <p class="muted small">元の画（16:9）と、いま切っている窓</p>
+            <p class="muted small" id="cap-source">元の画（16:9）と、いま切っている窓</p>
           </div>
           <div class="preview-out">
-            <div class="frame crop" id="rf-crop">
+            <div class="frame crop" id="rf-crop" data-height="320">
               <video id="rf-video-out" muted playsinline></video>
             </div>
-            <p class="muted small">出来上がり（9:16）</p>
+            <p class="muted small" id="cap-out">出来上がり（9:16）</p>
           </div>
         </div>
         <div class="row">
@@ -105,12 +122,14 @@
             </small>
           </label>
           <label>
-            切り出す窓の幅 <output id="out-crop"></output>
+            <span id="label-crop">切り出す窓の幅</span> <output id="out-crop"></output>
             <input type="range" id="crop-width" min="0.25" max="1" step="0.00390625" value="0.31640625" />
             <small>
-              16:9 から 9:16 を切るなら 31.6%（<strong>81/256</strong>）。1.0 にすると切らないのと同じ。
+              16:9 から 9:16 を切るなら 31.6%（<strong>81/256</strong>）、9:16 から 1:1 なら
+              56.25%（<strong>144/256</strong>）。1.0 にすると切らないのと同じ。
               目盛りが 1/256 きざみなのは、<strong>既定をちょうど表せる目盛りでないと、
-              画面だけが黙って 31.5% で動く</strong>ため（実際に 1 度そうなっていた）
+              画面だけが黙って 31.5% で動く</strong>ため（実際に 1 度そうなっていた）。
+              <strong>縦の窓は横の 1.8 倍広い</strong>ので、軸をまたいで入れた率を並べて読まないこと
             </small>
           </label>
           <label>
@@ -151,11 +170,26 @@
             <small>中央値でならす。平均ではないのは、カットのコマで飛ぶ 1 点を落とすため</small>
           </label>
           <label>
-            列へ畳むときに見る縦の範囲 <output id="out-band"></output>
+            <span id="label-band">列へ畳むときに見る縦の範囲</span> <output id="out-band"></output>
             <input type="range" id="row-band" min="0" max="0.35" step="0.01" value="0.15" />
-            <small>
+            <small data-for-axis="u">
               上下を落とすのは<strong>焼き込みの字幕</strong>のため。0 に戻すと
               <code>captions-only</code> の泳ぎが 0.006 → 0.077 へ 13 倍になる
+            </small>
+            <small data-for-axis="v">
+              <strong>縦の軸では既定が「全部見る」。</strong>字幕は上下にあるので、
+              行へ畳む向きでは<strong>落とす先が無い</strong>（落としても帯が軸の上に残る）。
+              縦で字幕を外すのは下のつまみのほう
+            </small>
+          </label>
+          <label data-for-axis="v">
+            軸の上で枠を探してよい範囲（axisBand） <output id="out-axis-band"></output>
+            <input type="range" id="axis-band" min="0" max="0.35" step="0.01" value="0.15" />
+            <small>
+              <strong>縦の軸だけのつまみ</strong>（横では読まれないので出していない）。
+              畳んだあとに、上下の帯を重みから 0 にする。0 に戻すと
+              <code>vsubject-captions</code> のずれが 0.016 → 0.119 へ 7 倍になり、
+              判定が被写体ではなく字幕を指す
             </small>
           </label>
           <label class="check">
