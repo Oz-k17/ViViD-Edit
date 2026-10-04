@@ -25,8 +25,11 @@ export const median = (xs) => {
  * **「入れた」は被写体の中心が窓に入っていること。** 被写体（横幅 40%）は
  * 窓（31.6%）より広いので、どこに置いても全身は入らない——だから中心で数える。
  * 画面の外に居るコマは追いようが無いので数えない。
+ *
+ * `axis` が `v` なら縦の軸（最初から縦の素材から 1:1 を切る側）。`cropWidth` には
+ * **窓の高さ**を渡す。**縦の窓は横の 1.8 倍広いので、入れた率を軸をまたいで並べないこと。**
  */
-export function scoreFollow(fixture, times, centers, cropWidth, aspect = 'landscape') {
+export function scoreFollow(fixture, times, centers, cropWidth, aspect = 'landscape', axis = 'u') {
   const half = cropWidth / 2;
   const errors = [];
   let inside = 0;
@@ -34,9 +37,12 @@ export function scoreFollow(fixture, times, centers, cropWidth, aspect = 'landsc
   for (let i = 0; i < centers.length; i += 1) {
     const truth = leadSubjectAt(fixture, times[i], aspect);
     if (!truth) continue;
-    if (truth.u < 0 || truth.u > 1) continue;
+    // 軸は**正解の読み方だけ**を変える（2026-10-04）。入れた率も泳ぎも、
+    // 縦の軸では「窓の高さ」で同じ式を回すだけなので、物差しを 2 つに割らない。
+    const p = axis === 'v' ? truth.v : truth.u;
+    if (p < 0 || p > 1) continue;
     counted += 1;
-    const err = Math.abs(truth.u - centers[i]);
+    const err = Math.abs(p - centers[i]);
     errors.push(err);
     if (err < half) inside += 1;
   }

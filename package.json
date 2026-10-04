@@ -52,6 +52,8 @@
     "lab:thumb:outline": "node lab/thumbnail/outline-format-probe.mjs",
     "lab:reframe": "node lab/reframe/bench.mjs",
     "lab:reframe:probe": "node lab/reframe/probe.mjs",
+    "lab:reframe:v": "node lab/reframe/vbench.mjs",
+    "lab:reframe:vprobe": "node lab/reframe/vprobe.mjs",
     "lab:reframe:demo": "vite lab/reframe",
     "lab:reframe:uitest": "node lab/reframe/uitest.mjs && node lab/keyframe/uitest.mjs",
     "lab:reframe:decimate": "node lab/reframe/decimate-probe.mjs",

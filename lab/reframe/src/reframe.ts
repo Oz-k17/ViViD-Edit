@@ -43,12 +43,16 @@
 
 import {
   COLUMNS,
+  FULL_BAND,
   type ColumnStat,
   type FrameLike,
   type RowBand,
+  keepBand,
   readPeak,
   spatialOdds,
   summarizeAllColumns,
+  summarizeAllRows,
+  trendOdds,
 } from './columns.ts';
 
 export interface ReframeOptions {
@@ -89,6 +93,16 @@ export interface ReframeOptions {
    * **ここは「字幕がそこにある」という入力への仮定**なので、つまみとして残してある。
    */
   rowBand: RowBand;
+  /**
+   * **軸の上で、枠の中心を探してよい範囲**（2026-10-04 に縦の軸のために足した）。
+   *
+   * `rowBand` と同じ仮定（「字幕は上下にある」）を、**軸の向きが字幕と同じとき**に当てる口。
+   * 横の軸では字幕は軸と垂直なので `rowBand` で畳む前に落とせるが、
+   * 縦の軸では**字幕が軸の上に載っている**ので落とす先が無く、畳んだあとに締め出すほかない。
+   * **横の軸では使わない**（既定は全部）。1 つの入れ物に両方置いてあるのは、
+   * つまみの一覧が 2 つに割れると、どちらを渡したかで数字が静かにずれるため。
+   */
+  axisBand: RowBand;
   /**
    * 頭の置き所を、最初の `settle` 秒の中央値から決めるか。
    *
@@ -195,6 +209,7 @@ export const DEFAULT_REFRAME: ReframeOptions = {
   settle: 0.3,
   smooth: 1.0,
   rowBand: { from: 0.15, to: 0.85 },
+  axisBand: FULL_BAND,
   leadIn: true,
   gate: 'soft',
   gateRelease: 0.6,
@@ -248,6 +263,74 @@ export function summarizeForReframe(
 ): ColumnStat[] {
   const opt = { ...DEFAULT_REFRAME, ...options };
   return summarizeAllColumns(frames, times, opt.rowBand);
+}
+
+/**
+ * **縦の軸**（2026-10-04）。最初から縦（9:16）で撮った素材から 1:1 を切ると、余るのは縦。
+ *
+ * 枠を決める側（`planFromRaw`）は軸を知らない——入口は「0〜1 の位置の列」1 本だけ——ので、
+ * **畳む向きを替えて窓の長さを入れ替えるだけ**で同じ道具が乗る。
+ * 既定は `VERTICAL_REFRAME`。
+ */
+export const SQUARE_CROP_V = 9 / 16;
+
+/**
+ * 縦の軸の既定。横（`DEFAULT_REFRAME`）から変えるのは 2 つだけ:
+ *
+ * - `cropWidth` は**窓の高さ**（9/16 ＝ 0.5625）。受け皿の幅がそのまま 1:1 の 1 辺になる。
+ *   横の窓（0.316）の **1.8 倍広い**ので、**入れた率を横の表と並べて読まないこと。**
+ * - `rowBand`（畳むときに見る、軸と垂直な範囲）は**全部**。横の軸で上下 15% を落としていたのは
+ *   焼き込みの字幕のためだが、**縦の軸では字幕は軸の上に載っている**ので、
+ *   畳む前に落とすことができない。締め出すなら `muteCaptions` のほう（下の注）。
+ */
+export const VERTICAL_REFRAME: ReframeOptions = {
+  ...DEFAULT_REFRAME,
+  cropWidth: SQUARE_CROP_V,
+  rowBand: FULL_BAND,
+  axisBand: { from: 0.15, to: 0.85 },
+};
+
+/** 縦の軸へ畳む。入口を 1 つにしてある理由は `summarizeForReframe` と同じ。 */
+export function summarizeForReframeVertical(
+  frames: FrameLike[],
+  times: ArrayLike<number>,
+  options: Partial<ReframeOptions> = {},
+): ColumnStat[] {
+  const opt = { ...VERTICAL_REFRAME, ...options };
+  return summarizeAllRows(frames, times, opt.rowBand);
+}
+
+/**
+ * 縦の軸の**生の位置**。横（`rawTargets`）と違うのは 2 つだけで、**どちらも測って足した**
+ * （2026-10-04。表は `npm run lab:reframe:vprobe`）:
+ *
+ * 1. **階調を外す**（`trendOdds`）。背景の明暗は上から下へ付いているので、
+ *    コマの中の中央値と比べる手（`spatialOdds`）では**いちばん浮くのが階調の端**になる。
+ *    `vsubject-static` のずれが 0.510 → 0.044、入れた率 0% → 100%。
+ * 2. **軸の上の帯を締め出す**（`axisBand`）。字幕は上下にあるので、縦の軸では
+ *    畳んだあとに締め出すほかない。`vsubject-captions` のずれが 0.329 → 0.013、
+ *    入れた率 0% → 100%。
+ *
+ * **片方だけでは足りない**（階調だけだと字幕に負け、締め出しだけだと階調に負ける）。
+ */
+export function rawTargetsVertical(rows: ColumnStat[], band: RowBand = VERTICAL_REFRAME.axisBand): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < rows.length; i += 1) {
+    const v = readPeak(keepBand(trendOdds(rows, i), band));
+    // 指せなかったコマの扱いは横と同じ（真ん中へ戻さず、前の答えを引き継ぐ）。
+    out.push(Number.isNaN(v) ? (out.length ? out[out.length - 1] : 0.5) : v);
+  }
+  return out;
+}
+
+/** 縦の軸の枠の置き所。枠を決める段（`planFromRaw`）は横とまったく同じものを使う。 */
+export function planReframeVertical(rows: ColumnStat[], options: Partial<ReframeOptions> = {}): ReframePlan {
+  const opt = { ...VERTICAL_REFRAME, ...options };
+  return planFromRaw(
+    rawTargetsVertical(rows, opt.axisBand),
+    rows.map((r) => r.time),
+    opt,
+  );
 }
 
 /** 中央値。ならすのに平均を使わない理由は上の注に書いた。 */

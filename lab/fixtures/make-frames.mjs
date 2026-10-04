@@ -63,7 +63,7 @@ function hsv(h, s, v) {
  * 色の面だけだと横へずらしても画素が 1 つも変わらず、「カメラが動いても切らない」を
  * 試したつもりで何も試していないことになる。
  */
-function makeShot(rnd, { palette = null, dark = false, tint = null, span = 1, spanV = 1, fine = 0 } = {}) {
+function makeShot(rnd, { palette = null, dark = false, tint = null, span = 1, spanV = 1, fine = 0, horizon = null } = {}) {
   const hue = rnd();
   const top = palette ? palette.top.slice() : hsv(hue, 0.45 + 0.35 * rnd(), 0.55 + 0.35 * rnd());
   const bottom = palette
@@ -120,7 +120,11 @@ function makeShot(rnd, { palette = null, dark = false, tint = null, span = 1, sp
   // 種は `fine` を使うときだけ引く。使わない素材で 1 つ余分に引くと、
   // そのあとの乱数の列がまるごとずれて**既存の素材の絵が変わってしまう**。
   const fineSeed = fine > 0 ? Math.floor(rnd() * 1e9) : 0;
-  return { top, bottom, texU, texV, blobs, fine, fineU: 96, fineV: 54, fineSeed };
+  // `horizon` は**上下の階調を直線でなくする**口（2026-10-04）。
+  // 縦のリフレームは「背景の階調を直線とみなして外す」手を使っているので、
+  // **直線で表せない背景**＝空と地面がくっきり分かれた絵が、その手を潰す相手になる。
+  // 種を 1 つも余分に引かないので、この口を使わない素材の絵は 1 画素も変わらない。
+  return { top, bottom, texU, texV, blobs, fine, fineU: 96, fineV: 54, fineSeed, horizon };
 }
 
 /**
@@ -211,8 +215,17 @@ function shotPixel(shot, u, v, t, out, span = 1, spanV = 1) {
     // ——つまりシャッターの中で動けば、そのぶんきちんと潰れる。
     shade *= 1 + shot.fine * (fineTexture(uw * span, vc * spanV, shot.fineU, shot.fineV, shot.fineSeed) - 0.5);
   }
+  // 階調の読み所。既定は上から下へまっすぐ。`horizon` があるときは、
+  // そこで一気に渡る形（空と地面）にする。**にじみを 0 にしない**のは、
+  // 1 画素で立てると手ぶれだけで大きな差が出てしまうため（blob の縁と同じ理由）。
+  let grad = vc;
+  if (shot.horizon != null) {
+    const edge = 0.03;
+    const step = Math.min(1, Math.max(0, (vc - shot.horizon) / edge + 0.5));
+    grad = 0.1 * vc + 0.9 * step;
+  }
   for (let i = 0; i < 3; i += 1) {
-    out[i] = (shot.top[i] + (shot.bottom[i] - shot.top[i]) * vc) * shade;
+    out[i] = (shot.top[i] + (shot.bottom[i] - shot.top[i]) * grad) * shade;
   }
   for (const b of shot.blobs) {
     let bx = b.cx + b.vx * t;
@@ -551,11 +564,13 @@ export function renderSpec(
     // 骨格まで変えると「色が違うのか形が違うのか」が分からなくなるため。
     // 種を場面ごとに作り直すので、骨格（模様と配置）は 1 ビットも同じになる。
     for (let i = 0; i < shotCount; i += 1) {
-      shots.push(makeShot(rng((o.seed ?? 1) + 1), { tint: lumaNeutralTint(i), span, spanV, fine: o.fine ?? 0 }));
+      shots.push(
+        makeShot(rng((o.seed ?? 1) + 1), { tint: lumaNeutralTint(i), span, spanV, fine: o.fine ?? 0, horizon: o.horizon ?? null }),
+      );
     }
   } else {
     for (let i = 0; i < shotCount; i += 1) {
-      shots.push(makeShot(rnd, { palette, dark: o.dark, span, spanV, fine: o.fine ?? 0 }));
+      shots.push(makeShot(rnd, { palette, dark: o.dark, span, spanV, fine: o.fine ?? 0, horizon: o.horizon ?? null }));
     }
   }
 

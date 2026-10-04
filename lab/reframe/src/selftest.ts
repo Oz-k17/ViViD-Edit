@@ -17,12 +17,27 @@ import {
   columnCenter,
   contrast,
   diffLuma,
+  keepBand,
   readCentroid,
   readPeak,
   spatialOdds,
   summarizeColumns,
+  summarizeRows,
+  trendOdds,
 } from './columns.ts';
-import { DEFAULT_REFRAME, planFromRaw, planReframe, rawTargets, summarizeForReframe, toCropRects } from './reframe.ts';
+import {
+  DEFAULT_REFRAME,
+  SQUARE_CROP_V,
+  VERTICAL_REFRAME,
+  planFromRaw,
+  planReframe,
+  planReframeVertical,
+  rawTargets,
+  rawTargetsVertical,
+  summarizeForReframe,
+  summarizeForReframeVertical,
+  toCropRects,
+} from './reframe.ts';
 
 export interface TestResult {
   name: string;
@@ -349,6 +364,146 @@ export function runSelfTest(): TestResult[] {
       'クロップの矩形は、中心と幅から素直に出る',
       Math.abs(rect.x + rect.width / 2 - plan.frames[0].center) < 1e-9 && Math.abs(rect.width - DEFAULT_REFRAME.cropWidth) < 1e-9,
       `x ${rect.x.toFixed(3)} 幅 ${rect.width.toFixed(3)}`,
+    );
+  }
+
+  /* ---------------------------------------------------------------------
+   * 縦の軸（2026-10-04）
+   * ------------------------------------------------------------------- */
+
+  /** 横に 1 本の帯を置いたコマ。縦の軸での「被写体」。 */
+  const withRow = (at: number, half = 0.08) =>
+    makeFrame(72, 128, (_u, v) => (Math.abs(v - at) < half ? [240, 140, 40] : [40, 60, 90]));
+
+  {
+    // 畳む向きが本当に入れ替わっているか。**同じコマを両方で畳んで比べる**——
+    // 片方を呼び忘れても落ちない作りなので、向きを取り違えたまま通る道がある。
+    const f = withRow(0.75);
+    const rows = summarizeRows(f, 0);
+    const cols = summarizeColumns(f, 0);
+    const at = Math.floor(0.75 * COLUMNS);
+    push(
+      '行へ畳むと、帯の居る高さだけが明るい',
+      rows.luma[at] > rows.luma[0] * 1.5,
+      `高さ ${at} ${rows.luma[at].toFixed(3)} / 上端 ${rows.luma[0].toFixed(3)}`,
+    );
+    push(
+      '同じコマを列へ畳むと、横には差が出ない（帯は横いっぱいなので）',
+      Math.abs(cols.luma[0] - cols.luma[COLUMNS - 1]) < 1e-9,
+      `列0 ${cols.luma[0].toFixed(4)} / 列${COLUMNS - 1} ${cols.luma[COLUMNS - 1].toFixed(4)}`,
+    );
+  }
+  {
+    // **階調を外す手が、まっすぐな階調を消しているか。**
+    // 外さない手（`spatialOdds`）が階調の端を指すことまで併せて見る——
+    // そこを見ないと「`trendOdds` のほうが良い」と言える根拠が無い。
+    const ramp = makeFrame(72, 128, (_u, v) => [30 + 200 * v, 30 + 200 * v, 30 + 200 * v]);
+    const rows = [summarizeRows(ramp, 0)];
+    const t = trendOdds(rows, 0);
+    const sp = spatialOdds(rows, 0);
+    let tMax = 0;
+    for (let c = 0; c < COLUMNS; c += 1) if (t[c] > tMax) tMax = t[c];
+    push(
+      'まっすぐな階調は、直線を外すとほぼ消える',
+      tMax < 0.01,
+      `階調を外した最大 ${tMax.toFixed(4)} / 外さない最大 ${Math.max(...sp).toFixed(4)}`,
+    );
+    push(
+      '外さない手は、階調の端を指してしまう（縦の軸で `spatial` を使わない理由）',
+      readPeak(sp) > 0.8 || readPeak(sp) < 0.2,
+      `指した所 ${readPeak(sp).toFixed(3)}`,
+    );
+  }
+  {
+    // **階調の上に乗せた被写体を、ちゃんと拾えるか。**
+    // 上の検査は「階調が消える」だけなので、消しすぎていても通ってしまう。
+    const rampWithRow = makeFrame(72, 128, (_u, v) =>
+      Math.abs(v - 0.65) < 0.08 ? [240, 140, 40] : [30 + 200 * v, 30 + 200 * v, 30 + 200 * v],
+    );
+    const rows = [summarizeRows(rampWithRow, 0)];
+    push(
+      '階調の上に乗せた被写体は、直線を外しても残る',
+      Math.abs(readPeak(trendOdds(rows, 0)) - 0.65) < 0.05,
+      `階調を外して ${readPeak(trendOdds(rows, 0)).toFixed(3)} / 外さず ${readPeak(spatialOdds(rows, 0)).toFixed(3)}（正解 0.650）`,
+    );
+  }
+  {
+    // **軸の上の帯を締め出しているか。** 0 にするのであって小さくするのではない、
+    // というのが要点なので、締め出した所がきっかり 0 であることまで見る。
+    const w: Weights = new Float64Array(COLUMNS);
+    for (let c = 0; c < COLUMNS; c += 1) w[c] = 1;
+    const kept = keepBand(w, { from: 0.15, to: 0.85 });
+    const outside = Array.from(kept).filter((_v, c) => columnCenter(c) < 0.15 || columnCenter(c) > 0.85);
+    const inside = Array.from(kept).filter((_v, c) => columnCenter(c) >= 0.15 && columnCenter(c) <= 0.85);
+    push(
+      '締め出した帯はきっかり 0 になり、中は 1 も減らない',
+      outside.every((v) => v === 0) && inside.every((v) => v === 1) && outside.length > 0,
+      `外 ${outside.length} 個 / 中 ${inside.length} 個`,
+    );
+  }
+  {
+    // **字幕の帯を締め出すと、答えが被写体へ戻るか。**
+    // 上下に明るい帯（字幕）、まん中より少し上に被写体。
+    const captioned = makeFrame(72, 128, (_u, v) => {
+      if (v < 0.08 || v > 0.92) return [255, 255, 255];
+      // 被写体の色は**3 色とも背景から離す**。最初に [150,110,70] で書いたら、
+      // 緑が背景（60）とほぼ同じで、3 色を平均した隔たりが背景のほうが大きくなった
+      // ——**検査が落ちたのは実装ではなく素材のほう**だった。
+      return Math.abs(v - 0.4) < 0.08 ? [240, 180, 60] : [40, 60, 90];
+    });
+    const rows = [summarizeRows(captioned, 0)];
+    const whole = readPeak(trendOdds(rows, 0));
+    const banded = readPeak(keepBand(trendOdds(rows, 0), { from: 0.15, to: 0.85 }));
+    push(
+      '字幕の帯を締め出すと、指す所が字幕から被写体へ戻る',
+      Math.abs(banded - 0.4) < 0.06 && Math.abs(whole - 0.4) > 0.2,
+      `締め出して ${banded.toFixed(3)} / 締め出さず ${whole.toFixed(3)}（正解 0.400）`,
+    );
+  }
+  {
+    // 境目。大きさ 0 のコマと、潰れた帯（from >= to）。
+    // 縦は**答えを返せないときに真ん中へ戻さない**ので、そこまで見る。
+    const empty = summarizeRows({ width: 0, height: 0, data: new Uint8ClampedArray(0) }, 2.5);
+    const flat = summarizeRows(withRow(0.5), 0, { from: 0.7, to: 0.3 });
+    const nothing = rawTargetsVertical([summarizeRows(withRow(0.5), 0)], { from: 0.7, to: 0.3 });
+    push(
+      '大きさ 0 のコマ・潰れた帯・締め出しで何も残らない帯でも落ちない',
+      empty.luma.length === COLUMNS &&
+        empty.time === 2.5 &&
+        flat.luma.length === COLUMNS &&
+        nothing.length === 1 &&
+        nothing[0] === 0.5,
+      `潰れた帯の最大 ${Math.max(...flat.luma).toFixed(3)} / 何も残らないとき ${nothing[0]}`,
+    );
+  }
+  {
+    // 縦の窓の長さが 9/16 であること、そして**枠がそのぶん端で止まる**こと。
+    // 止まる所（0.28125）は正解の置き所と重ねてはいけない、という話が
+    // `vsubject-static` の注にある。ここではその止まる所そのものを固定しておく。
+    const frames = [withRow(0.05), withRow(0.05)];
+    const times = [0, 1 / 15];
+    const rows = summarizeForReframeVertical(frames, times);
+    const plan = planReframeVertical(rows);
+    push(
+      '縦の窓は 9/16 で、枠はその半分より端へは行かない',
+      Math.abs(SQUARE_CROP_V - 0.5625) < 1e-12 &&
+        Math.abs(VERTICAL_REFRAME.cropWidth - SQUARE_CROP_V) < 1e-12 &&
+        plan.frames.every((f) => f.center >= SQUARE_CROP_V / 2 - 1e-9),
+      `いちばん上 ${Math.min(...plan.frames.map((f) => f.center)).toFixed(5)}（下限 ${(SQUARE_CROP_V / 2).toFixed(5)}）`,
+    );
+  }
+  {
+    // 縦の生の位置が、横の生の位置と**混ざっていない**こと。
+    // 同じ `ColumnStat` の形を使い回しているので、取り違えても型では落ちない。
+    const frames = [withRow(0.7), withRow(0.7)];
+    const times = [0, 1 / 15];
+    const rows = summarizeForReframeVertical(frames, times);
+    const v = rawTargetsVertical(rows);
+    const u = rawTargets(summarizeForReframe(frames, times));
+    push(
+      '縦は帯の高さを指し、同じコマを横で読むと指す所が無い（横は一様なので）',
+      Math.abs(v[0] - 0.7) < 0.05,
+      `縦 ${v[0].toFixed(3)}（正解 0.700）/ 横 ${Number.isNaN(u[0]) ? 'NaN' : u[0].toFixed(3)}`,
     );
   }
 

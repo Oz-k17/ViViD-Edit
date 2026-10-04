@@ -286,3 +286,141 @@ export function contrast(w: Weights): number {
   buf.sort((a, b) => a - b);
   return max - buf[buf.length >> 1];
 }
+
+/* --------------------------------------------------------------------------
+ * ここから下は**縦の軸**（2026-10-04）。
+ *
+ * 最初から縦（9:16）で撮った素材から 1:1 を切るときに余るのは**縦**なので、
+ * 「幅 31.6% の窓を横のどこに置くか」と同じ問いが、軸を替えてもう 1 本出てくる。
+ * 枠を決める側（`planFromRaw`）は軸を知らない——入口は「0〜1 の位置の列」1 本だけ——
+ * なので、**畳む向きだけを足せば同じ道具がそのまま乗る。**
+ *
+ * ただし**向きを入れ替えただけの鏡像ではない**（測った結果は README に）:
+ *   - 背景の階調は**縦に付いている**（空と地面）。横へ畳むと階調は平らになるが、
+ *     縦へ畳むと階調そのものが「浮いている帯」として立つ。
+ *   - 焼き込みの字幕は**上下にある**。横の軸では「見ない帯」として外へ追い出せるが、
+ *     縦の軸では**測っている軸の上に載っている**ので、追い出す先が無い。
+ * ------------------------------------------------------------------------ */
+
+/** 畳む向き。`u` は横の位置（列）、`v` は縦の位置（行）。 */
+export type Axis = 'u' | 'v';
+
+/**
+ * コマ 1 枚を**行**へ畳む。返す形は `summarizeColumns` と同じなので、
+ * 重みを作る手（`spatialOdds` など）も読む手（`readPeak` など）もそのまま使える。
+ *
+ * `band` は**横のどこを見るか**（列へ畳むときの `RowBand` と垂直の関係）。
+ * 既定が全部なのは、横に字幕が焼かれている形がまず無いから。
+ */
+export function summarizeRows(frame: FrameLike, time: number, band: RowBand = FULL_BAND): ColumnStat {
+  const { width, height, data } = frame;
+  const rgb = new Float64Array(COLUMNS * 3);
+  const lum = new Float64Array(COLUMNS);
+  if (width <= 0 || height <= 0) return { time, rgb, luma: lum };
+
+  // 潰れた帯の扱いは列と同じ（0 列で割ると「真っ黒なコマ」と区別が付かなくなる）。
+  const x0 = Math.max(0, Math.min(width - 1, Math.floor(band.from * width)));
+  const x1 = Math.max(x0 + 1, Math.min(width, Math.ceil(band.to * width)));
+
+  const counts = new Float64Array(COLUMNS);
+  for (let y = 0; y < height; y += 1) {
+    const r = Math.min(COLUMNS - 1, Math.floor((y * COLUMNS) / height));
+    for (let x = x0; x < x1; x += 1) {
+      const p = (y * width + x) * 4;
+      rgb[r * 3] += data[p];
+      rgb[r * 3 + 1] += data[p + 1];
+      rgb[r * 3 + 2] += data[p + 2];
+      lum[r] += luma(data[p], data[p + 1], data[p + 2]);
+      counts[r] += 1;
+    }
+  }
+  for (let r = 0; r < COLUMNS; r += 1) {
+    if (counts[r] === 0) continue;
+    for (let i = 0; i < 3; i += 1) rgb[r * 3 + i] /= counts[r] * 255;
+    lum[r] /= counts[r];
+  }
+  return { time, rgb, luma: lum };
+}
+
+/** 素材ぜんたいを行へ畳む。 */
+export function summarizeAllRows(
+  frames: FrameLike[],
+  times: ArrayLike<number>,
+  band: RowBand = FULL_BAND,
+): ColumnStat[] {
+  const out: ColumnStat[] = [];
+  for (let i = 0; i < frames.length; i += 1) out.push(summarizeRows(frames[i], times[i] ?? i, band));
+  return out;
+}
+
+/** 向きで選んで畳む。呼ぶ側が `if` を書かずに済むように 1 つにしてある。 */
+export function summarizeAllSlices(
+  frames: FrameLike[],
+  times: ArrayLike<number>,
+  axis: Axis,
+  band: RowBand = FULL_BAND,
+): ColumnStat[] {
+  return axis === 'v' ? summarizeAllRows(frames, times, band) : summarizeAllColumns(frames, times, band);
+}
+
+/**
+ * **軸の上で、探してよい範囲の外を重みから締め出す**（2026-10-04）。
+ *
+ * 焼き込みの字幕は上下にあるので、縦の軸では**測っている軸の上に載る**。
+ * 横の軸のように「見ない帯」として畳む前に落とすことができない
+ * （畳む向きが同じなので、落としても帯がそのまま残る）。なので畳んだあとに締め出す。
+ *
+ * **0 にするのであって、小さい値を入れるのではない。** `readPeak` は山のまわりだけを
+ * 重心で読むので、山の隣に残骸があると答えがそちらへ引かれる。
+ */
+export function keepBand(w: Weights, band: RowBand): Weights {
+  const out = new Float64Array(w);
+  for (let c = 0; c < COLUMNS; c += 1) {
+    const u = columnCenter(c);
+    if (u < band.from || u > band.to) out[c] = 0;
+  }
+  return out;
+}
+
+/**
+ * **まっすぐな階調を外してから**、浮いている帯を探す（2026-10-04）。
+ *
+ * `spatialOdds` は帯の色を**コマの中の中央値**と比べる。横の軸ではそれでよかったが、
+ * 縦の軸では背景そのものが上から下へ階調を持っている（空と地面）ので、
+ * **いちばん浮いて見えるのは被写体ではなく階調の端**になる。
+ * 実際 `vsubject-static` では重みが上 0.06 から下 0.26 まで一本調子に上がり、
+ * 山は必ずいちばん下の帯を指す（2026-10-04 に測った）。
+ *
+ * なので、帯の番号に対して**最小二乗で直線を当て、その残りだけを見る。**
+ * 階調は直線で表せるぶんが消え、被写体のような**一か所の盛り上がり**だけが残る。
+ *
+ * 直線にしてあるのは、曲げるほど被写体そのものを呑み込むから——
+ * 被写体は帯の 4 割を占めることもあるので、**曲げられる自由度を増やすと
+ * 「背景を外す」ではなく「被写体を外す」になる。**
+ */
+export function trendOdds(cols: ColumnStat[], i: number): Weights {
+  const w = new Float64Array(COLUMNS);
+  const a = cols[i].rgb;
+  // 帯の番号を -1〜1 に取る（係数の桁をそろえるため。答えは割り算で消えるので中身は変わらない）。
+  let sxx = 0;
+  for (let c = 0; c < COLUMNS; c += 1) {
+    const x = (2 * c) / (COLUMNS - 1) - 1;
+    sxx += x * x;
+  }
+  for (let k = 0; k < 3; k += 1) {
+    let sy = 0;
+    let sxy = 0;
+    for (let c = 0; c < COLUMNS; c += 1) {
+      const x = (2 * c) / (COLUMNS - 1) - 1;
+      sy += a[c * 3 + k];
+      sxy += x * a[c * 3 + k];
+    }
+    const mean = sy / COLUMNS;
+    const slope = sxx > 0 ? sxy / sxx : 0;
+    for (let c = 0; c < COLUMNS; c += 1) {
+      const x = (2 * c) / (COLUMNS - 1) - 1;
+      w[c] += Math.abs(a[c * 3 + k] - (mean + slope * x)) / 3;
+    }
+  }
+  return w;
+}
