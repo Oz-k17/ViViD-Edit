@@ -34,6 +34,7 @@ import {
 import { fftScratch, magnitudes } from './fft.ts';
 import {
   applyGain,
+  ABSOLUTE_GATE_LUFS,
   applyKWeighting,
   applyKWeightingInto,
   DEFAULT_LOUDNESS_BLOCK_SECONDS,
@@ -44,6 +45,11 @@ import {
   newKWeightingState,
   planLoudnessNormalization,
   TP_CONTEXT,
+  TP_TAPS,
+  TP_BLOCK,
+  TP_MARGIN,
+  truePeakWindowBound,
+  TP_FILTER,
   truePeakAcrossJoin,
   truePeakEnvelope,
   truePeakEnvelopeRange,
@@ -2628,6 +2634,372 @@ export function runSelfTest(): TestResult[] {
     // ⑯ すでに大きい素材は素直に下げる（`speech-loud-clipped.wav` と同じ向き）。
     const loud = planLoudnessNormalization(measureLoudness(sine([{ seconds: 20, db: -3 }])));
     check('大きすぎる素材は下げる', loud.gainDb < -5 && loud.limitedBy === 'none', `${loud.gainDb.toFixed(2)}dB`);
+  }
+
+  // --- 打ち直しを速くした形（2026-10-06）---
+  //
+  // 打ち直しは測りの時間の 8 割を持っていたので、2 つの手で速くした
+  // （3 位相を 1 本の輪にまとめる／山が無いと先に分かる升を丸ごと飛ばす）。
+  // **速くしたときに確かめなければならないのは速さではなく「値が 1 ビットも動いていないこと」**なので、
+  // ここでは素直な形をその場で組み直して突き合わせる。
+  // 素直な形は `TP_FILTER` からしか作れない（だから lufs.ts はタップを外に出している）。
+  {
+    /** 2026-10-06 より前の形。位相ごとに素材をなめ直し、飛ばしもしない。 */
+    const plainPeak = (data: Float32Array, from = 0, to = data.length - TP_TAPS) => {
+      let peak = 0;
+      for (let p = 1; p < TP_FILTER.length; p += 1) {
+        const taps = TP_FILTER[p];
+        for (let i = from; i <= to; i += 1) {
+          let acc = 0;
+          for (let k = 0; k < TP_TAPS; k += 1) acc += taps[k] * data[i + k];
+          const a = Math.abs(acc);
+          if (a > peak) peak = a;
+        }
+      }
+      return peak;
+    };
+    /** 2026-10-06 より前の形の `truePeakOf`（標本の最大と合わせる）。 */
+    const plainOf = (data: Float32Array) => {
+      let peak = 0;
+      for (let i = 0; i < data.length; i += 1) {
+        const a = Math.abs(data[i]);
+        if (a > peak) peak = a;
+      }
+      if (data.length < TP_TAPS) return peak;
+      const conv = plainPeak(data);
+      return conv > peak ? conv : peak;
+    };
+    /** 2026-10-06 より前の形の `truePeakEnvelope`。 */
+    const plainEnvelope = (data: Float32Array) => {
+      const env = new Float64Array(data.length);
+      for (let i = 0; i < data.length; i += 1) env[i] = Math.abs(data[i]);
+      if (data.length < TP_TAPS) return env;
+      for (let p = 1; p < TP_FILTER.length; p += 1) {
+        const taps = TP_FILTER[p];
+        const at = TP_TAPS / 2 + Math.round(p / TP_FILTER.length);
+        for (let i = 0; i + TP_TAPS <= data.length; i += 1) {
+          let acc = 0;
+          for (let k = 0; k < TP_TAPS; k += 1) acc += taps[k] * data[i + k];
+          const a = Math.abs(acc);
+          const j = i + at;
+          if (j < env.length && a > env[j]) env[j] = a;
+        }
+      }
+      return env;
+    };
+
+    // いじめる素材を先に並べる。**飛ばす手が効かない素材を入れておかないと、
+    // 「うまくいった」の中身が「自分に都合のいい素材で試しただけ」になる。**
+    const sr = 48000;
+    const lcg = (n: number, amp: number) => {
+      const d = new Float32Array(n);
+      let s = 1;
+      for (let i = 0; i < n; i += 1) {
+        s = (s * 1103515245 + 12345) & 0x7fffffff;
+        d[i] = amp * (s / 0x40000000 - 1);
+      }
+      return d;
+    };
+    const wave = (n: number, f: number, amp: number, shape: 'sine' | 'square' = 'sine') => {
+      const d = new Float32Array(n);
+      for (let i = 0; i < n; i += 1) {
+        const v = Math.sin((2 * Math.PI * f * i) / sr);
+        d[i] = amp * (shape === 'sine' ? v : v >= 0 ? 1 : -1);
+      }
+      return d;
+    };
+    const flat = (n: number, v: number) => {
+      const d = new Float32Array(n);
+      d.fill(v);
+      return d;
+    };
+    /**
+     * **上限をちょうど満たす並び。** タップの符号に合わせて ±amp を置くと、
+     * 畳み込みの値が「正のタップの和 ＋ 負のタップの和」そのものになり、
+     * 窓の最大・最小から出した上限とぴったり一致する。
+     * **飛ばす手がいちばん効かない形**で、同時に**上限の緩みを測る物差し**でもある
+     * （この並びが無いと、境界の係数を 0.9 倍しても検査が通ってしまった）。
+     */
+    const worstCase = (phase: number, repeats: number, amp: number) => {
+      const taps = TP_FILTER[phase];
+      const d = new Float32Array(TP_TAPS * repeats);
+      for (let i = 0; i < d.length; i += 1) d[i] = taps[i % TP_TAPS] > 0 ? amp : -amp;
+      return d;
+    };
+    const cases: [string, Float32Array][] = [
+      // 飛ばす手が効かない 3 本。**どれも「上限いっぱいで、窓の中が暴れている」形。**
+      ['上限をちょうど満たす並び', worstCase(2, 1000, 0.9)],
+      ['全振幅の雑音', lcg(20000, 1)],
+      ['全振幅の 1kHz', wave(20000, 1000, 1)],
+      // 飛ばす手がよく効く形
+      ['静かな雑音', lcg(20000, 0.05)],
+      ['全振幅の 60Hz', wave(20000, 60, 1)],
+      ['全振幅の矩形波', wave(20000, 200, 0.999, 'square')],
+      // 符号が片側だけ（境界の式の max(M, −m) がここで効く）
+      ['正の直流', flat(5000, 0.8)],
+      ['負の直流', flat(5000, -0.8)],
+      ['負に寄った雑音', (() => { const d = lcg(20000, 0.4); for (let i = 0; i < d.length; i += 1) d[i] -= 0.5; return d; })(),
+      ],
+      // 山が端にある形（飛ばす判定は床から始まるので、端の扱いを間違えると落ちる）
+      ['頭だけ大きい', (() => { const d = lcg(20000, 0.1); for (let i = 0; i < 24; i += 1) d[i] = i % 2 ? 0.9 : -0.9; return d; })()],
+      ['尻だけ大きい', (() => { const d = lcg(20000, 0.1); for (let i = d.length - 24; i < d.length; i += 1) d[i] = i % 2 ? 0.9 : -0.9; return d; })()],
+      ['無音', new Float32Array(5000)],
+    ];
+    let worstName = '';
+    let bad = 0;
+    for (const [name, data] of cases) {
+      if (truePeakOf(data) !== plainOf(data)) {
+        bad += 1;
+        worstName = name;
+      }
+    }
+    check(
+      '速くした打ち直しは、素直な形とビット単位で同じ（いじめる素材 12 本）',
+      bad === 0,
+      bad === 0 ? `${cases.length} 本とも一致` : `${bad} 本ずれた（例 ${worstName}）`,
+    );
+
+    // 升の継ぎ目と素材の端。**長さが升の幅で割り切れるかどうかで道が変わる**ので、
+    // 12 標本の前後と升 1〜3 個ぶんを 1 標本きざみで総当たりする。
+    {
+      let worst = 0;
+      let at = -1;
+      const base = lcg(200, 0.9);
+      for (let n = 0; n <= 60; n += 1) {
+        const data = base.subarray(0, n);
+        const got = truePeakOf(data);
+        const want = plainOf(data);
+        if (got !== want) {
+          worst += 1;
+          if (at < 0) at = n;
+        }
+      }
+      check('長さ 0〜60 標本を 1 きざみで総当たりしても一致する', worst === 0, worst === 0 ? '61 通りとも一致' : `${worst} 通りずれた（最初は ${at} 標本）`);
+    }
+
+    // 床を渡しても値は変わらない（飛ばす判定にだけ効く、が守られているか）。
+    {
+      let bad2 = 0;
+      for (const [, data] of cases) {
+        const want = truePeakOf(data);
+        for (const floor of [0, want * 0.5, want * 0.999999, want, want * 2]) {
+          const got = truePeakOf(data, floor);
+          if (got !== Math.max(want, floor)) bad2 += 1;
+        }
+      }
+      check('床を渡しても答えは変わらない（飛ばす判定にだけ効く）', bad2 === 0, bad2 === 0 ? `${cases.length} 本 × 5 通り` : `${bad2} 通りずれた`);
+    }
+
+    // 境界そのものが上限であること。**ここが破れていると、速い形は黙って小さい値を返す。**
+    // 総当たりで、窓の中の最大・最小から出した上限が、3 つの位相のどの値も下回らないことを見る。
+    {
+      // 雑音（緩い側）と、上限をちょうど満たす並び（きつい側）を continue させず両方なめる。
+      const data = new Float32Array(40000 + TP_TAPS * 30);
+      data.set(lcg(40000, 1), 0);
+      data.set(worstCase(2, 10, 0.9), 40000);
+      data.set(worstCase(1, 10, 0.6), 40000 + TP_TAPS * 10);
+      data.set(worstCase(3, 10, 1), 40000 + TP_TAPS * 20);
+      let over = 0;
+      let worstRatio = 0;
+      for (let i = 0; i + TP_TAPS <= data.length; i += 1) {
+        let big = -Infinity;
+        let small = Infinity;
+        for (let k = 0; k < TP_TAPS; k += 1) {
+          const v = data[i + k];
+          if (v > big) big = v;
+          if (v < small) small = v;
+        }
+        const bound = truePeakWindowBound(big, small);
+        for (let p = 1; p < TP_FILTER.length; p += 1) {
+          let acc = 0;
+          for (let k = 0; k < TP_TAPS; k += 1) acc += TP_FILTER[p][k] * data[i + k];
+          const a = Math.abs(acc);
+          // 実装が頼っているのは「上限 × 余裕」のほう。**生の上限は丸めでわずかに割られる**
+          // （2026-10-06 に測ったら、ちょうど満たす並びで 19 窓が相対 2e-16 ほど超えた）。
+          if (a > bound * TP_MARGIN) over += 1;
+          if (a / bound > worstRatio) worstRatio = a / bound;
+        }
+      }
+      check(
+        '窓の最大・最小から出す上限を、どの位相の値も超えない（4 万窓 × 3 位相。上限をちょうど満たす並びを含む）',
+        over === 0,
+        over === 0
+          ? `いちばん近づいたのが上限の ${(worstRatio * 100).toFixed(1)}%（余裕 ${((TP_MARGIN - 1) * 1e12).toFixed(2)}e-12 のうち使ったのは ${((worstRatio - 1) * 1e12).toFixed(5)}e-12）`
+          : `${over} 回超えた`,
+      );
+    }
+
+    // 升の幅。**窓が 2 升に収まらないと、上限が窓の一部しか見ていないことになる。**
+    // 2026-10-06 に「幅を 1 広げる」壊し方を試したら検査が全部通ったが、
+    // それは**広げるほうは安全側**だったからで、狭めるほうが落ちる。幅そのものを見る検査にした。
+    {
+      const span = TP_BLOCK * 2;
+      check(
+        '窓は必ず 2 升に収まる（升の幅 ≧ タップ数 − 1）',
+        TP_BLOCK >= TP_TAPS - 1 && span >= TP_BLOCK - 1 + TP_TAPS,
+        `升 ${TP_BLOCK} / タップ ${TP_TAPS} / 2 升で ${span} 標本・要る ${TP_BLOCK - 1 + TP_TAPS} 標本`,
+      );
+    }
+
+    // 平らで大きい区間は、上限がちょうど標本の値そのもの＝必ず床以下になる。
+    // **この性質のために `P·M − N·m` ではなく `max(M, −m) + N·(M − m)` の形を採った**
+    // （前者は同じ値が丸めで上下に振れ、飛ばせるかどうかが最後の桁で決まる）。
+    {
+      let bad3 = 0;
+      for (const v of [0.999, -0.999, 0.5, 1, -1, 0.1, -0.7]) {
+        const big = Math.fround(v);
+        if (truePeakWindowBound(big, big) !== Math.abs(big)) bad3 += 1;
+      }
+      check('平らな区間では上限がちょうど標本の値（丸めが乗らない）', bad3 === 0, bad3 === 0 ? '7 通りとも一致' : `${bad3} 通りずれた`);
+    }
+
+    // 列を返す側（リミッタが見るほう）も、まとめた輪で値が変わっていないこと。
+    {
+      let bad4 = 0;
+      for (const [, data] of cases) {
+        const got = truePeakEnvelope(data);
+        const want = plainEnvelope(data);
+        for (let i = 0; i < want.length; i += 1) if (got[i] !== want[i]) bad4 += 1;
+      }
+      check('標本ごとの列も、素直な形とビット単位で同じ', bad4 === 0, bad4 === 0 ? `${cases.length} 本の全標本で一致` : `${bad4} 標本ずれた`);
+    }
+
+    // 繋ぎ目をまたぐぶんも同じ（ここも共通の内側へ移したので、まとめて確かめる）。
+    {
+      let bad5 = 0;
+      for (const [, data] of cases) {
+        if (data.length < 2 * TP_TAPS) continue;
+        const half = Math.floor(data.length / 2);
+        const left = data.subarray(0, half);
+        const right = data.subarray(half);
+        const joined = new Float32Array(Math.min(left.length, TP_TAPS - 1) + Math.min(right.length, TP_TAPS - 1));
+        const l = left.subarray(Math.max(0, left.length - (TP_TAPS - 1)));
+        const r = right.subarray(0, TP_TAPS - 1);
+        joined.set(l, 0);
+        joined.set(r, l.length);
+        const from = Math.max(0, l.length - TP_TAPS + 1);
+        const to = Math.min(l.length - 1, joined.length - TP_TAPS);
+        if (truePeakAcrossJoin(left, right) !== plainPeak(joined, from, to)) bad5 += 1;
+      }
+      check('繋ぎ目をまたぐぶんも、素直な形と同じ', bad5 === 0, bad5 === 0 ? '一致' : `${bad5} 本ずれた`);
+    }
+  }
+
+  // --- 無音で IIR の履歴が非正規化数へ落ちる（2026-10-06）---
+  //
+  // 打ち直しを速くしたら、測りの残りの山が K 特性の側へ移った。そこを測ったら、
+  // **無音のある素材では同じ仕事が 9 倍遅い**（履歴が非正規化数へ落ちて CPU の遅い道へ逸れる）。
+  // 手当ては「落ちる手前で 0 へ寄せる」だけだが、**それで測りの値が動かないことが要る。**
+  {
+    const sr = 48000;
+    const seconds = 8;
+    const length = seconds * sr;
+    // 1 秒鳴って 7 秒休む素材。**休みはちょうど 0**（本体の書き出しも、鳴っていない所は 0 で埋める）。
+    //
+    // 休みを長く取ってあるのは、**2 段目が非正規化数まで落ちるのに無音 3 秒ぶん要る**から
+    // （38Hz の極は 460 標本で 1 桁しか落ちないので、307 桁で 14 万標本）。
+    // 1 段目（棚）はもっと速く落ちるので、**実素材の 0.7 秒の切れ目では 1 段目だけが落ちる。**
+    // 2026-10-06 に、切れ目 0.7 秒の素材で検査を書いたら 2 段目の出口だけ見ていて素通りした。
+    const data = new Float32Array(length);
+    for (let i = 0; i < sr; i += 1) {
+      const t = i / sr;
+      data[i] = 0.6 * Math.sin(2 * Math.PI * 220 * t) * Math.min(1, (sr - i) / (0.05 * sr));
+    }
+
+    /** 手当て前の形（塊に割らず、0 へ寄せない）。 */
+    const plainK = (src: Float32Array) => {
+      const out = new Float64Array(src.length);
+      out.set(src);
+      for (const f of kWeighting(sr)) {
+        let x1 = 0;
+        let x2 = 0;
+        let y1 = 0;
+        let y2 = 0;
+        for (let i = 0; i < out.length; i += 1) {
+          const x = out[i];
+          const y = f.b0 * x + f.b1 * x1 + f.b2 * x2 - f.a1 * y1 - f.a2 * y2;
+          x2 = x1;
+          x1 = x;
+          y2 = y1;
+          y1 = y;
+          out[i] = y;
+        }
+      }
+      return out;
+    };
+    const SUBNORMAL = 2.2250738585072014e-308;
+    const subnormals = (a: Float64Array) => {
+      let n = 0;
+      for (let i = 0; i < a.length; i += 1) if (a[i] !== 0 && Math.abs(a[i]) < SUBNORMAL) n += 1;
+      return n;
+    };
+    const before = plainK(data);
+    const after = applyKWeighting(data, sr);
+
+    // ① そもそも非正規化数へ落ちていること（**落ちていなければ、手当ての速さの話が嘘になる**）。
+    check(
+      '無音のある素材では、手当て前の K 特性が非正規化数へ落ちる',
+      subnormals(before) > length / 10,
+      `${subnormals(before)} / ${length} 標本（${((subnormals(before) / length) * 100).toFixed(0)}%）`,
+    );
+
+    // ② 手当て後は 1 標本も非正規化数が残らない。**0 へ寄せるのを外すとここが落ちる。**
+    check('履歴を 0 へ寄せると、非正規化数が 1 標本も残らない', subnormals(after) === 0, `${subnormals(after)} 標本`);
+
+    // ③ **それでいて測りの値は動かない。**
+    //    0.1 秒ごとの二乗和を突き合わせると、**ぴったり同じにはならない**——
+    //    無音だけの升では、手当て前が 1e-199 の桁・手当て後が 0 になる（2026-10-06 に測った）。
+    //    なので主張は「升がビット単位で同じ」ではなく **「ずれる升はどれも、どちらの形でも
+    //    捨てられる升」**。規格の絶対ゲートは -70 LUFS で、ずれた升はその 1000 桁下に居る。
+    //    **線（`FLUSH_FLOOR`）を上げるとここが破れる**ので、線の置き所の検査になっている。
+    {
+      const step = Math.round(0.1 * sr);
+      const lufsOf = (sum: number) => (sum === 0 ? -Infinity : -0.691 + 10 * Math.log10(sum / step));
+      let differing = 0;
+      let overGate = 0;
+      let loudest = -Infinity;
+      for (let b = 0; b * step + step <= length; b += 1) {
+        let sa = 0;
+        let sb = 0;
+        for (let i = b * step; i < b * step + step; i += 1) {
+          sa += before[i] * before[i];
+          sb += after[i] * after[i];
+        }
+        if (sa === sb) continue;
+        differing += 1;
+        const level = Math.max(lufsOf(sa), lufsOf(sb));
+        if (level > loudest) loudest = level;
+        if (level > ABSOLUTE_GATE_LUFS) overGate += 1;
+      }
+      check(
+        '0 へ寄せてずれる升は、どれも絶対ゲートより下（どちらの形でも捨てられる）',
+        overGate === 0,
+        `ずれた升 ${differing} / いちばん大きいものが ${loudest === -Infinity ? '—' : loudest.toFixed(0)} LUFS（ゲートは ${ABSOLUTE_GATE_LUFS}）`,
+      );
+    }
+
+    // ④ 寄せた量そのものは -2000dB の桁。**線を上げるとここが大きくなる**ので、
+    //    「値が動かない」の根拠を数字で残しておく。
+    {
+      let worst = 0;
+      for (let i = 0; i < length; i += 1) {
+        const d = Math.abs(before[i] - after[i]);
+        if (d > worst) worst = d;
+      }
+      check('寄せたぶんは 1e-100 の桁（音として何も無い）', worst < 1e-99, `いちばん大きいずれ ${worst.toExponential(2)}`);
+    }
+
+    // ⑤ 測りぜんたい（LUFS・ピーク・静かな窓）も、無音の入った素材で前と同じ。
+    //    **素材 43 本ぶんは `lab:truepeak` の 1 節で見ている**ので、ここは形だけ押さえる。
+    {
+      const buffer = { sampleRate: sr, numberOfChannels: 1, length, getChannelData: () => data } as AudioLike;
+      const m = measureLoudness(buffer);
+      check(
+        '無音の入った素材でも、測りが素直な値を返す',
+        m.integratedLufs !== null && m.integratedLufs > -30 && m.integratedLufs < -5 && m.truePeakDb < 0,
+        `${(m.integratedLufs as number).toFixed(2)} LUFS / ${m.truePeakDb.toFixed(2)} dBTP（鳴っているのは 8 秒のうち 1 秒）`,
+      );
+    }
   }
 
   // --- リミッタ（山を均す処理）---

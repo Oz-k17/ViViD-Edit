@@ -120,16 +120,61 @@ export function newBiquadState(): BiquadState {
  * **漸化式はこの関数にしか書かない。** 一括と流す形で別々に書くと、
  * 片方だけ直したときに黙ってずれる（突き合わせの検算で気づくが、原因を探すのは高い）。
  */
+/**
+ * 履歴を 0 へ寄せる線と、見に行く間隔。
+ *
+ * **無音が続くと、IIR の履歴が非正規化数（2.2e-308 より小さい数）まで落ちる。**
+ * そこへ入ると 1 標本ごとの演算が CPU の遅い道へ逸れ、**同じ仕事が 9 倍遅くなる**
+ * （2026-10-06 に測った。60 秒の素材で 44% の標本が非正規化数だった）。
+ * デジタルの無音はありふれている——頭と尻を切った素材、ミュートしたトラック、
+ * **本体の書き出しはクリップが鳴っていない所をちょうど 0 で埋める**ので、
+ * これは合成波だけの話ではない。
+ *
+ * 1e-100 は -2000dB で、音としては何も無いのと同じ。そこで 0 へ寄せても、
+ * **二乗して足した先では ulp より下**なので測りの値は動かない（検算で素材 43 本を固定）。
+ *
+ * **毎標本見に行くと、無音の無い素材で 1.4〜1.8 倍遅くなる**（比べ物が 2 つ増えるだけだが、
+ * 1 標本あたりの演算が 6 つしかないので効く）。履歴は 1e-100 から非正規化数まで
+ * 何万標本もかけて落ちるので、**塊ごとに 1 回見れば間に合う。**
+ *
+ * 512 にしたのは振って測ったから（60 秒・2 段・同じ関数の中で比べた。`npm run lab:truepeak` の 4 節）:
+ *
+ * | 塊 | 鳴りっぱなし | 鳴って休む |
+ * | ---: | ---: | ---: |
+ * | 潰さない | 48.7ms | 297.6ms |
+ * | 64 | 32.9ms | 33.1ms |
+ * | **512** | **29.5ms** | **32.0ms** |
+ * | 4096 | 30.1ms | 29.9ms |
+ * | 65536 | 30.5ms | 144.9ms |
+ *
+ * 大きくしすぎると、**非正規化数へ落ちてから次に見に行くまでの間が長くなる**ので戻ってくる。
+ * **塊に割ると、無音の無い素材でも速くなる**（48.7 → 29.5ms）のは見込んでいなかった。
+ * 内側の輪が短くなるぶん V8 が畳みやすいのだと見ているが、理由は確かめていない。
+ */
+const FLUSH_FLOOR = 1e-100;
+const FLUSH_CHUNK = 512;
+
 function runBiquadInPlace(buf: Float64Array, len: number, f: Biquad, s: BiquadState): void {
   let { x1, x2, y1, y2 } = s;
-  for (let i = 0; i < len; i += 1) {
-    const x = buf[i];
-    const y = f.b0 * x + f.b1 * x1 + f.b2 * x2 - f.a1 * y1 - f.a2 * y2;
-    x2 = x1;
-    x1 = x;
-    y2 = y1;
-    y1 = y;
-    buf[i] = y;
+  for (let from = 0; from < len; from += FLUSH_CHUNK) {
+    // 非正規化数へ落ちる手前で履歴を 0 へ寄せる。**入力の側も一緒に見る**
+    // （出力だけ 0 にしても、履歴に残った入力から次の出力が小さく作られ続ける）。
+    if (y1 > -FLUSH_FLOOR && y1 < FLUSH_FLOOR && y2 > -FLUSH_FLOOR && y2 < FLUSH_FLOOR) {
+      y1 = 0;
+      y2 = 0;
+      if (x1 > -FLUSH_FLOOR && x1 < FLUSH_FLOOR) x1 = 0;
+      if (x2 > -FLUSH_FLOOR && x2 < FLUSH_FLOOR) x2 = 0;
+    }
+    const to = len < from + FLUSH_CHUNK ? len : from + FLUSH_CHUNK;
+    for (let i = from; i < to; i += 1) {
+      const x = buf[i];
+      const y = f.b0 * x + f.b1 * x1 + f.b2 * x2 - f.a1 * y1 - f.a2 * y2;
+      x2 = x1;
+      x1 = x;
+      y2 = y1;
+      y1 = y;
+      buf[i] = y;
+    }
   }
   s.x1 = x1;
   s.x2 = x2;
@@ -399,7 +444,8 @@ export function measureLoudness(buffer: AudioLike, options: LoudnessOptions = {}
       if (a > samplePeak) samplePeak = a;
     }
     if (!options.skipTruePeak) {
-      const tp = truePeakOf(data);
+      // 床に標本の最大と前のチャンネルの値を渡す。**飛ばす判定にだけ効く**（値は変わらない）。
+      const tp = truePeakOf(data, samplePeak > truePeak ? samplePeak : truePeak);
       if (tp > truePeak) truePeak = tp;
     }
     if (weight === 0) continue;
@@ -572,7 +618,62 @@ function truePeakFilter(): Float64Array[] {
   return phases;
 }
 
-const TP_FILTER = truePeakFilter();
+/**
+ * 位相ごとのタップ。**外に出してあるのは検算のため**——
+ * `selftest.ts` が素直な形（位相ごとに素材をなめ直し、飛ばしもしない）をここから組み直して、
+ * 速い形とビット単位で突き合わせる。**速い形が自分で自分を正解にしないように**しておく。
+ */
+export const TP_FILTER = truePeakFilter();
+
+/**
+ * 位相ごとの「負のタップの和」のうち、いちばん大きいもの（位相 1〜3）。
+ * **飛ばしてよい窓を見分ける境界の係数がこれ。** 下の `peakOverWindows` の注に導出がある。
+ */
+const TP_NEG = (() => {
+  let worst = 0;
+  for (let p = 1; p < TP_PHASES; p += 1) {
+    let neg = 0;
+    for (const v of TP_FILTER[p]) if (v < 0) neg += -v;
+    if (neg > worst) worst = neg;
+  }
+  return worst;
+})();
+
+/**
+ * 飛ばす判定をまとめて行う升の幅。
+ *
+ * **窓 `[i, i+12)` が 2 升に収まるいちばん小さい幅**（始点が升 b のどこにあっても、
+ * 読む先は升 b と b+1 で足りる）。小さいほど境界が締まる＝飛ばせる窓が増えるので、
+ * 下限そのものを採る。11 と 16・24 を振って測ったが、実素材では差が出ず、
+ * 平らな素材（`square`・低い正弦波）でだけ 11 が勝った（README の「打ち直しを速くする」）。
+ * **数で書かずにタップ数から出しているのは、`TP_TAPS` を動かしたときに黙って壊れないようにするため。**
+ */
+export const TP_BLOCK = TP_TAPS - 1;
+
+/**
+ * 境界を安全側へ寄せる余裕。
+ *
+ * 境界そのものは数学的な上限だが、**浮動小数で計算すると最後の桁で下に振れる**ことがあり、
+ * そのぶん「飛ばしてよい」と誤って言う余地が残る。相対 2^-40（≒ 1e-12）だけ上へ寄せておけば、
+ * 畳み込みの丸め（相対 1e-16 ほど）を飲み込んでなお上限の側に居る。
+ * **ここが無いと「速い代わりに最後の桁が違う」になり、一括と流す形の一致が崩れる。**
+ * 飾りではなく実際に要る——上限をちょうど満たす並び（タップの符号に合わせた ±）では、
+ * **畳み込みの値が上限を相対 2e-16 ほど上回る**（2026-10-06 に総当たりで測った。
+ * 検算の「上限を超えない」の欄がその数字）。外に出してあるのはその検算のため。
+ */
+export const TP_MARGIN = 1 + 2 ** -40;
+
+/**
+ * 窓の中の最大 `big`・最小 `small` から、畳み込みの値の**上限**を出す（線形）。
+ *
+ * 導出は `peakOverWindows` の注の 2。**外に出してあるのは検算のため**——
+ * `selftest.ts` が「どの位相のどの窓もこの値を超えない」ことを総当たりで確かめる。
+ * 式を実装と検算で二重に書くと、**係数をいじっても検算が気づかない**
+ * （2026-10-06 に実際そうなった。わざと係数を 0.9 倍しても検査が全部通った）。
+ */
+export function truePeakWindowBound(big: number, small: number): number {
+  return (big > -small ? big : -small) + TP_NEG * (big - small);
+}
 
 /** 48 タップの中心は 24 なので、群遅延はちょうど入力 6 標本ぶん。ここが整数になるように中心を選んである。 */
 const TP_DELAY = TP_TAPS / 2;
@@ -597,17 +698,35 @@ export function truePeakEnvelope(data: Float32Array): Float64Array {
   const env = new Float64Array(data.length);
   for (let i = 0; i < data.length; i += 1) env[i] = Math.abs(data[i]);
   if (data.length < TP_TAPS) return env;
-  for (let p = 1; p < TP_PHASES; p += 1) {
-    const taps = TP_FILTER[p];
-    // 時刻 i+6+p/4 をいちばん近い標本へ丸める（p=1 は手前、p=2,3 は 1 つ先）。
-    const at = TP_DELAY + Math.round(p / TP_PHASES);
-    for (let i = 0; i + TP_TAPS <= data.length; i += 1) {
-      let acc = 0;
-      for (let k = 0; k < TP_TAPS; k += 1) acc += taps[k] * data[i + k];
-      const a = Math.abs(acc);
-      const j = i + at;
-      if (j < env.length && a > env[j]) env[j] = a;
+  const t1 = TP_FILTER[1];
+  const t2 = TP_FILTER[2];
+  const t3 = TP_FILTER[3];
+  // 時刻 i+6+p/4 をいちばん近い標本へ丸める（p=1 は手前、p=2,3 は 1 つ先）。
+  const at1 = TP_DELAY + Math.round(1 / TP_PHASES);
+  const at2 = TP_DELAY + Math.round(2 / TP_PHASES);
+  const at3 = TP_DELAY + Math.round(3 / TP_PHASES);
+  // 3 つの位相を 1 本の輪で回す（同じ 12 標本を 3 回読まない）。足す順は位相ごとに同じなので値は変わらない。
+  // **ここは列を返すので、`peakOverWindows` の「升ごと飛ばす」は使えない**（どの値も要る）。
+  const last = data.length - TP_TAPS;
+  for (let i = 0; i <= last; i += 1) {
+    let a1 = 0;
+    let a2 = 0;
+    let a3 = 0;
+    for (let k = 0; k < TP_TAPS; k += 1) {
+      const v = data[i + k];
+      a1 += t1[k] * v;
+      a2 += t2[k] * v;
+      a3 += t3[k] * v;
     }
+    if (a1 < 0) a1 = -a1;
+    if (a2 < 0) a2 = -a2;
+    if (a3 < 0) a3 = -a3;
+    const j1 = i + at1;
+    const j2 = i + at2;
+    const j3 = i + at3;
+    if (j1 < env.length && a1 > env[j1]) env[j1] = a1;
+    if (j2 < env.length && a2 > env[j2]) env[j2] = a2;
+    if (j3 < env.length && a3 > env[j3]) env[j3] = a3;
   }
   return env;
 }
@@ -674,22 +793,144 @@ export function truePeakEnvelopeRange(
   }
   for (let j = from; j < to; j += 1) env[j - from] = Math.abs(data[j - dataFrom]);
   if (totalLength < TP_TAPS) return env;
-  for (let p = 1; p < TP_PHASES; p += 1) {
-    const taps = TP_FILTER[p];
-    const at = TP_DELAY + Math.round(p / TP_PHASES);
+  // 位相 2 と 3 は同じ標本の位置（`at`）へ入るので、i の範囲も同じ＝1 本の輪で回せる。
+  // 位相 1 だけ 1 つ手前なので、範囲が違うぶん別に回す（一括版と同じ値になる）。
+  for (const group of [[1], [2, 3]]) {
+    const at = TP_DELAY + Math.round(group[0] / TP_PHASES);
     // 一括版は i を 0..totalLength-TP_TAPS で回して env[i+at] へ入れる。
     // ここで要るのは i+at が [from, to) に入るぶんだけ。
     const iFrom = Math.max(0, from - at);
     const iTo = Math.min(totalLength - TP_TAPS, to - 1 - at);
+    if (group.length === 1) {
+      const taps = TP_FILTER[group[0]];
+      for (let i = iFrom; i <= iTo; i += 1) {
+        let acc = 0;
+        for (let k = 0; k < TP_TAPS; k += 1) acc += taps[k] * data[i + k - dataFrom];
+        const a = Math.abs(acc);
+        const j = i + at - from;
+        if (a > env[j]) env[j] = a;
+      }
+      continue;
+    }
+    const ta = TP_FILTER[group[0]];
+    const tb = TP_FILTER[group[1]];
     for (let i = iFrom; i <= iTo; i += 1) {
-      let acc = 0;
-      for (let k = 0; k < TP_TAPS; k += 1) acc += taps[k] * data[i + k - dataFrom];
-      const a = Math.abs(acc);
+      const atData = i - dataFrom;
+      let aa = 0;
+      let ab = 0;
+      for (let k = 0; k < TP_TAPS; k += 1) {
+        const v = data[atData + k];
+        aa += ta[k] * v;
+        ab += tb[k] * v;
+      }
+      if (aa < 0) aa = -aa;
+      if (ab < 0) ab = -ab;
       const j = i + at - from;
-      if (a > env[j]) env[j] = a;
+      if (aa > env[j]) env[j] = aa;
+      if (ab > env[j]) env[j] = ab;
     }
   }
   return env;
+}
+
+/**
+ * 窓の**始点**が `[iFrom, iTo]` に入るぶんだけ打ち直して、`floor` と合わせた最大を返す（線形）。
+ *
+ * `data` は絶対位置 `dataFrom` から始まる切れ端。打ち直しは**測りの時間の 8 割**を持っていて
+ * （2026-10-02・2 回目に測った）、省くことはできない（倍率を決めるのに要る）。
+ * なので速くするしかなく、ここが 2026-10-06 に入れた 2 つの手の置き場所。
+ *
+ * ## 1. 3 つの位相を 1 本の輪にまとめる
+ *
+ * 位相ごとに素材をなめ直すと、同じ 12 標本を 3 回読む。1 本にまとめれば読みは 1 回で済む。
+ * **足す順はどの位相の中でも変わらない**ので、値はビット単位で前と同じ。
+ *
+ * ## 2. 「ここには山が無い」と先に分かる升を、丸ごと飛ばす
+ *
+ * 要るのは**最大だけ**なので、いま分かっている最大（`floor`）を超えられない窓は計算しなくてよい。
+ * 窓の中の最大 `M` と最小 `m` が分かれば、畳み込みの値には上限がある:
+ *
+ *   `acc = Σ t[k]·x[k]` を、正のタップの和 `P` と負のタップの和 `N` に分けると
+ *   `acc ≤ P·M − N·m`、`acc ≥ P·m − N·M`。**正規化でタップの和は 1 なので `P = 1 + N`** で、
+ *   両方を整理すると `|acc| ≤ max(M, −m) + N·(M − m)` になる。
+ *
+ * この形にしたのが大事で、**鳴り続けて平らな区間では `M − m` が 0 になり、上限がちょうど
+ * 標本の値そのもの**（＝必ず `floor` 以下）になる。`P·M − N·m` のまま計算すると
+ * 同じ値が引き算の丸めで上下に振れ、**飛ばせるかどうかが最後の桁で決まってしまう**
+ * （試作でそれを踏んだ。平らな素材の速さが測るたびに 4 倍動いた）。
+ *
+ * `M` と `m` は升（`TP_BLOCK` 標本）ごとに取る。窓は必ず 2 升に収まるので、
+ * **升 b と b+1 を合わせた最大・最小で、升 b から始まる窓すべての上限が出る。**
+ * 升ごとの値を列にして持たないのは、**尺に比例するものを増やさないため**
+ * （10 分 1ch で 29MB になる。流す形がメモリを削った意味が薄れる）。1 つ前だけ持ち回す。
+ *
+ * **飛ばしても値は変わらない。** 最大を与える窓は、その升の上限がその窓の値以上なので
+ * 必ず `floor` を上回り、飛ばされることがない。だから最大だけが要る場面でのみ使える
+ * （列を返す `truePeakEnvelope` では使えない——そこは 1 の融合だけ）。
+ */
+function peakOverWindows(
+  data: Float32Array,
+  dataFrom: number,
+  iFrom: number,
+  iTo: number,
+  floor: number,
+): number {
+  let peak = floor;
+  if (iTo < iFrom) return peak;
+  const t1 = TP_FILTER[1];
+  const t2 = TP_FILTER[2];
+  const t3 = TP_FILTER[3];
+  // どの窓も、ここより先の標本は読まない（切れ端の外へ出ないための天井でもある）。
+  const hi = iTo + TP_TAPS - 1;
+  let bigPrev = -Infinity;
+  let smallPrev = Infinity;
+  {
+    const end = Math.min(hi, iFrom + TP_BLOCK - 1);
+    for (let i = iFrom; i <= end; i += 1) {
+      const v = data[i - dataFrom];
+      if (v > bigPrev) bigPrev = v;
+      if (v < smallPrev) smallPrev = v;
+    }
+  }
+  for (let s = iFrom; s <= iTo; s += TP_BLOCK) {
+    const next = s + TP_BLOCK;
+    // 次の升。素材の端では空になるが、そのときは ±Infinity が中立に働く。
+    let bigNext = -Infinity;
+    let smallNext = Infinity;
+    const end = Math.min(hi, next + TP_BLOCK - 1);
+    for (let i = next; i <= end; i += 1) {
+      const v = data[i - dataFrom];
+      if (v > bigNext) bigNext = v;
+      if (v < smallNext) smallNext = v;
+    }
+    const big = bigPrev > bigNext ? bigPrev : bigNext;
+    const small = smallPrev < smallNext ? smallPrev : smallNext;
+    const bound = truePeakWindowBound(big, small);
+    if (bound * TP_MARGIN > peak) {
+      const last = next - 1 < iTo ? next - 1 : iTo;
+      for (let i = s; i <= last; i += 1) {
+        const at = i - dataFrom;
+        let a1 = 0;
+        let a2 = 0;
+        let a3 = 0;
+        for (let k = 0; k < TP_TAPS; k += 1) {
+          const v = data[at + k];
+          a1 += t1[k] * v;
+          a2 += t2[k] * v;
+          a3 += t3[k] * v;
+        }
+        if (a1 < 0) a1 = -a1;
+        if (a2 < 0) a2 = -a2;
+        if (a3 < 0) a3 = -a3;
+        if (a1 > peak) peak = a1;
+        if (a2 > peak) peak = a2;
+        if (a3 > peak) peak = a3;
+      }
+    }
+    bigPrev = bigNext;
+    smallPrev = smallNext;
+  }
+  return peak;
 }
 
 /**
@@ -703,24 +944,19 @@ export function truePeakEnvelopeRange(
  *
  * **`truePeakEnvelope` の最大と必ず一致する**（同じ位相・同じタップを見ているため）。
  * 列を作らずに済むぶんこちらのほうが軽いので、1 つの数で足りる場面はこちらを使う。
+ *
+ * `floor` に「もう分かっている最大」を渡せる（別のチャンネルや前の区間で見つけた値）。
+ * **渡すほど飛ばせる升が増える**（`peakOverWindows` の注の 2）。渡さなくても
+ * この素材の標本の最大が床になるので、そこは損しない。
  */
-export function truePeakOf(data: Float32Array): number {
-  let peak = 0;
+export function truePeakOf(data: Float32Array, floor = 0): number {
+  let peak = floor;
   for (let i = 0; i < data.length; i += 1) {
     const a = Math.abs(data[i]);
     if (a > peak) peak = a;
   }
   if (data.length < TP_TAPS) return peak;
-  for (let p = 1; p < TP_PHASES; p += 1) {
-    const taps = TP_FILTER[p];
-    for (let i = 0; i + TP_TAPS <= data.length; i += 1) {
-      let acc = 0;
-      for (let k = 0; k < TP_TAPS; k += 1) acc += taps[k] * data[i + k];
-      const a = Math.abs(acc);
-      if (a > peak) peak = a;
-    }
-  }
-  return peak;
+  return peakOverWindows(data, 0, 0, data.length - TP_TAPS, peak);
 }
 
 /**
@@ -745,39 +981,26 @@ export function truePeakAcrossJoin(left: Float32Array, right: Float32Array): num
   // 繋ぎ目は `l.length`。窓 `[i, i+12)` がまたぐのは `i < l.length` かつ `i + 12 > l.length`。
   const from = Math.max(0, l.length - TP_TAPS + 1);
   const to = Math.min(l.length - 1, joined.length - TP_TAPS);
-  let peak = 0;
-  for (let p = 1; p < TP_PHASES; p += 1) {
-    const taps = TP_FILTER[p];
-    for (let i = from; i <= to; i += 1) {
-      let acc = 0;
-      for (let k = 0; k < TP_TAPS; k += 1) acc += taps[k] * joined[i + k];
-      const a = Math.abs(acc);
-      if (a > peak) peak = a;
-    }
-  }
-  return peak;
+  return peakOverWindows(joined, 0, from, to, 0);
 }
 
 /**
- * 窓の**始点**が `[iFrom, iTo]` に入るぶんだけ打ち直して、その最大を返す（線形）。
+ * 区間に割って測るときの入り口。`peakOverWindows` をそのまま呼ぶ。
  *
- * `data` は絶対位置 `dataFrom` から始まる切れ端。`truePeakOf` の内側そのもので、
  * **区間に割るときに「どの窓を誰が数えるか」を呼ぶ側に決めさせる**ために外に出してある。
  * 最大なので数える順は値に効かないが、**数え落とすと黙って小さく出る**ので、
  * 呼ぶ側は区間どうしで隙間を作らないこと（`measureLoudnessStream` の注を参照）。
+ *
+ * `floor` に「ここまでで分かっている最大」を渡す。飛ばす判定に効くだけで、値には効かない。
  */
-function truePeakOverWindows(data: Float32Array, dataFrom: number, iFrom: number, iTo: number): number {
-  let peak = 0;
-  for (let p = 1; p < TP_PHASES; p += 1) {
-    const taps = TP_FILTER[p];
-    for (let i = iFrom; i <= iTo; i += 1) {
-      let acc = 0;
-      for (let k = 0; k < TP_TAPS; k += 1) acc += taps[k] * data[i + k - dataFrom];
-      const a = Math.abs(acc);
-      if (a > peak) peak = a;
-    }
-  }
-  return peak;
+function truePeakOverWindows(
+  data: Float32Array,
+  dataFrom: number,
+  iFrom: number,
+  iTo: number,
+  floor = 0,
+): number {
+  return peakOverWindows(data, dataFrom, iFrom, iTo, floor);
 }
 
 // ---------- 長尺（区間ごとに流す形。2026-10-02・2 回目） ----------
@@ -906,7 +1129,7 @@ export function measureLoudnessStream(
         const iFrom = Math.max(0, o - TP_TAPS + 1);
         const iTo = Math.min(length - TP_TAPS, oEnd - TP_TAPS);
         if (iTo >= iFrom) {
-          const tp = truePeakOverWindows(src, bufFrom, iFrom, iTo);
+          const tp = truePeakOverWindows(src, bufFrom, iFrom, iTo, samplePeak > truePeak ? samplePeak : truePeak);
           if (tp > truePeak) truePeak = tp;
         }
       }
