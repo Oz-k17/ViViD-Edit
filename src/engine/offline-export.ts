@@ -181,7 +181,7 @@ function soundingClips(sequence: Sequence): number {
 }
 
 /** 素材の実体（Blob）を取り出す。mediaRegistry は object URL しか持っていないので取り直す。 */
-async function assetBlob(mediaId: string): Promise<Blob | null> {
+export async function assetBlob(mediaId: string): Promise<Blob | null> {
   const asset = mediaRegistry.get(mediaId);
   if (!asset) return null;
   try {

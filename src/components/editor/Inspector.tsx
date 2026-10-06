@@ -41,6 +41,7 @@ import { useEditor } from '../../store/editor';
 import { ColorInput, EmptyHint, Field, MuteIcon, Panel, Segmented, Slider, SoundIcon, Tabs, Toggle } from '../ui';
 import { importFiles, useMediaAssets } from './MediaPanel';
 import { Icon } from '../Icon';
+import { AnalysisSection } from './AnalysisSection';
 import { TRANSITION_ICON } from './transitionIcon';
 
 type TabKey = 'props' | 'effects' | 'text' | 'emoji';
@@ -678,6 +679,13 @@ function PropsTab({ clip }: { clip: Clip }) {
 
           <hr />
           <CropSection clip={clip} />
+
+          {clip.kind === 'video' && (
+            <>
+              <hr />
+              <AnalysisSection clip={clip} />
+            </>
+          )}
 
           <hr />
           <TransitionControls clip={clip} />
