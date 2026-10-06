@@ -13,6 +13,7 @@
  * コマ落ちしない（そのぶん書き出しには実時間より長くかかることがある）。
  */
 
+import { finishMix } from './finish';
 import {
   AudioBufferSink,
   AudioBufferSource,
@@ -55,6 +56,8 @@ export interface FrameExportOptions {
   /** 映像のビットレート（bps）。 */
   bitrate: number;
   format: 'auto' | 'mp4' | 'webm';
+  /** 書き出す音に音量仕上げ（-14 LUFS・-1 dBTP）を当てる（試験的）。 */
+  finishAudio?: boolean;
   onProgress: (ratio: number) => void;
   isCancelled: () => boolean;
 }
@@ -65,6 +68,8 @@ export interface FrameExportOutput {
   ext: string;
   /** 音が入れられなかったなど、書き出せてはいるが伝えるべきこと。 */
   warning?: string;
+  /** 音量仕上げの結果など、伝えておくとよいこと。 */
+  note?: string;
 }
 
 export function isFrameExportSupported(): boolean {
@@ -181,7 +186,7 @@ function soundingClips(sequence: Sequence): number {
 }
 
 /** 素材の実体（Blob）を取り出す。mediaRegistry は object URL しか持っていないので取り直す。 */
-async function assetBlob(mediaId: string): Promise<Blob | null> {
+export async function assetBlob(mediaId: string): Promise<Blob | null> {
   const asset = mediaRegistry.get(mediaId);
   if (!asset) return null;
   try {
@@ -397,7 +402,17 @@ export async function runFrameAccurateExport(options: FrameExportOptions): Promi
   // 「音を載せられる入れ物か」で形式を選び分けるのにも要るため。
   // 音の取り出しに失敗しても、映像だけは必ず書き出せるようにする
   // （そのぶん下で警告を出す）。
-  const mix = await renderAudioMix(sequence, duration).catch(() => null);
+  let mix = await renderAudioMix(sequence, duration).catch(() => null);
+  let note: string | undefined;
+  if (mix && options.finishAudio) {
+    try {
+      const finished = finishMix(mix);
+      mix = finished.buffer;
+      note = `音量を整えました: ${finished.report.summary}`;
+    } catch {
+      note = '音量を整えられなかったので、そのまま書き出しました';
+    }
+  }
   if (isCancelled()) throw new Error('書き出しを中止しました');
 
   const picked = await pickTarget(
@@ -579,5 +594,5 @@ export async function runFrameAccurateExport(options: FrameExportOptions): Promi
     if (!mix) warning = '素材から音を取り出せなかったため、音の入っていない動画になりました。';
     else if (!picked.audioCodec) warning = `この環境では ${picked.ext.toUpperCase()} に音を入れられませんでした。`;
   }
-  return { blob: new Blob([buffer], { type: mimeType }), mimeType, ext: picked.ext, warning };
+  return { blob: new Blob([buffer], { type: mimeType }), mimeType, ext: picked.ext, warning, note };
 }

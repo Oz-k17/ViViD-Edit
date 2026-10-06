@@ -705,6 +705,159 @@ eq('空文字', wrap('', 10), ['']);
   check('JSON にできる', typeof JSON.stringify(file) === 'string');
 }
 
+// ---- 解析の結果を編集に直す ----
+{
+  const { segmentCenters } = await import('../src/analysis/segments.ts');
+  const {
+    sourceToTimeline, timelineToSource, splitClipAtTimes, splitAtSceneBoundaries,
+    reframeWindow, reframeCrop, applyReframeSegments,
+  } = await import('../src/model/analysisEdits.ts');
+  const { createProject, clipFromAsset } = await import('../src/model/factory.ts');
+  const { placeClip, tracksOf } = await import('../src/model/ops.ts');
+
+  // --- 中心の列 → 止まった区間 ---
+  const track = (fn, seconds = 6, fps = 30) =>
+    Array.from({ length: seconds * fps }, (_, i) => ({ time: i / fps, center: fn(i / fps) }));
+
+  check('空の列は空', segmentCenters([]).length === 0);
+
+  const flat = segmentCenters(track(() => 0.5));
+  check('動かない列は 1 区間', flat.length === 1 && Math.abs(flat[0].center - 0.5) < 1e-9, `${flat.length} 区間`);
+
+  const three = segmentCenters(track((t) => (t < 2 ? 0.3 : t < 4 ? 0.7 : 0.3)));
+  check('3 つに分かれる', three.length === 3, `${three.length} 区間`);
+  check('中心が合っている', Math.abs(three[0].center - 0.3) < 0.01 && Math.abs(three[1].center - 0.7) < 0.01);
+  check('区間は隙間なく並ぶ', three[0].to === three[1].from && three[1].to === three[2].from);
+  check('境目はだいたい 2 秒と 4 秒', Math.abs(three[1].from - 2) < 0.1 && Math.abs(three[2].from - 4) < 0.1,
+    `${three[1].from.toFixed(2)} / ${three[2].from.toFixed(2)}`);
+
+  // 0.3 秒だけ寄り道する列は、区間にしない（短すぎて割るとちらつく）
+  const blip = segmentCenters(track((t) => (t > 2.9 && t < 3.2 ? 0.8 : 0.3)));
+  check('短い寄り道は区間にしない', blip.length === 1, `${blip.length} 区間`);
+
+  // 上限を超えるときは畳んで収める
+  const zigzag = track((t) => (Math.floor(t / 1) % 2 ? 0.8 : 0.2), 20);
+  const capped = segmentCenters(zigzag, { maxSegments: 5 });
+  check('数の上限に収まる', capped.length <= 5, `${capped.length} 区間`);
+  check('畳んでも全部の秒をまたぐ', capped[0].from === 0 && capped[capped.length - 1].to > 19.9);
+
+  // --- 2 つの時計 ---
+  const project = createProject('test');
+  let seq = project.sequence;
+  const videoTrack = tracksOf(seq, 'video')[0];
+  const base = { ...clipFromAsset({ id: 'm', kind: 'video', duration: 100 }, videoTrack.id, 5), sourceIn: 20, duration: 10 };
+  seq = placeClip(seq, base);
+
+  check('素材の秒 → タイムライン', sourceToTimeline(base, 23) === 8);
+  check('タイムライン → 素材の秒', timelineToSource(base, 8) === 23);
+  const fast = { ...base, speed: 2 };
+  check('速さ 2 倍で往復が合う', Math.abs(timelineToSource(fast, sourceToTimeline(fast, 27)) - 27) < 1e-9);
+  check('速さ 2 倍だと素材の 2 秒が 1 秒', sourceToTimeline(fast, 22) === 6);
+
+  // --- クリップを割る ---
+  const split = splitClipAtTimes(seq, base.id, [8, 12]);
+  const pieces = split.pieceIds.map((id) => split.sequence.clips.find((c) => c.id === id));
+  check('3 つに割れる', pieces.length === 3 && pieces.every(Boolean), `${pieces.length} 本`);
+  check('割った長さの合計は元と同じ', Math.abs(pieces.reduce((n, c) => n + c.duration, 0) - 10) < 1e-9);
+  check('素材のイン点が連なる', pieces[0].sourceIn === 20 && pieces[1].sourceIn === 23 && pieces[2].sourceIn === 27,
+    pieces.map((c) => c.sourceIn).join(','));
+  check('時間順に並ぶ', pieces[0].start === 5 && pieces[1].start === 8 && pieces[2].start === 12);
+
+  // 端に近い・重複した秒は飛ばす
+  const edgy = splitClipAtTimes(seq, base.id, [5.02, 8, 8, 14.97]);
+  check('端と重複は飛ばす', edgy.pieceIds.length === 2, `${edgy.pieceIds.length} 本`);
+
+  // 存在しない id
+  check('無い id は何もしない', splitClipAtTimes(seq, 'nope', [8]).sequence === seq);
+
+  // シーンの切れ目：使っていない範囲は無視する
+  const scene = splitAtSceneBoundaries(seq, base.id, [10, 23, 27, 50]);
+  check('使っている範囲の切れ目だけで割る', scene.pieceIds.length === 3, `${scene.pieceIds.length} 本`);
+
+  // --- リフレーム ---
+  const wide = reframeWindow({ width: 1920, height: 1080 }, 1080 / 1920);
+  check('横長 → 横の窓', wide.axis === 'x' && Math.abs(wide.size - 0.3164) < 0.001, JSON.stringify(wide));
+  const tall = reframeWindow({ width: 1080, height: 1920 }, 1);
+  check('縦長 → 縦の窓', tall.axis === 'y' && Math.abs(tall.size - 0.5625) < 1e-9, JSON.stringify(tall));
+  check('同じ縦横比なら要らない', reframeWindow({ width: 1080, height: 1920 }, 1080 / 1920) === null);
+  check('寸法が無ければ null', reframeWindow({ width: 0, height: 0 }, 1) === null);
+
+  const left = reframeCrop(wide, 0.02);
+  check('左へはみ出さない', left.sx === 0 && left.sw === wide.size);
+  const right = reframeCrop(wide, 0.99);
+  check('右へはみ出さない', Math.abs(right.sx + right.sw - 1) < 1e-9);
+  const mid = reframeCrop(wide, 0.5);
+  check('中央なら窓が真ん中', Math.abs(mid.sx - (0.5 - wide.size / 2)) < 1e-9);
+  check('全面へ置く', mid.dx === 0 && mid.dy === 0 && mid.dw === 1 && mid.dh === 1 && mid.enabled);
+  const vertical = reframeCrop(tall, 0.3);
+  check('縦の窓は縦を切る', vertical.sx === 0 && vertical.sw === 1 && vertical.sh === tall.size);
+
+  // 区間を適用する
+  const segs = [
+    { from: 20, to: 24, center: 0.3 },
+    { from: 24, to: 30, center: 0.7 },
+  ];
+  const applied = applyReframeSegments(seq, base.id, segs, wide);
+  check('区間の数だけクリップになる', applied.segments === 2, `${applied.segments} 本`);
+  const parts = applied.sequence.clips.filter((c) => c.kind === 'video').sort((a, b) => a.start - b.start);
+  check('クリップが 2 本', parts.length === 2);
+  check('区間ごとに別の枠', Math.abs(parts[0].crop.sx - parts[1].crop.sx) > 0.3,
+    `${parts[0].crop.sx.toFixed(2)} / ${parts[1].crop.sx.toFixed(2)}`);
+  check('境目は区間の頭', Math.abs(parts[1].start - 9) < 1e-9, String(parts[1].start));
+  check('合計の長さは元と同じ', Math.abs(parts[0].duration + parts[1].duration - 10) < 1e-9);
+
+  // 1 区間だけなら割らずにクロップだけ入れる
+  const one = applyReframeSegments(seq, base.id, [{ from: 20, to: 30, center: 0.5 }], wide);
+  const single = one.sequence.clips.filter((c) => c.kind === 'video');
+  check('1 区間は割らない', one.segments === 1 && single.length === 1 && single[0].crop.enabled);
+
+  // 使っていない範囲の区間は無視する
+  const none = applyReframeSegments(seq, base.id, [{ from: 60, to: 70, center: 0.5 }], wide);
+  check('範囲外の区間だけなら何もしない', none.segments === 0 && none.sequence === seq);
+}
+
+// ---- 音量仕上げ（LUFS 正規化 + 真のピークのリミッタ） ----
+{
+  const { finishAudio } = await import('../src/model/audioFinish.ts');
+  const { measureLoudness } = await import('../src/analysis/audio/lufs.ts');
+  const sr = 48000;
+  const make = (seconds, f) => {
+    const n = Math.round(seconds * sr);
+    const d = new Float32Array(n);
+    for (let i = 0; i < n; i += 1) d[i] = f(i / sr);
+    return { sampleRate: sr, numberOfChannels: 1, length: n, getChannelData: () => d };
+  };
+  const dbToAmp = (db) => Math.pow(10, db / 20);
+
+  const quiet = make(6, (t) => dbToAmp(-30) * Math.sin(2 * Math.PI * 997 * t));
+  const q = finishAudio(quiet);
+  const qm = measureLoudness(q.buffer);
+  check('小さい音が -14 LUFS 付近へ上がる', q.report.applied && Math.abs((qm.integratedLufs ?? -99) + 14) < 0.5, String(qm.integratedLufs));
+  check('上げても真のピークは -1dBTP 以内', qm.truePeakDb <= -0.95, String(qm.truePeakDb));
+
+  const loud = make(6, (t) => dbToAmp(-2) * Math.sin(2 * Math.PI * 997 * t));
+  const l = finishAudio(loud);
+  const lm = measureLoudness(l.buffer);
+  check('大きすぎる音は下がる', l.report.gainDb < 0 && lm.truePeakDb <= -0.95, `${l.report.gainDb} / ${lm.truePeakDb}`);
+
+  // ときどき鋭いピークが立つ声（平均は小さいのに山が高い）: 上げるとリミッタが働く
+  const peaky = make(8, (t) => {
+    const base = dbToAmp(-26) * Math.sin(2 * Math.PI * 440 * t);
+    const spike = Math.abs(t % 1 - 0.5) < 0.0005 ? dbToAmp(-6) : 0;
+    return base + spike;
+  });
+  const p = finishAudio(peaky);
+  check('ピークの立つ素材でも天井を守る', p.report.truePeakDb <= -0.9, String(p.report.truePeakDb));
+  check('リミッタの下げ量が報告に出る', p.report.limiterReductionDb >= 0 && p.report.limiterReductionDb <= 6.01);
+
+  const silent = make(3, () => 0);
+  const s = finishAudio(silent);
+  check('無音は測れず、そのまま返す', !s.report.applied && s.buffer === silent);
+
+  const orig = quiet.getChannelData(0)[1000];
+  check('元の音は壊さない', quiet.getChannelData(0)[1000] === orig && q.buffer !== quiet);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

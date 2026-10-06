@@ -27,6 +27,8 @@ export interface ExportSettings {
   /** Mbps */
   bitrate: number;
   format: 'auto' | 'mp4' | 'webm';
+  /** 音量を整える（試験的。高精度書き出しのときだけ効く）。 */
+  finishAudio?: boolean;
 }
 
 export interface ExportResult {
@@ -36,6 +38,8 @@ export interface ExportResult {
   durationMs: number;
   /** 書き出せてはいるが伝えるべきこと（音が入らなかった等）。 */
   warning?: string;
+  /** 音量仕上げの結果など。 */
+  note?: string;
 }
 
 /**
@@ -154,6 +158,7 @@ export class Exporter {
         fps: settings.fps,
         bitrate: Math.round(settings.bitrate * 1_000_000),
         format: settings.format,
+        finishAudio: settings.finishAudio,
         onProgress,
         isCancelled: () => this.cancelled,
       });
@@ -164,6 +169,7 @@ export class Exporter {
         mimeType: output.mimeType,
         durationMs: performance.now() - startedAt,
         warning: output.warning,
+        note: output.note,
       };
     } finally {
       this.active = false;
