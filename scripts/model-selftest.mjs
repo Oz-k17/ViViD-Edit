@@ -816,6 +816,48 @@ eq('空文字', wrap('', 10), ['']);
   check('範囲外の区間だけなら何もしない', none.segments === 0 && none.sequence === seq);
 }
 
+// ---- 音量仕上げ（LUFS 正規化 + 真のピークのリミッタ） ----
+{
+  const { finishAudio } = await import('../src/model/audioFinish.ts');
+  const { measureLoudness } = await import('../src/analysis/audio/lufs.ts');
+  const sr = 48000;
+  const make = (seconds, f) => {
+    const n = Math.round(seconds * sr);
+    const d = new Float32Array(n);
+    for (let i = 0; i < n; i += 1) d[i] = f(i / sr);
+    return { sampleRate: sr, numberOfChannels: 1, length: n, getChannelData: () => d };
+  };
+  const dbToAmp = (db) => Math.pow(10, db / 20);
+
+  const quiet = make(6, (t) => dbToAmp(-30) * Math.sin(2 * Math.PI * 997 * t));
+  const q = finishAudio(quiet);
+  const qm = measureLoudness(q.buffer);
+  check('小さい音が -14 LUFS 付近へ上がる', q.report.applied && Math.abs((qm.integratedLufs ?? -99) + 14) < 0.5, String(qm.integratedLufs));
+  check('上げても真のピークは -1dBTP 以内', qm.truePeakDb <= -0.95, String(qm.truePeakDb));
+
+  const loud = make(6, (t) => dbToAmp(-2) * Math.sin(2 * Math.PI * 997 * t));
+  const l = finishAudio(loud);
+  const lm = measureLoudness(l.buffer);
+  check('大きすぎる音は下がる', l.report.gainDb < 0 && lm.truePeakDb <= -0.95, `${l.report.gainDb} / ${lm.truePeakDb}`);
+
+  // ときどき鋭いピークが立つ声（平均は小さいのに山が高い）: 上げるとリミッタが働く
+  const peaky = make(8, (t) => {
+    const base = dbToAmp(-26) * Math.sin(2 * Math.PI * 440 * t);
+    const spike = Math.abs(t % 1 - 0.5) < 0.0005 ? dbToAmp(-6) : 0;
+    return base + spike;
+  });
+  const p = finishAudio(peaky);
+  check('ピークの立つ素材でも天井を守る', p.report.truePeakDb <= -0.9, String(p.report.truePeakDb));
+  check('リミッタの下げ量が報告に出る', p.report.limiterReductionDb >= 0 && p.report.limiterReductionDb <= 6.01);
+
+  const silent = make(3, () => 0);
+  const s = finishAudio(silent);
+  check('無音は測れず、そのまま返す', !s.report.applied && s.buffer === silent);
+
+  const orig = quiet.getChannelData(0)[1000];
+  check('元の音は壊さない', quiet.getChannelData(0)[1000] === orig && q.buffer !== quiet);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

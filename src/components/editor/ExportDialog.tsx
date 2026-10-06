@@ -91,6 +91,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const [format, setFormat] = useState(isNativeHost() ? 'mp4' : settings.exportFormat);
   const [bitrate, setBitrate] = useState(8);
   const [fps, setFps] = useState(sequence.fps || 30);
+  const [finishAudio, setFinishAudio] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
   const [result, setResult] = useState<ExportResult | null>(null);
   const [saved, setSaved] = useState(false);
@@ -153,7 +154,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         withoutCaption ? `${project.name}_字幕なし` : project.name,
         withoutCaption ? withoutCaptions(sequence) : sequence,
         player,
-        { aspect, quality: effectiveQuality, fps, bitrate: effectiveBitrate, format },
+        { aspect, quality: effectiveQuality, fps, bitrate: effectiveBitrate, format, finishAudio: frameAccurate && finishAudio },
         setProgress,
       );
       setResult(output);
@@ -246,6 +247,15 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           />
         </Field>
 
+        <Field label="音量（試験的）" hint={frameAccurate ? '-14 LUFS・ピーク -1 dBTP' : 'この環境では使えません'}>
+          <Toggle
+            checked={finishAudio && frameAccurate}
+            disabled={running || !frameAccurate}
+            onChange={setFinishAudio}
+            label="音量を整えて書き出す"
+          />
+        </Field>
+
         <Field label="ビットレート" hint={`${bitrate} Mbps`}>
           <input type="range" min={2} max={20} step={1} value={bitrate} disabled={running} onChange={(e) => setBitrate(Number(e.target.value))} />
         </Field>
@@ -325,6 +335,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             <span className="muted small">{codecSummary(result.mimeType)}</span>
           </p>
         )}
+        {result?.note && <p className="muted small">{result.note}</p>}
         {result?.warning && (
           <p className="error-note">{result.warning}</p>
         )}

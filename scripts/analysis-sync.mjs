@@ -25,6 +25,9 @@ const FILES = [
   ],
   ['lab/reframe/src/columns.ts', 'src/analysis/columns.ts'],
   ['lab/reframe/src/reframe.ts', 'src/analysis/reframe.ts'],
+  ['lab/auto-cut/src/loudness.ts', 'src/analysis/audio/loudness.ts'],
+  ['lab/auto-cut/src/lufs.ts', 'src/analysis/audio/lufs.ts'],
+  ['lab/auto-cut/src/limiter.ts', 'src/analysis/audio/limiter.ts'],
 ];
 
 let drifted = 0;
