@@ -858,6 +858,92 @@ eq('空文字', wrap('', 10), ['']);
   check('元の音は壊さない', quiet.getChannelData(0)[1000] === orig && q.buffer !== quiet);
 }
 
+// ---- 編集操作の追加（挿入 / lift・extract / 隙間詰め / リップルトリム / ロール / スリップ / スライド） ----
+{
+  const { createSequence, baseClip } = await import('../src/model/factory.ts');
+  const { insertClip, liftRange, extractRange, closeGap, rippleTrim, rollEdit, slipClip, slideClip } =
+    await import('../src/model/editOps.ts');
+  const { tracksOf, clipsOnTrack } = await import('../src/model/ops.ts');
+  const base = createSequence('9:16');
+  const track = tracksOf(base, 'video')[0];
+  const mk = (start, duration, sourceIn = 0, speed = 1) => ({
+    ...baseClip('video', track.id),
+    mediaId: 'm',
+    start,
+    duration,
+    sourceIn,
+    speed,
+  });
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
+  const lay = (...clips) => ({ ...base, clips });
+  const row = (seq) => clipsOnTrack(seq, track.id).map((c) => [c.start, c.duration, c.sourceIn]);
+
+  // 挿入: 途中なら割って、後ろを送る。素材は 1 コマも失われない
+  const a = mk(0, 6);
+  const ins = insertClip(lay(a), { ...mk(2, 1.5), sourceIn: 10 });
+  const r1 = row(ins);
+  check('挿入は途中のクリップを割る', r1.length === 3 && near(r1[0][1], 2) && near(r1[1][0], 2) && near(r1[1][1], 1.5));
+  check('挿入で後ろへ送る（尺が増える）', near(r1[2][0], 3.5) && near(r1[2][1], 4) && near(r1[2][2], 2));
+
+  // lift: 隙間が残る / extract: 詰まる
+  const three = lay(mk(0, 3), mk(3, 3, 3), mk(6, 3, 6));
+  const lifted = row(liftRange(three, [track.id], 2, 5));
+  check('lift は範囲を空ける', lifted.length === 3 && near(lifted[0][1], 2) && near(lifted[1][0], 5) && near(lifted[1][2], 5));
+  const extracted = row(extractRange(three, [track.id], 2, 5));
+  check('extract は範囲を取り除いて詰める', extracted.length === 3 && near(extracted[1][0], 2) && near(extracted[1][1], 1) && near(extracted[2][0], 3));
+  check('extract で全体の尺が範囲ぶん縮む', near(extracted[2][0] + extracted[2][1], 6));
+
+  // 隙間詰め
+  const gappy = lay(mk(0, 2), mk(5, 2), mk(8, 1));
+  const closed = row(closeGap(gappy, track.id, 3));
+  check('隙間詰めは後続をまとめて詰める', near(closed[1][0], 2) && near(closed[2][0], 5));
+  check('クリップの上では隙間詰めしない', closeGap(gappy, track.id, 1) === gappy);
+
+  // リップルトリム
+  const rt = lay(mk(0, 4, 0), mk(4, 3, 0));
+  const shorter = row(rippleTrim(rt, rt.clips[0].id, 'right', -1.5));
+  check('右端のリップルトリムで後続が詰まる', near(shorter[0][1], 2.5) && near(shorter[1][0], 2.5));
+  const longer = row(rippleTrim(rt, rt.clips[0].id, 'right', 2, 10));
+  check('右端を伸ばすと後続が送られる', near(longer[0][1], 6) && near(longer[1][0], 6));
+  const capped = row(rippleTrim(rt, rt.clips[0].id, 'right', 20, 6));
+  check('素材の終わりで伸びが止まる', near(capped[0][1], 6));
+  const lt = lay(mk(0, 4, 2), mk(4, 3, 0));
+  const head = row(rippleTrim(lt, lt.clips[0].id, 'left', 1));
+  check('左端のリップルトリム: 始まりは動かず、イン点が進み、後続が詰まる', near(head[0][0], 0) && near(head[0][1], 3) && near(head[0][2], 3) && near(head[1][0], 3));
+  const headCap = row(rippleTrim(lt, lt.clips[0].id, 'left', -5));
+  check('左端を広げるのはイン点 0 まで', near(headCap[0][1], 6) && near(headCap[0][2], 0));
+
+  // ロール
+  const rl = lay(mk(0, 4, 0), mk(4, 4, 6));
+  const rolled = row(rollEdit(rl, rl.clips[0].id, rl.clips[1].id, 1.5, 20));
+  check('ロールは境目だけ動かす', near(rolled[0][1], 5.5) && near(rolled[1][0], 5.5) && near(rolled[1][2], 7.5));
+  check('ロールは全体の尺を変えない', near(rolled[1][0] + rolled[1][1], 8));
+  const rolledBack = row(rollEdit(rl, rl.clips[0].id, rl.clips[1].id, -99, 20));
+  check('ロールは左の最短（0.1 秒）で止まる', near(rolledBack[0][1], 0.1) && near(rolledBack[1][0], 0.1) && near(rolledBack[1][2], 6 - 3.9));
+  const apart = lay(mk(0, 2), mk(5, 2));
+  check('離れたクリップにはロールしない', rollEdit(apart, apart.clips[0].id, apart.clips[1].id, 1) === apart);
+
+  // スリップ
+  const sp = lay(mk(2, 3, 4));
+  const slipped = row(slipClip(sp, sp.clips[0].id, 2, 20));
+  check('スリップは位置と尺を保ってイン点だけ動く', near(slipped[0][0], 2) && near(slipped[0][1], 3) && near(slipped[0][2], 6));
+  check('スリップは素材の終わりで止まる', near(row(slipClip(sp, sp.clips[0].id, 99, 10))[0][2], 7));
+  check('スリップは素材の頭で止まる', near(row(slipClip(sp, sp.clips[0].id, -99, 10))[0][2], 0));
+  const fast = lay(mk(0, 2, 0, 2));
+  check('倍速でもスリップの限度は素材の秒で数える', near(row(slipClip(fast, fast.clips[0].id, 99, 10))[0][2], 6));
+
+  // スライド
+  const sl = lay(mk(0, 3, 0), mk(3, 2, 10), mk(5, 3, 4));
+  const slid = row(slideClip(sl, sl.clips[1].id, 1, { previous: 20 }));
+  check('スライドは中身を変えず位置だけ動く', near(slid[1][0], 4) && near(slid[1][1], 2) && near(slid[1][2], 10));
+  check('スライドで前が伸び、後ろが縮む（イン点も進む）', near(slid[0][1], 4) && near(slid[2][0], 6) && near(slid[2][1], 2) && near(slid[2][2], 5));
+  check('スライドは全体の尺を変えない', near(slid[2][0] + slid[2][1], 8));
+  const slidMax = row(slideClip(sl, sl.clips[1].id, 99, { previous: 20 }));
+  check('後ろが最短になるところで止まる', near(slidMax[2][1], 0.1));
+  const lone = lay(mk(0, 2));
+  check('隣が無ければスライドしない', slideClip(lone, lone.clips[0].id, 1) === lone);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

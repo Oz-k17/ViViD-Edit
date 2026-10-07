@@ -40,7 +40,7 @@ export function previousAdjacent(sequence: Sequence, clip: Clip): Clip | null {
   return sequence.clips.find((c) => c.trackId === clip.trackId && Math.abs(clipEnd(c) - clip.start) < 0.02) ?? null;
 }
 
-function splitOne(clip: Clip, time: number): Clip[] {
+export function splitOne(clip: Clip, time: number): Clip[] {
   const left: Clip = { ...structuredClone(clip), duration: time - clip.start, fadeOut: 0 };
   const right: Clip = {
     ...structuredClone(clip),
@@ -58,7 +58,7 @@ function splitOne(clip: Clip, time: number): Clip[] {
  * 指定範囲に重なる既存クリップを削り取る（Premiere の上書き配置と同じ挙動）。
  * 完全に飲み込まれたものは消え、内側に穴が開く場合は 2 つに割れる。
  */
-function carve(clips: Clip[], trackId: string, from: number, to: number, exceptId: string): Clip[] {
+export function carve(clips: Clip[], trackId: string, from: number, to: number, exceptId: string): Clip[] {
   const out: Clip[] = [];
   for (const clip of clips) {
     if (clip.trackId !== trackId || clip.id === exceptId) {
