@@ -23,6 +23,7 @@
     "lab:clipmatch:carry": "node lab/auto-cut/clipmatch-carry.mjs",
     "lab:limit:stream": "node lab/auto-cut/limit-stream.mjs",
     "lab:loudness:stream": "node lab/auto-cut/loudness-stream.mjs",
+    "lab:truepeak": "node lab/auto-cut/truepeak.mjs",
     "lab:uitest": "node lab/auto-cut/uitest.mjs && node lab/beat/uitest.mjs && node lab/scene-cut/uitest.mjs && node lab/thumbnail/uitest.mjs && node lab/reframe/uitest.mjs && node lab/keyframe/uitest.mjs",
     "lab:probe": "node lab/auto-cut/probe.mjs",
     "lab:frames": "node lab/fixtures/make-frames.mjs",
