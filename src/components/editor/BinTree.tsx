@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent } from 'react';
 import { mediaRegistry, UNSORTED } from '../../engine/media';
-import { buildTree, parentOf, rebase, visibleNodes, type BinNode } from '../../model/bins';
+import { allBinPaths, baseName, buildTree, parentOf, rebase, splitPath, visibleNodes, type BinNode } from '../../model/bins';
 import {
   createBin,
   deleteBin,
@@ -14,7 +14,7 @@ import {
   useBinState,
 } from '../../store/bins';
 import { Icon } from '../Icon';
-import { MEDIA_DND_TYPE } from './MultiTimeline';
+import { draggedMediaIds, MEDIA_DND_TYPE, MEDIA_LIST_DND_TYPE } from './MultiTimeline';
 
 /** ビンをドラッグして別のビンの下へ移すときの印。 */
 export const BIN_DND_TYPE = 'application/x-vivid-bin';
@@ -136,14 +136,14 @@ export function BinTree({
   };
 
   const acceptDrop = (event: React.DragEvent, target: BinSelection) => {
-    const assetId = event.dataTransfer.getData(MEDIA_DND_TYPE);
+    const assetIds = draggedMediaIds(event.dataTransfer);
     const binPath = event.dataTransfer.getData(BIN_DND_TYPE);
     setDropTarget(undefined);
-    if (!assetId && !binPath) return;
+    if (assetIds.length === 0 && !binPath) return;
     event.preventDefault();
     event.stopPropagation();
-    if (assetId) {
-      moveAssetsToBin([assetId], target ?? UNSORTED);
+    if (assetIds.length > 0) {
+      moveAssetsToBin(assetIds, target ?? UNSORTED);
       return;
     }
     const result = moveBin(binPath, target ?? '');
@@ -154,7 +154,7 @@ export function BinTree({
   const dragProps = (target: BinSelection) => ({
     onDragOver: (event: DragEvent) => {
       const types = event.dataTransfer.types;
-      if (!types.includes(MEDIA_DND_TYPE) && !types.includes(BIN_DND_TYPE)) return;
+      if (!types.includes(MEDIA_DND_TYPE) && !types.includes(MEDIA_LIST_DND_TYPE) && !types.includes(BIN_DND_TYPE)) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = 'move';
       if (dropTarget !== target) setDropTarget(target);
@@ -366,4 +366,20 @@ function useSyncAssets() {
     void mediaRegistry.restore();
   }, []);
   return useSyncExternalStore(mediaRegistry.subscribe, mediaRegistry.getSnapshot, mediaRegistry.getSnapshot);
+}
+
+/** 移動先の選択肢（全ビン）。階層が分かるよう、深さぶんだけ全角空白で字下げする。 */
+export function useBinOptions(): Array<{ path: string; label: string }> {
+  const assets = useSyncAssets();
+  const { extra } = useBinState();
+  return useMemo(
+    () =>
+      allBinPaths(
+        assets.map((a) => a.folder || UNSORTED),
+        extra,
+      )
+        .sort((a, b) => a.localeCompare(b, 'ja'))
+        .map((path) => ({ path, label: `${'　'.repeat(splitPath(path).length - 1)}${baseName(path)}` })),
+    [assets, extra],
+  );
 }

@@ -35,7 +35,25 @@ export type ShortcutAction =
   | 'stepBack'
   | 'stepForward'
   | 'zoomIn'
-  | 'zoomOut';
+  | 'zoomOut'
+  | 'addEditAll'
+  | 'prevEdit'
+  | 'nextEdit'
+  | 'nudgeBack'
+  | 'nudgeForward'
+  | 'modeNormal'
+  | 'modeRipple'
+  | 'modeRoll'
+  | 'modeSlip'
+  | 'modeSlide'
+  | 'toggleInsert'
+  | 'markIn'
+  | 'markOut'
+  | 'clearMarks'
+  | 'lift'
+  | 'extract'
+  | 'closeGap'
+  | 'selectAll';
 
 export const SHORTCUT_LABELS: Record<ShortcutAction, string> = {
   playPause: '再生 / 一時停止',
@@ -49,6 +67,24 @@ export const SHORTCUT_LABELS: Record<ShortcutAction, string> = {
   stepForward: '1 フレーム進む',
   zoomIn: 'タイムラインを拡大',
   zoomOut: 'タイムラインを縮小',
+  addEditAll: '全トラックで分割（編集点を追加）',
+  prevEdit: '前の編集点へ',
+  nextEdit: '次の編集点へ',
+  nudgeBack: '選択を 1 フレーム左へ（Shift で 5 フレーム）',
+  nudgeForward: '選択を 1 フレーム右へ（Shift で 5 フレーム）',
+  modeNormal: '編集モード: 通常',
+  modeRipple: '編集モード: リップル',
+  modeRoll: '編集モード: ロール',
+  modeSlip: '編集モード: スリップ',
+  modeSlide: '編集モード: スライド',
+  toggleInsert: '挿入配置の切り替え',
+  markIn: 'In 点を打つ',
+  markOut: 'Out 点を打つ',
+  clearMarks: 'In / Out を消す',
+  lift: 'In〜Out をリフト（隙間を残して取り除く）',
+  extract: 'In〜Out を抽出（詰めて取り除く）',
+  closeGap: '再生ヘッドの隙間を詰める',
+  selectAll: 'クリップをすべて選ぶ',
 };
 
 export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
@@ -63,6 +99,24 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
   stepForward: 'ArrowRight',
   zoomIn: 'mod+Equal',
   zoomOut: 'mod+Minus',
+  addEditAll: 'mod+KeyK',
+  prevEdit: 'ArrowUp',
+  nextEdit: 'ArrowDown',
+  nudgeBack: 'alt+ArrowLeft',
+  nudgeForward: 'alt+ArrowRight',
+  modeNormal: 'KeyV',
+  modeRipple: 'KeyB',
+  modeRoll: 'KeyN',
+  modeSlip: 'KeyY',
+  modeSlide: 'KeyU',
+  toggleInsert: 'KeyJ',
+  markIn: 'KeyI',
+  markOut: 'KeyO',
+  clearMarks: 'mod+shift+KeyX',
+  lift: 'Semicolon',
+  extract: 'Quote',
+  closeGap: 'alt+Delete',
+  selectAll: 'mod+KeyA',
 };
 
 export type LayoutMode = 'desktop' | 'mobile';
@@ -346,7 +400,8 @@ function legacySharedBase(): string | undefined {
 export function AppProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<Settings>(() => {
     const loaded = load(SETTINGS_KEY, { ...DEFAULT_SETTINGS, layout: guessLayout() });
-    return { ...loaded, panels: sanitizePanels(loaded.panels) };
+    // 保存済みの設定には、あとから増えたショートカットが無い。既定で埋めてから重ねる。
+    return { ...loaded, shortcuts: { ...DEFAULT_SHORTCUTS, ...loaded.shortcuts }, panels: sanitizePanels(loaded.panels) };
   });
   const [profiles, setProfiles] = useState<Profile[]>(() => listProfiles());
   const [profile, setProfile] = useState<Profile>(() => currentProfile());

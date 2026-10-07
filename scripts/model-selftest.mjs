@@ -981,6 +981,110 @@ eq('空文字', wrap('', 10), ['']);
   check('検索は名前とビンの両方・AND', B.matchesQuery('opening.mp4', '映像/配信1', '配信 open') && !B.matchesQuery('opening.mp4', '映像', 'zzz') && B.matchesQuery('a', 'b', '  '));
 }
 
+// ---- 編集モード / 編集点の移動 / ナッジ / 複数配置 ----
+{
+  const { createSequence, baseClip } = await import('../src/model/factory.ts');
+  const { nextEditPoint, prevEditPoint, editPoints, closeGapsAt, placeClips, unlockedTrackIds } = await import('../src/model/editOps.ts');
+  const { trimByMode, dragByMode, nudgeByMode, neighborOf } = await import('../src/model/editModes.ts');
+  const { tracksOf, clipsOnTrack } = await import('../src/model/ops.ts');
+  const base = createSequence('9:16');
+  const track = tracksOf(base, 'video')[0];
+  const mk = (start, duration, sourceIn = 0) => ({ ...baseClip('video', track.id), mediaId: 'm', start, duration, sourceIn });
+  const lay = (...clips) => ({ ...base, clips });
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
+  const row = (seq) => clipsOnTrack(seq, track.id).map((c) => [c.start, c.duration, c.sourceIn]);
+  const len = () => 100;
+
+  // 編集点の移動
+  const s3 = lay(mk(0, 2), mk(2, 3), mk(8, 1));
+  check('編集点は昇順・重複なし', editPoints(s3).join(',') === '0,2,5,8,9');
+  check('次の編集点', nextEditPoint(s3, 2) === 5 && nextEditPoint(s3, 5.5) === 8 && nextEditPoint(s3, 9) === null);
+  check('前の編集点', prevEditPoint(s3, 2) === 0 && prevEditPoint(s3, 6) === 5 && prevEditPoint(s3, 0) === null);
+  check('現在位置の編集点は飛ばす', nextEditPoint(s3, 0) === 2);
+
+  // モード: ノーマル／リップル／ロール
+  const two = lay(mk(0, 4, 0), mk(4, 4, 6));
+  const [a, b] = two.clips;
+  check('通常のトリムは後続を動かさない', near(row(trimByMode(two, a.id, 'right', -1, 'normal', len))[1][0], 4));
+  check('リップルのトリムは後続が追う', near(row(trimByMode(two, a.id, 'right', -1, 'ripple', len))[1][0], 3));
+  const rollR = row(trimByMode(two, a.id, 'right', 1, 'roll', len));
+  check('ロール: 右端で隣との境目が動く', near(rollR[0][1], 5) && near(rollR[1][0], 5) && near(rollR[1][2], 7));
+  const rollL = row(trimByMode(two, b.id, 'left', -1, 'roll', len));
+  check('ロール: 左端でも同じ境目が動く', near(rollL[0][1], 3) && near(rollL[1][0], 3));
+  const lone = lay(mk(0, 4, 0));
+  check('隣が無ければロールは通常のトリムになる', near(row(trimByMode(lone, lone.clips[0].id, 'right', -1, 'roll', len))[0][1], 3));
+  check('隣の取り方', neighborOf(two, b, 'prev')?.id === a.id && neighborOf(two, a, 'next')?.id === b.id && neighborOf(two, a, 'prev') === null);
+
+  // スリップ／スライド（ドラッグ）
+  const sp = lay(mk(2, 3, 10));
+  const slipped = row(dragByMode(sp, sp.clips[0].id, 1, 'slip', len));
+  check('スリップ: 右へドラッグで素材は手前へ戻る', near(slipped[0][2], 9) && near(slipped[0][0], 2) && near(slipped[0][1], 3));
+  const sl = lay(mk(0, 3, 0), mk(3, 2, 10), mk(5, 3, 4));
+  const slid = row(dragByMode(sl, sl.clips[1].id, 1, 'slide', len));
+  check('スライドは位置が動いて前後が埋める', near(slid[1][0], 4) && near(slid[0][1], 4) && near(slid[2][0], 6));
+  check('通常モードのドラッグは null（移動へ任せる）', dragByMode(sp, sp.clips[0].id, 1, 'normal', len) === null);
+
+  // ナッジ
+  const idle = lay(mk(2, 1));
+  check('選択が無ければナッジは何も変えない', nudgeByMode(idle, [], 1, 'normal', len) === idle && nudgeByMode(idle, ['none'], 1, 'slip', len) === idle);
+  const one = lay(mk(2, 1));
+  check('通常のナッジは位置が動く', near(row(nudgeByMode(one, [one.clips[0].id], 0.5, 'normal', len))[0][0], 2.5));
+  const sp2 = lay(mk(2, 1, 5));
+  check('スリップのナッジはイン点が動く', near(row(nudgeByMode(sp2, [sp2.clips[0].id], 0.5, 'slip', len))[0][2], 4.5));
+
+  // 隙間詰め（複数トラック）
+  const gap = lay(mk(0, 2), mk(5, 2));
+  check('指定トラックの隙間を詰める', near(row(closeGapsAt(gap, 3, [track.id]))[1][0], 2));
+
+  // 複数配置
+  const placed = row(placeClips(lay(mk(0, 6)), [mk(2, 1), mk(3, 1)], false));
+  check('上書きの複数配置', placed.length === 4 && near(placed[1][0], 2) && near(placed[2][0], 3));
+  const inserted = row(placeClips(lay(mk(0, 6)), [mk(2, 1), mk(3, 1)], true));
+  check('挿入の複数配置は尺が増える', near(inserted[inserted.length - 1][0] + inserted[inserted.length - 1][1], 8));
+  check('ロックされていないトラックの一覧', unlockedTrackIds(base).length === base.tracks.length);
+}
+
+// ---- 素材一覧: 並び替えと複数選択 ----
+{
+  const { sortAssets, pick, prune } = await import('../src/model/assetView.ts');
+  const A = (id, name, kind, duration, size, createdAt) => ({ id, name, kind, duration, size, createdAt });
+  const list = [
+    A('1', 'clip10.mp4', 'video', 5, 300, 3),
+    A('2', 'clip2.mp4', 'video', 20, 100, 1),
+    A('3', 'bgm.mp3', 'audio', 60, 200, 2),
+    A('4', 'pic.png', 'image', 0, 50, 4),
+  ];
+  const ids = (xs) => xs.map((x) => x.id).join(',');
+  check('名前は自然順（clip2 < clip10）', ids(sortAssets(list, 'name', 'asc')) === '3,2,1,4');
+  check('名前の降順', ids(sortAssets(list, 'name', 'desc')) === '4,1,2,3');
+  check('追加順（新しい順）', ids(sortAssets(list, 'added', 'desc')) === '4,1,3,2');
+  check('長さの昇順', ids(sortAssets(list, 'duration', 'asc')) === '4,1,2,3');
+  check('サイズの降順', ids(sortAssets(list, 'size', 'desc')) === '1,3,2,4');
+  check('種類は 動画 → 画像 → 音声（同種は名前順）', ids(sortAssets(list, 'kind', 'asc')) === '2,1,4,3');
+  check('並び替えで元の配列は壊さない', ids(list) === '1,2,3,4');
+
+  const order = ['a', 'b', 'c', 'd', 'e'];
+  const s0 = { selected: [], anchor: null };
+  const s1 = pick(s0, order, 'b');
+  check('普通のクリックは 1 つだけ', s1.selected.join() === 'b' && s1.anchor === 'b');
+  const s2 = pick(s1, order, 'd', { range: true });
+  check('Shift で範囲（起点は動かない）', s2.selected.join() === 'b,c,d' && s2.anchor === 'b');
+  const s2b = pick(s2, order, 'a', { range: true });
+  check('起点より前への範囲も取れる', s2b.selected.join() === 'a,b' && s2b.anchor === 'b');
+  const s3 = pick(s2, order, 'c', { toggle: true });
+  check('Ctrl で外す', s3.selected.join() === 'b,d' && s3.anchor === 'c');
+  const s4 = pick(s3, order, 'e', { toggle: true });
+  check('Ctrl で足す', s4.selected.join() === 'b,d,e');
+  const s5 = pick({ selected: ['a'], anchor: 'a' }, order, 'c', { range: true, toggle: true });
+  check('Ctrl+Shift は選択に範囲を足す', s5.selected.sort().join() === 'a,b,c');
+  check('起点が無ければ Shift は普通のクリック', pick(s0, order, 'c', { range: true }).selected.join() === 'c');
+  check('見えていない素材への Shift は変えない', pick(s1, order, 'zz', { range: true }) === s1);
+  const pr = prune({ selected: ['a', 'x'], anchor: 'x' }, order);
+  check('消えた素材を選択から外す', pr.selected.join() === 'a' && pr.anchor === null);
+  const same = { selected: ['a'], anchor: 'a' };
+  check('変わらなければ同じ参照', prune(same, order) === same);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

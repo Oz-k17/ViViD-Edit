@@ -230,3 +230,54 @@ export function slideClip(
     }),
   };
 }
+
+/** ロックされていないトラックの id。範囲操作の対象に使う。 */
+export function unlockedTrackIds(sequence: Sequence): string[] {
+  return sequence.tracks.filter((t) => !t.locked).map((t) => t.id);
+}
+
+/** 編集点（クリップの始まりと終わり）を昇順・重複なしで返す。`trackIds` を渡すとそのトラックだけ。 */
+export function editPoints(sequence: Sequence, trackIds?: string[]): number[] {
+  const set = new Set<number>();
+  for (const c of sequence.clips) {
+    if (trackIds && !trackIds.includes(c.trackId)) continue;
+    set.add(Math.round(c.start * 1000) / 1000);
+    set.add(Math.round(clipEnd(c) * 1000) / 1000);
+  }
+  return [...set].sort((a, b) => a - b);
+}
+
+/** `time` より後ろで最も近い編集点。無ければ null。 */
+export function nextEditPoint(sequence: Sequence, time: number, trackIds?: string[]): number | null {
+  return editPoints(sequence, trackIds).find((p) => p > time + EPS) ?? null;
+}
+
+/** `time` より前で最も近い編集点。無ければ null。 */
+export function prevEditPoint(sequence: Sequence, time: number, trackIds?: string[]): number | null {
+  const before = editPoints(sequence, trackIds).filter((p) => p < time - EPS);
+  return before.length > 0 ? before[before.length - 1] : null;
+}
+
+/** 指定時刻にある隙間を、指定のトラックすべてで詰める（クリップの上のトラックは触らない）。 */
+export function closeGapsAt(sequence: Sequence, time: number, trackIds: string[]): Sequence {
+  let next = sequence;
+  for (const id of trackIds) next = closeGap(next, id, time);
+  return next;
+}
+
+/**
+ * 複数のクリップを続けて置く。`insert` なら挿入、そうでなければ上書き。
+ * 渡す順に処理するので、挿入のときは先に置いたクリップのあとへ後続が送られていく。
+ */
+export function placeClips(sequence: Sequence, clips: Clip[], insert: boolean): Sequence {
+  let next = sequence;
+  for (const clip of clips) {
+    next = insert
+      ? insertClip(next, clip)
+      : (() => {
+          const carved = carve(next.clips, clip.trackId, clip.start, clipEnd(clip), clip.id);
+          return { ...next, clips: [...carved.filter((c) => c.id !== clip.id), clip] };
+        })();
+  }
+  return next;
+}

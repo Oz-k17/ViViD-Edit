@@ -16,6 +16,7 @@ import {
   type Dispatch,
   type ReactNode,
 } from 'react';
+import type { EditMode } from '../model/editModes';
 import { createProject } from '../model/factory';
 import { ASPECT_PRESETS, type AspectKey, type Project, type Sequence } from '../model/types';
 import { migrateStorageKey } from './storage';
@@ -122,6 +123,16 @@ interface EditorApi {
   /** 切り抜く範囲の縦横比の固定（幅 ÷ 高さ）。null なら自由。 */
   cropRatio: number | null;
   setCropRatio: (ratio: number | null) => void;
+  /** タイムラインのドラッグの意味（通常 / リップル / ロール / スリップ / スライド）。 */
+  editMode: EditMode;
+  setEditMode: (mode: EditMode) => void;
+  /** true なら、素材を置くとき既存のクリップを上書きせず挿入する（後ろへ送る）。 */
+  insertMode: boolean;
+  setInsertMode: (on: boolean) => void;
+  /** リフト / 抽出の範囲（秒）。保存はしない（履歴にも載せない）。 */
+  markIn: number | null;
+  markOut: number | null;
+  setMarks: (markIn: number | null, markOut: number | null) => void;
 }
 
 const EditorContext = createContext<EditorApi | null>(null);
@@ -148,6 +159,10 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     lastAt: 0,
   }));
   const [selection, setSelectionState] = useState<string[]>([]);
+  const [editMode, setEditMode] = useState<EditMode>('normal');
+  const [insertMode, setInsertMode] = useState(false);
+  const [marks, setMarksState] = useState<{ markIn: number | null; markOut: number | null }>({ markIn: null, markOut: null });
+  const setMarks = useCallback((markIn: number | null, markOut: number | null) => setMarksState({ markIn, markOut }), []);
   const [cropTarget, setCropTarget] = useState<string | null>(null);
   const [cropRatio, setCropRatio] = useState<number | null>(null);
   const saveTimer = useRef<number | undefined>(undefined);
@@ -212,8 +227,15 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       setCropTarget,
       cropRatio,
       setCropRatio,
+      editMode,
+      setEditMode,
+      insertMode,
+      setInsertMode,
+      markIn: marks.markIn,
+      markOut: marks.markOut,
+      setMarks,
     }),
-    [state, apply, selection, setSelection, toggleSelection, cropTarget, cropRatio],
+    [state, apply, selection, setSelection, toggleSelection, cropTarget, cropRatio, editMode, insertMode, marks, setMarks],
   );
 
   return <EditorContext.Provider value={value}>{children}</EditorContext.Provider>;

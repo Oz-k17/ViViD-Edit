@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { formatTime, mediaRegistry } from '../../engine/media';
 import { player } from '../../engine/player';
+import { sourceLengthOf } from '../../engine/sourceLength';
+import { EDIT_MODES, dragByMode, trimByMode, type EditMode } from '../../model/editModes';
+import { placeClips } from '../../model/editOps';
 import {
   adoptSourceFps,
   clipsOnTrack,
   moveClips,
-  placeClip,
   previousAdjacent,
   removeClips,
   sequenceDuration,
   snapCandidates,
   snapTime,
-  trimClip,
 } from '../../model/ops';
 import { clipFromAsset } from '../../model/factory';
 import { clipEnd, previewText, type Clip, type Sequence, type Track } from '../../model/types';
@@ -20,8 +21,30 @@ import { useEditor } from '../../store/editor';
 import { EyeIcon, EyeOffIcon, MuteIcon, SoundIcon } from '../ui';
 import { Icon } from '../Icon';
 import { TRANSITION_ICON } from './transitionIcon';
+import { useTimelineActions } from './timelineActions';
 
 export const MEDIA_DND_TYPE = 'application/x-vivid-media';
+/** 複数の素材をまとめてドラッグするときの id の配列（JSON）。単体の `MEDIA_DND_TYPE` も併せて入れる。 */
+export const MEDIA_LIST_DND_TYPE = 'application/x-vivid-media-list';
+
+/** ドラッグされている素材の id を、複数・単体どちらの形からでも取り出す。 */
+export function draggedMediaIds(dt: DataTransfer): string[] {
+  try {
+    const list = JSON.parse(dt.getData(MEDIA_LIST_DND_TYPE) || 'null');
+    if (Array.isArray(list) && list.every((v) => typeof v === 'string') && list.length > 0) return list;
+  } catch {
+    /* 単体の形へ */
+  }
+  const one = dt.getData(MEDIA_DND_TYPE);
+  return one ? [one] : [];
+}
+
+/** 修飾キーでの一時的なモード切り替え（Premiere のツールを押している間だけ変える動きに相当）。 */
+function effectiveMode(mode: EditMode, event: { altKey: boolean; ctrlKey: boolean; metaKey: boolean }, target: 'edge' | 'body'): EditMode {
+  const mod = event.ctrlKey || event.metaKey;
+  if (target === 'edge') return event.altKey ? 'ripple' : mod ? 'roll' : mode;
+  return event.altKey ? 'slip' : mod ? 'slide' : mode;
+}
 const MIN_PPS = 6;
 const MAX_PPS = 400;
 const SNAP_PX = 8;
@@ -65,8 +88,9 @@ interface Props {
 }
 
 export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }: Props) {
-  const { sequence, apply, selection, setSelection } = useEditor();
+  const { sequence, apply, selection, setSelection, editMode, setEditMode, insertMode, setInsertMode, markIn, markOut } = useEditor();
   const { settings, updateSettings } = useApp();
+  const actions = useTimelineActions();
   const scrollRef = useRef<HTMLDivElement>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
@@ -136,7 +160,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
   };
 
   return (
-    <div className={`tl${compact ? ' compact' : ''}`}>
+    <div className={`tl${compact ? ' compact' : ''} mode-${editMode}`}>
       <div className="tl-toolbar">
         <button type="button" onClick={() => apply((seq) => removeClips(seq, selection, false))} disabled={!selection.length}>
           削除
@@ -172,6 +196,67 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
         </div>
       </div>
 
+      <div className="tl-tools" role="toolbar" aria-label="編集ツール">
+        <div className="tl-modes" role="radiogroup" aria-label="編集モード">
+          {EDIT_MODES.map((m) => (
+            <button
+              key={m.key}
+              type="button"
+              role="radio"
+              aria-checked={editMode === m.key}
+              className={editMode === m.key ? 'active' : ''}
+              title={m.hint}
+              onClick={() => setEditMode(m.key)}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          className={insertMode ? 'active' : ''}
+          aria-pressed={insertMode}
+          onClick={() => setInsertMode(!insertMode)}
+          title="素材を置くとき、既存のクリップを上書きせず、後ろへ送って挿入する"
+        >
+          挿入配置
+        </button>
+        <span className="tl-sep" />
+        <button type="button" onClick={actions.markIn} title="再生ヘッドに In 点を打つ（I）">
+          In
+        </button>
+        <button type="button" onClick={actions.markOut} title="再生ヘッドに Out 点を打つ（O）">
+          Out
+        </button>
+        <button type="button" onClick={actions.lift} disabled={!actions.hasRange} title="In〜Out を取り除く（隙間が残る）">
+          リフト
+        </button>
+        <button type="button" onClick={actions.extract} disabled={!actions.hasRange} title="In〜Out を取り除いて詰める">
+          抽出
+        </button>
+        <button
+          type="button"
+          onClick={actions.clearMarks}
+          disabled={markIn === null && markOut === null}
+          title="In / Out を消す"
+        >
+          <Icon name="xmark" size={13} label="In / Out を消す" />
+        </button>
+        <span className="tl-sep" />
+        <button type="button" onClick={actions.closeGap} title="再生ヘッド位置の隙間を詰める">
+          隙間を詰める
+        </button>
+        <button type="button" onClick={actions.addEditAll} title="全トラックの再生ヘッド位置で分割（編集点を追加）">
+          全トラック分割
+        </button>
+        <button type="button" onClick={actions.prevEdit} title="前の編集点へ（↑）">
+          <Icon name="step-back" size={14} label="前の編集点へ" />
+        </button>
+        <button type="button" onClick={actions.nextEdit} title="次の編集点へ（↓）">
+          <Icon name="step-forward" size={14} label="次の編集点へ" />
+        </button>
+      </div>
+
       <div className="tl-body">
         <div className="tl-heads">
           <div className="tl-head-spacer" />
@@ -182,6 +267,13 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
 
         <div className="tl-scroll" ref={scrollRef}>
           <div className="tl-inner" style={{ width: innerWidth }}>
+            {markIn !== null && (
+              <div
+                className={`tl-range${markOut === null ? ' open' : ''}`}
+                style={{ left: markIn * pps, width: markOut === null ? 2 : Math.max(2, (markOut - markIn) * pps) }}
+                aria-hidden
+              />
+            )}
             <Ruler pps={pps} duration={duration} onScrub={scrub} />
             <div className="tl-lanes" ref={lanesRef} onPointerDown={(e) => e.target === e.currentTarget && startMarquee(e)}>
               {tracks.map((track) => (
@@ -278,7 +370,7 @@ function Lane({
   onEmptyPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPickTransition: (clipId: string) => void;
 }) {
-  const { sequence, apply } = useEditor();
+  const { sequence, apply, insertMode } = useEditor();
   const { settings } = useApp();
   const [dropping, setDropping] = useState(false);
   const clips = clipsOnTrack(sequence, track.id);
@@ -289,16 +381,24 @@ function Lane({
   const onDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDropping(false);
-    const mediaId = event.dataTransfer.getData(MEDIA_DND_TYPE);
-    const asset = mediaRegistry.get(mediaId);
-    if (!asset || !accepts(asset.kind)) return;
+    const assets = draggedMediaIds(event.dataTransfer)
+      .map((id) => mediaRegistry.get(id))
+      .filter((a): a is NonNullable<typeof a> => !!a && accepts(a.kind));
+    if (assets.length === 0) return;
     const rect = event.currentTarget.getBoundingClientRect();
     let start = Math.max(0, (event.clientX - rect.left) / pps);
     if (settings.snap) {
       start = snapTime(start, snapCandidates(sequence, player.time, []), SNAP_PX / pps);
     }
-    const clip = clipFromAsset(asset, track.id, start);
-    apply((seq) => placeClip(adoptSourceFps(seq, asset.fps), clip));
+    // 複数なら、ドロップした位置から順に隙間なく並べる。
+    const clips: Clip[] = [];
+    let at = start;
+    for (const asset of assets) {
+      const clip = clipFromAsset(asset, track.id, at);
+      clips.push(clip);
+      at = clipEnd(clip);
+    }
+    apply((seq) => placeClips(adoptSourceFps(seq, assets[0].fps), clips, insertMode));
   };
 
   return (
@@ -307,7 +407,7 @@ function Lane({
       style={{ height: laneHeight(track, compact) }}
       onPointerDown={(e) => e.target === e.currentTarget && onEmptyPointerDown(e)}
       onDragOver={(e) => {
-        if (e.dataTransfer.types.includes(MEDIA_DND_TYPE)) {
+        if (e.dataTransfer.types.includes(MEDIA_DND_TYPE) || e.dataTransfer.types.includes(MEDIA_LIST_DND_TYPE)) {
           e.preventDefault();
           setDropping(true);
         }
@@ -336,7 +436,7 @@ function ClipBlock({
   compact: boolean;
   onPickTransition: (clipId: string) => void;
 }) {
-  const { sequence, apply, selection, setSelection, toggleSelection, isSelected } = useEditor();
+  const { sequence, apply, selection, setSelection, toggleSelection, isSelected, editMode } = useEditor();
   const { settings } = useApp();
   const asset = mediaRegistry.get(clip.mediaId);
   const selected = isSelected(clip.id);
@@ -348,6 +448,17 @@ function ClipBlock({
 
   const startMove = (event: React.PointerEvent) => {
     if (track.locked) return;
+    // スリップ / スライドは、動かすのではなく中身・前後を変えるドラッグ。選択はそのクリップだけにする。
+    const bodyMode = effectiveMode(editMode, event, 'body');
+    if (bodyMode === 'slip' || bodyMode === 'slide') {
+      setSelection([clip.id]);
+      const original = sequence;
+      beginDrag(event, (dx) => {
+        const delta = dx / pps;
+        apply(() => dragByMode(original, clip.id, delta, bodyMode, sourceLengthOf) ?? original, `${bodyMode}:${clip.id}`);
+      });
+      return;
+    }
     const additive = event.shiftKey;
     if (!selected) toggleSelection(clip.id, additive);
     const ids = selected ? selection : additive ? [...selection, clip.id] : [clip.id];
@@ -380,12 +491,13 @@ function ClipBlock({
     if (track.locked) return;
     setSelection([clip.id]);
     const original = sequence;
+    const mode = effectiveMode(editMode, event, 'edge');
     const candidates = snapCandidates(sequence, player.time, [clip.id]);
     beginDrag(event, (dx) => {
       const edge = side === 'left' ? clip.start : clipEnd(clip);
       let delta = dx / pps;
       if (settings.snap) delta = snapTime(edge + delta, candidates, SNAP_PX / pps) - edge;
-      apply(() => trimClip(original, clip.id, side, delta), `trim:${clip.id}:${side}`);
+      apply(() => trimByMode(original, clip.id, side, delta, mode, sourceLengthOf), `trim:${mode}:${clip.id}:${side}`);
     });
   };
 

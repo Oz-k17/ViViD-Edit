@@ -5,6 +5,7 @@ import { MediaPanel, importFiles, seedSoundEffects } from '../components/editor/
 import { ScriptPanel } from '../components/editor/ScriptPanel';
 import { MobileEditor } from '../components/editor/MobileEditor';
 import { MultiTimeline } from '../components/editor/MultiTimeline';
+import { useTimelineActions } from '../components/editor/timelineActions';
 import { PreviewStage } from '../components/editor/PreviewStage';
 import { TopBar } from '../components/editor/TopBar';
 import { TransitionPicker } from '../components/editor/TransitionPicker';
@@ -155,7 +156,8 @@ function isTyping(target: EventTarget | null): boolean {
 }
 
 export default function EditorPage() {
-  const { sequence, apply, dispatch, selection, setSelection } = useEditor();
+  const { sequence, apply, dispatch, selection, setSelection, setEditMode, insertMode, setInsertMode } = useEditor();
+  const timeline = useTimelineActions();
   const { settings } = useApp();
   const mobile = settings.layout === 'mobile';
   const [pps, setPps] = useState(60);
@@ -189,6 +191,24 @@ export default function EditorPage() {
       stepForward: (event) => player.nudge(event.shiftKey ? 1 : 1 / (sequence.fps || 30)),
       zoomIn: () => setPps((p) => Math.min(400, p * 1.4)),
       zoomOut: () => setPps((p) => Math.max(6, p / 1.4)),
+      addEditAll: timeline.addEditAll,
+      prevEdit: timeline.prevEdit,
+      nextEdit: timeline.nextEdit,
+      nudgeBack: (event) => timeline.nudge(-1, event.shiftKey ? 5 : 1),
+      nudgeForward: (event) => timeline.nudge(1, event.shiftKey ? 5 : 1),
+      modeNormal: () => setEditMode('normal'),
+      modeRipple: () => setEditMode('ripple'),
+      modeRoll: () => setEditMode('roll'),
+      modeSlip: () => setEditMode('slip'),
+      modeSlide: () => setEditMode('slide'),
+      toggleInsert: () => setInsertMode(!insertMode),
+      markIn: timeline.markIn,
+      markOut: timeline.markOut,
+      clearMarks: timeline.clearMarks,
+      lift: timeline.lift,
+      extract: timeline.extract,
+      closeGap: timeline.closeGap,
+      selectAll: timeline.selectAll,
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -201,7 +221,7 @@ export default function EditorPage() {
       if (!action && combo.startsWith('shift+')) {
         const stripped = combo.slice('shift+'.length);
         const found = entries.find(([, value]) => value === stripped)?.[0];
-        if (found === 'stepBack' || found === 'stepForward') action = found;
+        if (found === 'stepBack' || found === 'stepForward' || found === 'nudgeBack' || found === 'nudgeForward') action = found;
       }
       if (!action && event.code === 'Backspace') {
         action = entries.find(([, value]) => value === (event.shiftKey ? 'shift+Delete' : 'Delete'))?.[0];
@@ -219,7 +239,7 @@ export default function EditorPage() {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [settings.shortcuts, selection, sequence, apply, dispatch]);
+  }, [settings.shortcuts, selection, sequence, apply, dispatch, timeline, setEditMode, insertMode, setInsertMode]);
 
   const onDrop = async (event: React.DragEvent) => {
     event.preventDefault();

@@ -1971,7 +1971,7 @@ hr {
 
 .media-table li {
   display: grid;
-  grid-template-columns: 56px 1fr 140px auto;
+  grid-template-columns: 22px 56px 1fr 140px auto;
   gap: 10px;
   align-items: center;
   padding: 6px;
@@ -2619,4 +2619,186 @@ hr {
 .asset-search {
   width: 100%;
   box-sizing: border-box;
+}
+
+/* ---------- 素材の複数選択・並び替え ---------- */
+
+.asset-card.selected,
+.media-table li.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.asset-card:focus-visible,
+.asset-grid:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.asset-sort {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.asset-sort-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.asset-sort-label select {
+  width: auto;
+  min-height: 30px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.asset-sort button {
+  font-size: 12px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  font-size: 12px;
+}
+
+.bulk-bar button {
+  font-size: 12px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.bulk-move {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bulk-move select {
+  width: auto;
+  max-width: 160px;
+  min-height: 30px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.media-check,
+.media-select-all input {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  accent-color: var(--accent);
+}
+
+.media-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ---------- タイムラインの編集ツール ---------- */
+
+.tl-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 10px 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tl.compact .tl-tools {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+
+.tl-tools button {
+  min-height: 30px;
+  font-size: 11px;
+  padding: 4px 9px;
+  white-space: nowrap;
+}
+
+.tl-tools button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.tl-modes {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--bg-input);
+}
+
+.tl-modes button {
+  border: none;
+}
+
+.tl-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 2px;
+  background: var(--line);
+}
+
+/* モードに合わせて、つかめる場所のカーソルと端の色を変える（いま何が起きるかを目で分かるように）。 */
+.tl.mode-ripple .tl-handle,
+.tl.mode-roll .tl-handle {
+  opacity: 1;
+}
+
+.tl.mode-ripple .tl-handle {
+  background: rgba(255, 159, 10, 0.7);
+}
+
+.tl.mode-roll .tl-handle {
+  background: rgba(48, 209, 88, 0.7);
+}
+
+.tl.mode-slip .tl-clip,
+.tl.mode-slide .tl-clip {
+  cursor: col-resize;
+}
+
+.tl.mode-slip .tl-clip.selected {
+  box-shadow: inset 0 0 0 2px #bf5af2;
+}
+
+.tl.mode-slide .tl-clip.selected {
+  box-shadow: inset 0 0 0 2px #64d2ff;
+}
+
+/* In〜Out の範囲。ルーラーからレーンまで、薄く塗る。 */
+.tl-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 4;
+  background: rgba(10, 132, 255, 0.16);
+  border-left: 2px solid var(--accent);
+  border-right: 2px solid var(--accent);
+  pointer-events: none;
+}
+
+.tl-range.open {
+  background: none;
+  border-right: none;
 }

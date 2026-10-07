@@ -3,16 +3,22 @@ import { formatTime, mediaRegistry, SFX_FOLDER, UNSORTED, type MediaAsset } from
 import { renderPreset, SFX_PRESETS } from '../../engine/sfx';
 import { player } from '../../engine/player';
 import { clipFromAsset } from '../../model/factory';
-import { adoptSourceFps, placeClip, tracksOf } from '../../model/ops';
+import { adoptSourceFps, tracksOf } from '../../model/ops';
 import { useEditor } from '../../store/editor';
-import { MEDIA_DND_TYPE } from './MultiTimeline';
 import { matchesQuery } from '../../model/bins';
+import { pick, prune, sortAssets, type PickState } from '../../model/assetView';
+import { clipEnd } from '../../model/types';
+import { placeClips } from '../../model/editOps';
+import { useAssetView } from '../../store/assetView';
+import { BulkBar, SortControl, removeAssets, confirmRemoveAssets } from './AssetControls';
+import { startAssetDrag } from './assetDrag';
 import { BinTree, type BinSelection } from './BinTree';
 import { NasBrowser } from './NasBrowser';
 import { EmptyHint, Panel } from '../ui';
 import { Icon } from '../Icon';
 
-const PAGE_SIZE = 6;
+/** 一度に並べる素材の数。多いときは「さらに表示」で足す（サムネイルを一度に出しすぎない）。 */
+const CHUNK = 48;
 
 export function useMediaAssets(): MediaAsset[] {
   // 保存済みの素材を読み戻す（何度呼んでも 1 回だけ）。ライブラリページを直接開いたときも必要。
@@ -49,33 +55,37 @@ export async function seedSoundEffects(): Promise<void> {
 
 export function MediaPanel() {
   const assets = useMediaAssets();
-  const { sequence, apply } = useEditor();
+  const { apply, insertMode } = useEditor();
+  const { sortKey, direction } = useAssetView();
   const inputRef = useRef<HTMLInputElement>(null);
   const [folder, setFolder] = useState<BinSelection>(null);
   const [query, setQuery] = useState('');
-  const [page, setPage] = useState(0);
+  const [shown, setShown] = useState(CHUNK);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [browsing, setBrowsing] = useState(false);
+  const [picked, setPicked] = useState<PickState>({ selected: [], anchor: null });
 
   // 検索しているときはビンを問わず全体から探す（どこに入れたか忘れても見つかるように）。
   const searching = query.trim().length > 0;
-  const filtered = useMemo(
-    () =>
-      searching
-        ? assets.filter((a) => matchesQuery(a.name, a.folder || UNSORTED, query))
-        : folder === null
-          ? assets
-          : assets.filter((a) => (a.folder || UNSORTED) === folder),
-    [assets, folder, query, searching],
-  );
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const ordered = useMemo(() => {
+    const filtered = searching
+      ? assets.filter((a) => matchesQuery(a.name, a.folder || UNSORTED, query))
+      : folder === null
+        ? assets
+        : assets.filter((a) => (a.folder || UNSORTED) === folder);
+    return sortAssets(filtered, sortKey, direction);
+  }, [assets, folder, query, searching, sortKey, direction]);
+  const orderedIds = useMemo(() => ordered.map((a) => a.id), [ordered]);
+  const visible = ordered.slice(0, shown);
 
+  // 並びや絞り込みが変わったら、見えなくなった素材を選択から外し、表示件数も戻す。
   useEffect(() => {
-    if (page > pageCount - 1) setPage(pageCount - 1);
-  }, [page, pageCount]);
-
-  const visible = filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
+    setPicked((prev) => prune(prev, orderedIds));
+  }, [orderedIds]);
+  useEffect(() => {
+    setShown(CHUNK);
+  }, [folder, query, sortKey, direction]);
 
   const handleFiles = async (files: FileList | File[]) => {
     setBusy(true);
@@ -83,21 +93,64 @@ export function MediaPanel() {
     const errors = await importFiles(files, folder ?? UNSORTED);
     setBusy(false);
     if (errors.length) setError(errors.join(' / '));
-    // 新しい素材は一覧の先頭（1 ページ目）に入るので、他のページを見ていても追加したものが見える位置に戻す。
-    setPage(0);
   };
 
-  /** ダブルクリック / ボタンで、再生ヘッド位置の空いているトラックへ置く。 */
-  const addToTimeline = (asset: MediaAsset) => {
-    const kind = asset.kind === 'audio' ? 'audio' : 'video';
-    const candidates = tracksOf(sequence, kind);
-    if (candidates.length === 0) return;
-    const start = player.time;
-    const free =
-      candidates.find(
-        (track) => !sequence.clips.some((c) => c.trackId === track.id && c.start < start + 0.05 && c.start + c.duration > start + 0.05),
-      ) ?? candidates[0];
-    apply((seq) => placeClip(adoptSourceFps(seq, asset.fps), clipFromAsset(asset, free.id, start)));
+  /**
+   * 再生ヘッド位置から、素材の種類ごとに空いているトラックへ続けて置く（挿入配置がオンなら挿入）。
+   * 複数のときは、選んだ順ではなく**いま見えている並び順**で置く。
+   */
+  const addToTimeline = (list: MediaAsset[]) => {
+    if (list.length === 0) return;
+    apply((seq) => {
+      let next = seq;
+      for (const kind of ['video', 'audio'] as const) {
+        const group = list.filter((a) => (a.kind === 'audio' ? 'audio' : 'video') === kind);
+        const candidates = tracksOf(next, kind);
+        if (group.length === 0 || candidates.length === 0) continue;
+        let at = player.time;
+        // 挿入は「流れを押し広げる」操作なので、空きを探さず基本のトラック（V1 / A1）へ入れる。
+        const free = insertMode
+          ? candidates[0]
+          : (candidates.find(
+              (track) => !next.clips.some((c) => c.trackId === track.id && c.start < at + 0.05 && c.start + c.duration > at + 0.05),
+            ) ?? candidates[0]);
+        const clips = group.map((asset) => {
+          const clip = clipFromAsset(asset, free.id, at);
+          at = clipEnd(clip);
+          return clip;
+        });
+        next = placeClips(adoptSourceFps(next, group[0].fps), clips, insertMode);
+      }
+      return next;
+    });
+  };
+
+  const selectedAssets = ordered.filter((a) => picked.selected.includes(a.id));
+
+  const onCardClick = (event: React.MouseEvent, asset: MediaAsset) => {
+    setPicked((prev) => pick(prev, orderedIds, asset.id, { toggle: event.ctrlKey || event.metaKey, range: event.shiftKey }));
+  };
+
+  const onKeyDown = (event: React.KeyboardEvent) => {
+    const target = event.target as HTMLElement;
+    if (target.tagName === 'INPUT' || target.tagName === 'SELECT') return;
+    if ((event.ctrlKey || event.metaKey) && event.code === 'KeyA') {
+      setPicked({ selected: orderedIds, anchor: orderedIds[0] ?? null });
+    } else if (event.key === 'Escape') {
+      setPicked({ selected: [], anchor: null });
+    } else if ((event.key === 'Delete' || event.key === 'Backspace') && picked.selected.length > 0) {
+      if (confirmRemoveAssets(picked.selected)) {
+        removeAssets(picked.selected);
+        setPicked({ selected: [], anchor: null });
+      }
+    } else if (event.key === 'Enter' && picked.selected.length > 0) {
+      addToTimeline(selectedAssets);
+    } else {
+      return;
+    }
+    // ここで扱ったキーは、タイムライン側のショートカット（Ctrl+A=全クリップ選択、Delete=クリップ削除）へ渡さない。
+    event.preventDefault();
+    event.stopPropagation();
   };
 
   return (
@@ -133,14 +186,7 @@ export function MediaPanel() {
         }}
       />
 
-      <BinTree
-        selected={folder}
-        onSelect={(path) => {
-          setFolder(path);
-          setPage(0);
-        }}
-        compact
-      />
+      <BinTree selected={folder} onSelect={setFolder} compact />
 
       <input
         type="search"
@@ -148,15 +194,25 @@ export function MediaPanel() {
         value={query}
         placeholder="素材を検索（名前・ビン）"
         aria-label="素材を検索"
-        onChange={(e) => {
-          setQuery(e.target.value);
-          setPage(0);
-        }}
+        onChange={(e) => setQuery(e.target.value)}
       />
+
+      <SortControl />
+
+      <BulkBar
+        ids={picked.selected}
+        total={orderedIds.length}
+        onClear={() => setPicked({ selected: [], anchor: null })}
+        onSelectAll={() => setPicked({ selected: orderedIds, anchor: orderedIds[0] ?? null })}
+      >
+        <button type="button" className="ghost" onClick={() => addToTimeline(selectedAssets)} title={insertMode ? '再生ヘッドへ挿入（Enter）' : '再生ヘッドへ置く（Enter）'}>
+          タイムラインへ
+        </button>
+      </BulkBar>
 
       {error && <p className="error-note">{error}</p>}
 
-      {filtered.length === 0 ? (
+      {ordered.length === 0 ? (
         searching ? (
           <EmptyHint>「{query.trim()}」に合う素材はありません。</EmptyHint>
         ) : assets.length > 0 ? (
@@ -169,42 +225,43 @@ export function MediaPanel() {
           </EmptyHint>
         )
       ) : (
-        <ul className="asset-grid">
-          {visible.map((asset) => (
-            <li
-              key={asset.id}
-              className="asset-card"
-              draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData(MEDIA_DND_TYPE, asset.id);
-                e.dataTransfer.effectAllowed = 'copy';
-              }}
-              onDoubleClick={() => addToTimeline(asset)}
-              title={asset.warning ? `${asset.name}\n${asset.warning}` : `${asset.name}\nタイムラインへドラッグ、またはダブルクリックで配置`}
-            >
-              <div className="asset-thumb">
-                {asset.thumbnail ? <img src={asset.thumbnail} alt="" /> : <span className="asset-icon"><Icon name={asset.kind === 'audio' ? 'music-note' : asset.kind === 'image' ? 'photo' : 'film'} size={20} /></span>}
-              </div>
-              <strong>{asset.name}</strong>
-              <span>
-                {asset.warning ? <><Icon name="warning" size={13} />読み取れず</> : asset.kind === 'image' ? '画像' : formatTime(asset.duration)}
-                {asset.fps ? <em className="asset-fps">{asset.fps}fps</em> : null}
-              </span>
-            </li>
-          ))}
+        <ul className="asset-grid" role="listbox" aria-multiselectable="true" aria-label="素材" tabIndex={0} onKeyDown={onKeyDown}>
+          {visible.map((asset) => {
+            const isPicked = picked.selected.includes(asset.id);
+            return (
+              <li
+                key={asset.id}
+                role="option"
+                aria-selected={isPicked}
+                className={isPicked ? 'asset-card selected' : 'asset-card'}
+                draggable
+                onClick={(e) => onCardClick(e, asset)}
+                onDragStart={(e) => {
+                  // 選択に入っていない素材をつかんだら、その 1 つだけを選び直す。
+                  if (!isPicked) setPicked({ selected: [asset.id], anchor: asset.id });
+                  startAssetDrag(e, asset.id, picked.selected);
+                }}
+                onDoubleClick={() => addToTimeline(isPicked && picked.selected.length > 1 ? selectedAssets : [asset])}
+                title={asset.warning ? `${asset.name}\n${asset.warning}` : `${asset.name}\nクリックで選択（Ctrl/⌘で追加、Shiftで範囲）・ダブルクリックでタイムラインへ・ドラッグで配置／ビンへ移動`}
+              >
+                <div className="asset-thumb">
+                  {asset.thumbnail ? <img src={asset.thumbnail} alt="" draggable={false} /> : <span className="asset-icon"><Icon name={asset.kind === 'audio' ? 'music-note' : asset.kind === 'image' ? 'photo' : 'film'} size={26} /></span>}
+                </div>
+                <strong>{asset.name}</strong>
+                <span>
+                  {asset.warning ? <><Icon name="warning" size={13} />読み取れず</> : asset.kind === 'image' ? '画像' : formatTime(asset.duration)}
+                  {asset.fps ? <em className="asset-fps">{asset.fps}fps</em> : null}
+                </span>
+              </li>
+            );
+          })}
         </ul>
       )}
 
-      {pageCount > 1 && (
+      {ordered.length > visible.length && (
         <div className="pager">
-          <button type="button" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>
-            <Icon name="chevron-left" size={15} label="前のページ" />
-          </button>
-          <span>
-            {page + 1} / {pageCount}
-          </span>
-          <button type="button" onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))} disabled={page >= pageCount - 1}>
-            <Icon name="chevron-right" size={15} label="次のページ" />
+          <button type="button" onClick={() => setShown((n) => n + CHUNK)}>
+            さらに表示（残り {ordered.length - visible.length} 件）
           </button>
         </div>
       )}
