@@ -219,6 +219,7 @@ button.link {
 
 input[type='text'],
 input[type='number'],
+input[type='search'],
 select,
 textarea {
   width: 100%;
@@ -234,6 +235,7 @@ textarea {
 }
 
 input[type='text']:focus-visible,
+input[type='search']:focus-visible,
 input[type='number']:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
@@ -2507,4 +2509,114 @@ hr {
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+}
+
+/* ---------- 素材ビンのツリー ---------- */
+
+.bin-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bin-toolbar {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.bin-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.bin-rows {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  padding: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  outline: none;
+}
+
+.bin-tree.compact .bin-rows {
+  max-height: 168px;
+}
+
+.bin-rows:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent, #7c5cff);
+}
+
+.bin-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  user-select: none;
+}
+
+.bin-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.bin-row.selected {
+  background: var(--accent-soft, rgba(124, 92, 255, 0.22));
+}
+
+.bin-row.drop {
+  outline: 2px dashed var(--accent, #7c5cff);
+  outline-offset: -2px;
+}
+
+.bin-row.editing input {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  padding: 2px 6px;
+}
+
+.bin-twisty {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  transition: transform 0.12s ease;
+}
+
+.bin-twisty.open {
+  transform: rotate(90deg);
+}
+
+.bin-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bin-count {
+  font-size: 11px;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+
+.bin-message {
+  margin: 0;
+}
+
+.asset-search {
+  width: 100%;
+  box-sizing: border-box;
 }

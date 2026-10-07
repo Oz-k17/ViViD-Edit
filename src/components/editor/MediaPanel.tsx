@@ -6,6 +6,8 @@ import { clipFromAsset } from '../../model/factory';
 import { adoptSourceFps, placeClip, tracksOf } from '../../model/ops';
 import { useEditor } from '../../store/editor';
 import { MEDIA_DND_TYPE } from './MultiTimeline';
+import { matchesQuery } from '../../model/bins';
+import { BinTree, type BinSelection } from './BinTree';
 import { NasBrowser } from './NasBrowser';
 import { EmptyHint, Panel } from '../ui';
 import { Icon } from '../Icon';
@@ -13,6 +15,10 @@ import { Icon } from '../Icon';
 const PAGE_SIZE = 6;
 
 export function useMediaAssets(): MediaAsset[] {
+  // 保存済みの素材を読み戻す（何度呼んでも 1 回だけ）。ライブラリページを直接開いたときも必要。
+  useEffect(() => {
+    void mediaRegistry.restore();
+  }, []);
   return useSyncExternalStore(mediaRegistry.subscribe, mediaRegistry.getSnapshot, mediaRegistry.getSnapshot);
 }
 
@@ -45,16 +51,23 @@ export function MediaPanel() {
   const assets = useMediaAssets();
   const { sequence, apply } = useEditor();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [folder, setFolder] = useState<string>('すべて');
+  const [folder, setFolder] = useState<BinSelection>(null);
+  const [query, setQuery] = useState('');
   const [page, setPage] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [browsing, setBrowsing] = useState(false);
 
-  const folders = useMemo(() => ['すべて', ...mediaRegistry.folders()], [assets]);
+  // 検索しているときはビンを問わず全体から探す（どこに入れたか忘れても見つかるように）。
+  const searching = query.trim().length > 0;
   const filtered = useMemo(
-    () => (folder === 'すべて' ? assets : assets.filter((a) => (a.folder || UNSORTED) === folder)),
-    [assets, folder],
+    () =>
+      searching
+        ? assets.filter((a) => matchesQuery(a.name, a.folder || UNSORTED, query))
+        : folder === null
+          ? assets
+          : assets.filter((a) => (a.folder || UNSORTED) === folder),
+    [assets, folder, query, searching],
   );
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
 
@@ -67,7 +80,7 @@ export function MediaPanel() {
   const handleFiles = async (files: FileList | File[]) => {
     setBusy(true);
     setError(null);
-    const errors = await importFiles(files, folder === 'すべて' ? UNSORTED : folder);
+    const errors = await importFiles(files, folder ?? UNSORTED);
     setBusy(false);
     if (errors.length) setError(errors.join(' / '));
     // 新しい素材は一覧の先頭（1 ページ目）に入るので、他のページを見ていても追加したものが見える位置に戻す。
@@ -120,30 +133,41 @@ export function MediaPanel() {
         }}
       />
 
-      <div className="folder-row">
-        {folders.map((name) => (
-          <button
-            key={name}
-            type="button"
-            className={folder === name ? 'chip active' : 'chip'}
-            onClick={() => {
-              setFolder(name);
-              setPage(0);
-            }}
-          >
-            {name}
-          </button>
-        ))}
-      </div>
+      <BinTree
+        selected={folder}
+        onSelect={(path) => {
+          setFolder(path);
+          setPage(0);
+        }}
+        compact
+      />
+
+      <input
+        type="search"
+        className="asset-search"
+        value={query}
+        placeholder="素材を検索（名前・ビン）"
+        aria-label="素材を検索"
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setPage(0);
+        }}
+      />
 
       {error && <p className="error-note">{error}</p>}
 
       {filtered.length === 0 ? (
-        <EmptyHint>
-          動画・画像・音声をドラッグ＆ドロップ、または「追加」で読み込みます。
-          <br />
-          ファイルはブラウザの中だけで処理され、どこにもアップロードされません。
-        </EmptyHint>
+        searching ? (
+          <EmptyHint>「{query.trim()}」に合う素材はありません。</EmptyHint>
+        ) : assets.length > 0 ? (
+          <EmptyHint>このビンには素材がありません。中のビンを選ぶか、素材をドラッグして入れてください。</EmptyHint>
+        ) : (
+          <EmptyHint>
+            動画・画像・音声をドラッグ＆ドロップ、または「追加」で読み込みます。
+            <br />
+            ファイルはブラウザの中だけで処理され、どこにもアップロードされません。
+          </EmptyHint>
+        )
       ) : (
         <ul className="asset-grid">
           {visible.map((asset) => (

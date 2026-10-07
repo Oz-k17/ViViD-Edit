@@ -579,6 +579,25 @@ class MediaRegistry {
     })();
   }
 
+  /** 複数の素材のフォルダを 1 度に付け替える（再描画と保存を 1 回にまとめる）。 */
+  moveToFolders(changes: Array<[id: string, folder: string]>) {
+    const moved = new Map<string, string>();
+    for (const [id, folder] of changes) {
+      const asset = this.assets.get(id);
+      if (!asset || asset.folder === folder) continue;
+      this.assets.set(id, { ...asset, folder });
+      moved.set(id, folder);
+    }
+    if (moved.size === 0) return;
+    this.emit();
+    void (async () => {
+      for (const record of await dbAll()) {
+        const folder = moved.get(record.id);
+        if (folder !== undefined) void dbPut({ ...record, folder });
+      }
+    })();
+  }
+
   remove(id: string) {
     const asset = this.assets.get(id);
     if (!asset) return;

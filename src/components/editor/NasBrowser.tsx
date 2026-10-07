@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { asFolder, listFolder, LibraryError, type LibraryEntry } from '../../engine/library';
 import { mediaRegistry, UNSORTED } from '../../engine/media';
+import { joinPath } from '../../model/bins';
 import { useApp } from '../../store/app';
 import { Segmented } from '../ui';
 
@@ -68,9 +69,9 @@ export function NasBrowser({ onClose }: { onClose: () => void }) {
   const add = async () => {
     setAdding(true);
     const failed: string[] = [];
-    // NAS のフォルダ名を、そのままライブラリのフォルダ名にする。
+    // NAS のフォルダ階層を、そのままビンの階層にする（配信/ゲーム → 配信 ▸ ゲーム）。
     // 向こうで整理してあるものを、こちらで整理し直させる意味がない。
-    const folder = crumbs.length > 0 ? decodeURIComponent(crumbs[crumbs.length - 1]) : UNSORTED;
+    const folder = crumbs.length > 0 ? joinPath(...crumbs.map((c) => decodeURIComponent(c))) : UNSORTED;
     for (const relative of picked) {
       try {
         await mediaRegistry.addFromUrl(asFolder(base) + relative, folder);

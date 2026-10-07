@@ -944,6 +944,43 @@ eq('空文字', wrap('', 10), ['']);
   check('隣が無ければスライドしない', slideClip(lone, lone.clips[0].id, 1) === lone);
 }
 
+// ---- 素材ビンのツリー ----
+{
+  const B = await import('../src/model/bins.ts');
+  check('パスを分けて繋ぐ', B.splitPath('a//b/') .join('|') === 'a|b' && B.joinPath('a', '/b/', 'c') === 'a/b/c');
+  check('親と名前', B.parentOf('a/b/c') === 'a/b' && B.parentOf('a') === '' && B.baseName('a/b/c') === 'c');
+  check('入れ子の判定', B.isWithin('a/b', 'a') && B.isWithin('a', 'a') && !B.isWithin('ab', 'a') && B.isWithin('x', ''));
+  check('名前の検査', B.binNameProblem('') !== null && B.binNameProblem('a/b') !== null && B.binNameProblem(' ok ') === null);
+
+  const tree = B.buildTree(['未分類', '映像/配信1', '映像/配信1', '映像/配信2', '効果音', '音/BGM'], ['空', '映像/空き'], ['未分類', '効果音']);
+  const tops = tree.map((n) => n.path);
+  const rest = tops.slice(2);
+  check('最上位は固定のビンが先頭（指定した順）', tops[0] === '未分類' && tops[1] === '効果音');
+  check('残りは名前順で、全部そろう', rest.length === 3 && rest.every((p, i) => i === 0 || rest[i - 1].localeCompare(p, 'ja') <= 0) && ['音', '映像', '空'].every((p) => rest.includes(p)));
+  const video = tree.find((n) => n.path === '映像');
+  check('祖先だけの階層も作られる', video && video.count === 0 && video.children.length === 3);
+  check('子孫を含めた件数', video.total === 3 && video.children.find((c) => c.name === '配信1').count === 2);
+  check('空のビンも出る', tree.some((n) => n.path === '空') && video.children.some((c) => c.name === '空き'));
+  check('深さ', video.children[0].depth === 1 && video.depth === 0);
+
+  const flat = B.visibleNodes(tree, new Set(['映像']));
+  check('畳んだ子は出さない', !B.visibleNodes(tree, new Set()).some((n) => n.path === '映像/配信1'));
+  check('開いた子は出る', flat.some((n) => n.path === '映像/配信1') && flat.findIndex((n) => n.path === '映像') < flat.findIndex((n) => n.path === '映像/配信1'));
+  check('祖先の一覧', B.ancestorsOf('a/b/c').join('|') === 'a|a/b' && B.ancestorsOf('a').length === 0);
+
+  check('付け替え', B.rebase('映像/配信1/x', '映像', '素材/映像') === '素材/映像/配信1/x' && B.rebase('他', '映像', 'z') === '他');
+  check('名前変更', B.renamedPath('映像/配信1', '配信A', ['映像/配信1']) === '映像/配信A');
+  check('同名への変更は不可', B.renamedPath('映像/配信1', '配信2', ['映像/配信1', '映像/配信2']) === null);
+  check('名前変更で /含みは不可', B.renamedPath('映像/配信1', 'a/b', []) === null);
+  check('自分の中へは移せない', !B.checkMoveBin('映像', '映像/配信1', ['映像', '映像/配信1']).ok);
+  check('同じ場所へは移さない', !B.checkMoveBin('映像/配信1', '映像', []).ok);
+  check('同名がぶつかる移動は不可', !B.checkMoveBin('音/配信1', '映像', ['音/配信1', '映像/配信1']).ok);
+  const mv = B.checkMoveBin('音/BGM', '', []);
+  check('最上位へ移せる', mv.ok && mv.to === 'BGM');
+
+  check('検索は名前とビンの両方・AND', B.matchesQuery('opening.mp4', '映像/配信1', '配信 open') && !B.matchesQuery('opening.mp4', '映像', 'zzz') && B.matchesQuery('a', 'b', '  '));
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

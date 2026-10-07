@@ -3,27 +3,43 @@ import { LayoutToggle } from '../components/LayoutToggle';
 import { Brand, SiteNav } from '../components/SiteNav';
 import { useMediaAssets, importFiles } from '../components/editor/MediaPanel';
 import { formatBytes, formatTime, mediaRegistry, UNSORTED } from '../engine/media';
-import { Field, Panel } from '../components/ui';
+import { allBinPaths, baseName, matchesQuery, splitPath } from '../model/bins';
+import { BinTree, type BinSelection } from '../components/editor/BinTree';
+import { MEDIA_DND_TYPE } from '../components/editor/MultiTimeline';
+import { useBinState } from '../store/bins';
+import { Panel } from '../components/ui';
 import { Icon } from '../components/Icon';
 
 export default function MediaLibraryPage() {
   const assets = useMediaAssets();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [folder, setFolder] = useState('すべて');
+  const [folder, setFolder] = useState<BinSelection>(null);
+  const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
-  const [newFolder, setNewFolder] = useState('');
-  const [extraFolders, setExtraFolders] = useState<string[]>([]);
+  const { extra } = useBinState();
 
-  const folders = useMemo(() => {
-    const names = new Set([...mediaRegistry.folders(), ...extraFolders]);
-    return ['すべて', ...names];
-  }, [assets, extraFolders]);
+  /** 移動先の選択肢。階層が分かるよう、深さぶんだけ字下げする。 */
+  const binOptions = useMemo(
+    () =>
+      allBinPaths(
+        assets.map((a) => a.folder || UNSORTED),
+        extra,
+      )
+        .sort((a, b) => a.localeCompare(b, 'ja'))
+        .map((path) => ({ path, label: `${'　'.repeat(splitPath(path).length - 1)}${baseName(path)}` })),
+    [assets, extra],
+  );
 
-  const filtered = folder === 'すべて' ? assets : assets.filter((a) => (a.folder || UNSORTED) === folder);
+  const searching = query.trim().length > 0;
+  const filtered = searching
+    ? assets.filter((a) => matchesQuery(a.name, a.folder || UNSORTED, query))
+    : folder === null
+      ? assets
+      : assets.filter((a) => (a.folder || UNSORTED) === folder);
 
   const upload = async (files: FileList) => {
     setBusy(true);
-    await importFiles(files, folder === 'すべて' ? UNSORTED : folder);
+    await importFiles(files, folder ?? UNSORTED);
     setBusy(false);
   };
 
@@ -53,43 +69,38 @@ export default function MediaLibraryPage() {
       />
 
       <main className="page-body">
-        <Panel title="フォルダ">
-          <div className="chip-row wrap">
-            {folders.map((name) => (
-              <button key={name} type="button" className={folder === name ? 'chip active' : 'chip'} onClick={() => setFolder(name)}>
-                {name}
-              </button>
-            ))}
-          </div>
-          <Field label="フォルダを追加">
-            <div className="row">
-              <input type="text" value={newFolder} placeholder="例: BGM" onChange={(e) => setNewFolder(e.target.value)} />
-              <button
-                type="button"
-                onClick={() => {
-                  const name = newFolder.trim();
-                  if (!name) return;
-                  setExtraFolders((prev) => [...new Set([...prev, name])]);
-                  setFolder(name);
-                  setNewFolder('');
-                }}
-              >
-                追加
-              </button>
-            </div>
-          </Field>
+        <Panel title="ビン">
+          <BinTree selected={folder} onSelect={setFolder} />
           <p className="muted">
             素材はブラウザ内（IndexedDB）に保存されます。ページを移動したりリロードしても残り、エディタの素材パネルにも同じものが並びます。
+            素材やビンはドラッグして別のビンへ移せます。
           </p>
         </Panel>
 
         <Panel title={`素材（${filtered.length}）`}>
+          <input
+            type="search"
+            className="asset-search"
+            value={query}
+            placeholder="素材を検索（名前・ビン）"
+            aria-label="素材を検索"
+            onChange={(e) => setQuery(e.target.value)}
+          />
           {filtered.length === 0 ? (
-            <p className="empty-hint">まだ素材がありません。「素材を追加」から読み込んでください。</p>
+            <p className="empty-hint">
+              {searching ? `「${query.trim()}」に合う素材はありません。` : assets.length > 0 ? 'このビンには素材がありません。' : 'まだ素材がありません。「素材を追加」から読み込んでください。'}
+            </p>
           ) : (
             <ul className="media-table">
               {filtered.map((asset) => (
-                <li key={asset.id}>
+                <li
+                  key={asset.id}
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData(MEDIA_DND_TYPE, asset.id);
+                    e.dataTransfer.effectAllowed = 'move';
+                  }}
+                >
                   <div className="asset-thumb">
                     {asset.thumbnail ? <img src={asset.thumbnail} alt="" /> : <span className="asset-icon"><Icon name={asset.kind === 'audio' ? 'music-note' : asset.kind === 'image' ? 'photo' : 'film'} size={20} /></span>}
                   </div>
@@ -104,14 +115,16 @@ export default function MediaLibraryPage() {
                       {asset.width > 0 && ` ・ ${asset.width}×${asset.height}`}
                     </span>
                   </div>
-                  <select value={asset.folder || UNSORTED} onChange={(e) => mediaRegistry.update(asset.id, { folder: e.target.value })}>
-                    {folders
-                      .filter((f) => f !== 'すべて')
-                      .map((name) => (
-                        <option key={name} value={name}>
-                          {name}
-                        </option>
-                      ))}
+                  <select
+                    value={asset.folder || UNSORTED}
+                    title="移動先のビン"
+                    onChange={(e) => mediaRegistry.update(asset.id, { folder: e.target.value })}
+                  >
+                    {binOptions.map((option) => (
+                      <option key={option.path} value={option.path}>
+                        {option.label}
+                      </option>
+                    ))}
                   </select>
                   <button type="button" className="danger" onClick={() => mediaRegistry.remove(asset.id)}>
                     削除
