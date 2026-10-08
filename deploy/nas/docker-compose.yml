@@ -28,3 +28,25 @@ services:
       # ③ 共有したい素材フォルダ。共有フォルダ名が video なら /volume1/video。
       #    :ro（読み取り専用）は外さないこと。編集アプリから素材を消せる必要はない。
       - /volume1/video/shared:/srv/media:ro
+
+      # ④ 軽量版の置き場。proxy.sh（下の vivid-proxy）が書き、nginx が /proxy/ で配る。
+      - /volume1/docker/vivid-edit/proxy:/srv/proxy:ro
+
+  # 軽量版を作り続ける（共有素材の動画 → プレビュー用の小さな複製）。
+  # ffmpeg が要るので、ffmpeg 入りのイメージで proxy.sh を動かす。作った複製は ④ に置かれ、nginx が配る。
+  # 長い動画を飛ばし飛ばしに見ても固まらなくなる。書き出しは元の動画を使うので画質は落ちない。
+  # 不要なら、このサービスと nginx 側の ④ の行を消してよい（アプリは元の動画をそのまま使う）。
+  vivid-proxy:
+    image: linuxserver/ffmpeg:latest
+    container_name: vivid-edit-proxy
+    restart: unless-stopped
+    entrypoint: ["sh", "/proxy.sh"]
+    environment:
+      # NAS の他の仕事を邪魔しないよう、既定は 2 本の糸。速くしたければ増やす。
+      THREADS: "2"
+      # これより短くて小さい動画は作らない（秒）。
+      MIN_SECONDS: "180"
+    volumes:
+      - /volume1/docker/vivid-edit/proxy.sh:/proxy.sh:ro
+      - /volume1/video/shared:/srv/media:ro
+      - /volume1/docker/vivid-edit/proxy:/srv/proxy

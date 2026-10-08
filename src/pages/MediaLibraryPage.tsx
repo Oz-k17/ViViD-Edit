@@ -82,14 +82,6 @@ export default function MediaLibraryPage() {
 
         <Panel title={`素材（${filtered.length}）`}>
           <SortControl />
-          <BulkBar
-            ids={picked.selected}
-            total={orderedIds.length}
-            onClear={() => setPicked({ selected: [], anchor: null })}
-            onSelectAll={() => setPicked({ selected: orderedIds, anchor: orderedIds[0] ?? null })}
-          >
-            <MakeProxiesButton ids={picked.selected} />
-          </BulkBar>
           <label className="media-select-all">
             <input
               type="checkbox"
@@ -164,6 +156,14 @@ export default function MediaLibraryPage() {
               ))}
             </ul>
           )}
+          <BulkBar
+            ids={picked.selected}
+            total={orderedIds.length}
+            onClear={() => setPicked({ selected: [], anchor: null })}
+            onSelectAll={() => setPicked({ selected: orderedIds, anchor: orderedIds[0] ?? null })}
+          >
+            <MakeProxiesButton ids={picked.selected} />
+          </BulkBar>
         </Panel>
       </main>
     </div>

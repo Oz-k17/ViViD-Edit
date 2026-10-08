@@ -2861,3 +2861,13 @@ hr {
   white-space: normal;
   word-break: break-word;
 }
+
+/* 選択バーは一覧の下に固定する。上に出すと、1 回クリックして選んだ瞬間にカードが下へずれ、
+   ダブルクリックの 2 回目が別の要素に当たってしまう。 */
+.bulk-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  background-color: var(--bg-panel, #1c1c1e);
+  background-image: linear-gradient(var(--accent-soft), var(--accent-soft));
+}

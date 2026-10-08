@@ -199,18 +199,6 @@ export function MediaPanel() {
 
       <SortControl />
 
-      <BulkBar
-        ids={picked.selected}
-        total={orderedIds.length}
-        onClear={() => setPicked({ selected: [], anchor: null })}
-        onSelectAll={() => setPicked({ selected: orderedIds, anchor: orderedIds[0] ?? null })}
-      >
-        <button type="button" className="ghost" onClick={() => addToTimeline(selectedAssets)} title={insertMode ? '再生ヘッドへ挿入（Enter）' : '再生ヘッドへ置く（Enter）'}>
-          タイムラインへ
-        </button>
-        <MakeProxiesButton ids={picked.selected} />
-      </BulkBar>
-
       {error && <p className="error-note">{error}</p>}
 
       {ordered.length === 0 ? (
@@ -268,6 +256,18 @@ export function MediaPanel() {
           </button>
         </div>
       )}
+
+      <BulkBar
+        ids={picked.selected}
+        total={orderedIds.length}
+        onClear={() => setPicked({ selected: [], anchor: null })}
+        onSelectAll={() => setPicked({ selected: orderedIds, anchor: orderedIds[0] ?? null })}
+      >
+        <button type="button" className="ghost" onClick={() => addToTimeline(selectedAssets)} title={insertMode ? '再生ヘッドへ挿入（Enter）' : '再生ヘッドへ置く（Enter）'}>
+          タイムラインへ
+        </button>
+        <MakeProxiesButton ids={picked.selected} />
+      </BulkBar>
     </Panel>
   );
 }

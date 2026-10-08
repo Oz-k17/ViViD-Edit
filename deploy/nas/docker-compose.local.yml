@@ -58,6 +58,7 @@ services:
         git clone --depth 1 https://github.com/Oz-k17/vivid-edit /tmp/src
         cp -r /tmp/src/docs/. /srv/app/
         cp /tmp/src/deploy/nas/nginx.conf /srv/conf/default.conf
+        cp /tmp/src/deploy/nas/proxy.sh /srv/conf/proxy.sh
         echo 'アプリと設定を展開しました'
     volumes:
       - app:/srv/app
@@ -78,7 +79,30 @@ services:
       # NAS 版と違うのはこの 2 行だけ。このファイルと同じフォルダを見ます。
       - ./media:/srv/media:ro
       - ./media-personal:/srv/media-personal:ro
+      # 軽量版の置き場。vivid-proxy が書き、nginx が /proxy/ で配る。
+      - proxy:/srv/proxy:ro
+
+  # 軽量版を作り続ける（共有素材の動画 → プレビュー用の小さな複製）。
+  # 長い動画を飛ばし飛ばしに見ても固まらなくなる。書き出しは元の動画を使うので画質は落ちない。
+  # 不要なら、このサービスと nginx 側の proxy の行・下の proxy ボリュームを消してよい。
+  vivid-proxy:
+    image: linuxserver/ffmpeg:latest
+    container_name: vivid-edit-proxy-local
+    restart: unless-stopped
+    depends_on:
+      app-fetch:
+        condition: service_completed_successfully
+    entrypoint: ["sh", "/srv/conf/proxy.sh"]
+    environment:
+      THREADS: "2"
+      MIN_SECONDS: "180"
+    volumes:
+      - nginxconf:/srv/conf:ro
+      - ./media:/srv/media:ro
+      - ./media-personal:/srv/media-personal:ro
+      - proxy:/srv/proxy
 
 volumes:
   app:
   nginxconf:
+  proxy:

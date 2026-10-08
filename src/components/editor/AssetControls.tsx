@@ -126,9 +126,9 @@ export function ProxyStatus({ asset, always = false, withRemove = false }: { ass
   if (asset.kind !== 'video') return null;
   if (job?.state === 'running' || job?.state === 'queued') {
     return (
-      <span className="proxy-status busy" onClick={stop} onDoubleClick={stop}>
+      <span className="proxy-status busy">
         {job.state === 'running' ? `軽量版 ${Math.round(job.progress * 100)}%` : '軽量版 待機中'}
-        <button type="button" className="ghost proxy-cancel" title="軽量版の作成をやめる" onClick={() => void cancelProxy(asset.id)}>
+        <button type="button" className="ghost proxy-cancel" title="軽量版の作成をやめる" onClick={(e) => { stop(e); void cancelProxy(asset.id); }} onDoubleClick={stop}>
           ×
         </button>
       </span>
@@ -136,10 +136,10 @@ export function ProxyStatus({ asset, always = false, withRemove = false }: { ass
   }
   if (job?.state === 'error') {
     return (
-      <span className="proxy-error-wrap" onClick={stop} onDoubleClick={stop}>
+      <span className="proxy-error-wrap">
         <span className="proxy-status error" title={job.message}>
           軽量版 失敗
-          <button type="button" className="ghost proxy-cancel" title="もう一度作る" onClick={() => requestProxies([asset.id])}>
+          <button type="button" className="ghost proxy-cancel" title="もう一度作る" onClick={(e) => { stop(e); requestProxies([asset.id]); }} onDoubleClick={stop}>
             ↻
           </button>
         </span>
@@ -148,16 +148,19 @@ export function ProxyStatus({ asset, always = false, withRemove = false }: { ass
     );
   }
   if (asset.proxy) {
+    const fromServer = asset.proxy.store === 'server';
     return (
       <span
         className="proxy-status ready"
-        title={`軽量版あり（${asset.proxy.width}×${asset.proxy.height}・${formatBytes(asset.proxy.size)}）。プレビューと再生はこちらを使います`}
-        onClick={stop}
-        onDoubleClick={stop}
+        title={
+          fromServer
+            ? `NAS の軽量版あり（Docker の proxy.sh が作成${asset.proxy.size ? '・' + formatBytes(asset.proxy.size) : ''}）。プレビューと再生はこちらを使います`
+            : `軽量版あり（${asset.proxy.width}×${asset.proxy.height}・${formatBytes(asset.proxy.size)}）。プレビューと再生はこちらを使います`
+        }
       >
-        軽量版
-        {withRemove && (
-          <button type="button" className="ghost proxy-cancel" title="軽量版を消す（元の素材はそのまま）" onClick={() => void removeProxy(asset.id)}>
+        {fromServer ? 'NAS の軽量版' : '軽量版'}
+        {withRemove && !fromServer && (
+          <button type="button" className="ghost proxy-cancel" title="軽量版を消す（元の素材はそのまま）" onClick={(e) => { stop(e); void removeProxy(asset.id); }} onDoubleClick={stop}>
             ×
           </button>
         )}

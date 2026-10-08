@@ -53,8 +53,11 @@ export interface MediaAsset {
 }
 
 export interface ProxyInfo {
-  /** どこに置いたか。`opfs` は OPFS の `vivid-proxies/<file>`、`idb` は素材レコードの proxyBlob。 */
-  store: 'opfs' | 'idb';
+  /**
+   * どこに置いたか。`opfs` は OPFS の `vivid-proxies/<file>`、`idb` は素材レコードの proxyBlob、
+   * `server` は NAS の Docker（`deploy/nas/proxy.sh`）が作ったもの。`server` は保存せず、開くたびに探す。
+   */
+  store: 'opfs' | 'idb' | 'server';
   file: string;
   width: number;
   height: number;
@@ -63,6 +66,14 @@ export interface ProxyInfo {
 }
 
 export const PROXY_DIR = 'vivid-proxies';
+
+/**
+ * NAS の軽量版の場所。参照素材 `media/a/b.mp4` → `proxy/media/a/b.mp4.proxy.mp4`。
+ * 規則は `deploy/nas/proxy.sh` と揃えてある（変えるなら両方）。
+ */
+export function serverProxyPath(src: string): string {
+  return `proxy/${src.replace(/^\/+/, '')}.proxy.mp4`;
+}
 
 /** OPFS に置いたプロキシを File として開く。無ければ null。 */
 export async function openProxyFile(name: string): Promise<File | null> {
@@ -511,6 +522,13 @@ class MediaRegistry {
       this.assets.set(rest.id, { ...rest, proxy, url, proxyUrl });
     }
     this.emit();
+    this.probeServerProxies(true);
+    // NAS の軽量版は後から出来上がることがある。画面に戻ってきたときに探し直す（30 秒に 1 回まで）。
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') this.probeServerProxies();
+      });
+    }
   }
 
   async add(file: File, folder = UNSORTED): Promise<MediaAsset> {
@@ -595,6 +613,7 @@ class MediaRegistry {
     this.emit();
     const { url: _ignored, ...rest } = asset;
     void dbPut(rest);
+    if (asset.src && asset.kind === 'video') this.probeServerProxy(asset.id);
     return asset;
   }
 
@@ -613,7 +632,10 @@ class MediaRegistry {
       void dbPut({ ...incoming });
       added += 1;
     }
-    if (added > 0) this.emit();
+    if (added > 0) {
+      this.emit();
+      this.probeServerProxies(true);
+    }
     return added;
   }
 
@@ -654,6 +676,65 @@ class MediaRegistry {
    */
   useProxies = true;
 
+  /** 同時に何本まで探しに行くか。起動時に素材が多くても、NAS へ一斉に問い合わせない。 */
+  private proxyProbeQueue: string[] = [];
+  private proxyProbeRunning = 0;
+  private lastProbeAll = 0;
+
+  /**
+   * NAS 参照の素材に、サーバー（Docker）が作った軽量版があれば、それを使う。
+   * HEAD で有無だけを見る（中身は読まない）。無ければ何もしない。
+   * 軽量版は後から出来上がることもあるので、画面に戻ってきたときにも探し直す（`probeServerProxies`）。
+   */
+  probeServerProxy(id: string) {
+    if (!this.proxyProbeQueue.includes(id)) this.proxyProbeQueue.push(id);
+    void this.drainProxyProbes();
+  }
+
+  /** 軽量版の無い NAS 参照の動画すべてについて、探し直す。短時間に何度も呼ばれても 1 回にまとめる。 */
+  probeServerProxies(force = false) {
+    const now = Date.now();
+    if (!force && now - this.lastProbeAll < 30_000) return;
+    this.lastProbeAll = now;
+    for (const asset of this.assets.values()) {
+      if (asset.kind === 'video' && asset.src && !asset.proxy) this.probeServerProxy(asset.id);
+    }
+  }
+
+  private async drainProxyProbes() {
+    while (this.proxyProbeRunning < 3 && this.proxyProbeQueue.length > 0) {
+      const id = this.proxyProbeQueue.shift()!;
+      this.proxyProbeRunning += 1;
+      void this.probeOne(id).finally(() => {
+        this.proxyProbeRunning -= 1;
+        void this.drainProxyProbes();
+      });
+    }
+  }
+
+  private async probeOne(id: string) {
+    const asset = this.assets.get(id);
+    if (!asset?.src || asset.proxy) return;
+    const url = absoluteSrc(serverProxyPath(asset.src));
+    try {
+      const response = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+      if (!response.ok) return;
+      const length = Number(response.headers.get('content-length') ?? 0);
+      // 作りかけ・空のファイルは使わない（proxy.sh は .part で書いて完成後に差し替えるので、通常は起きない）。
+      if (response.headers.get('content-type')?.startsWith('text/')) return;
+      const current = this.assets.get(id);
+      if (!current || current.proxy) return;
+      this.assets.set(id, {
+        ...current,
+        proxyUrl: url,
+        proxy: { store: 'server', file: serverProxyPath(asset.src), width: 0, height: 0, size: length, createdAt: Date.now() },
+      });
+      this.emit();
+    } catch {
+      /* NAS に繋がらない・CORS など。軽量版は無かったことにして、元の素材を使う */
+    }
+  }
+
   /** プロキシを付ける（作り終えたとき）。`blob` は IndexedDB に置く場合だけ渡す。 */
   async attachProxy(id: string, info: ProxyInfo, file: Blob) {
     const asset = this.assets.get(id);
@@ -669,6 +750,8 @@ class MediaRegistry {
   async detachProxy(id: string) {
     const asset = this.assets.get(id);
     if (!asset?.proxy) return;
+    // サーバーの軽量版は、こちらからは消せない（NAS のものなので）。
+    if (asset.proxy.store === 'server') return;
     if (asset.proxyUrl) URL.revokeObjectURL(asset.proxyUrl);
     const { proxy, proxyUrl: _proxyUrl, ...rest } = asset;
     this.assets.set(id, rest);
@@ -689,7 +772,7 @@ class MediaRegistry {
   remove(id: string) {
     const asset = this.assets.get(id);
     if (!asset) return;
-    if (asset.proxy) {
+    if (asset.proxy && asset.proxy.store !== 'server') {
       if (asset.proxyUrl) URL.revokeObjectURL(asset.proxyUrl);
       if (asset.proxy.store === 'opfs') void deleteProxyFile(asset.proxy.file);
     }

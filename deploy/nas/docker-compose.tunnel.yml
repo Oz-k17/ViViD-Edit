@@ -27,11 +27,27 @@ services:
       - /volume1/docker/vivid-edit/app:/srv/app:ro
       - /volume1/docker/vivid-edit/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - /volume1/video/shared:/srv/media:ro
+      - /volume1/docker/vivid-edit/proxy:/srv/proxy:ro
 
   # ---- ドメイン無しで試す場合（お試しトンネル）----
   # 起動すると、ログに https://<ランダム>.trycloudflare.com が出る。それを開く。
   # コンテナを再起動すると URL が変わる。同時 200 リクエストの上限があり、
   # Cloudflare 自身が「本番用ではない」と明記している。まず動かしてみる用。
+  # 軽量版を作り続ける（共有素材の動画 → プレビュー用の小さな複製）。
+  # proxy.sh は deploy/nas/proxy.sh を /volume1/docker/vivid-edit/proxy.sh として置く。
+  vivid-proxy:
+    image: linuxserver/ffmpeg:latest
+    container_name: vivid-edit-proxy
+    restart: unless-stopped
+    entrypoint: ["sh", "/proxy.sh"]
+    environment:
+      THREADS: "2"
+      MIN_SECONDS: "180"
+    volumes:
+      - /volume1/docker/vivid-edit/proxy.sh:/proxy.sh:ro
+      - /volume1/video/shared:/srv/media:ro
+      - /volume1/docker/vivid-edit/proxy:/srv/proxy
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: vivid-edit-tunnel
