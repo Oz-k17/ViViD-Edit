@@ -94,7 +94,35 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
   const scrollRef = useRef<HTMLDivElement>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
+  /** いま見えている横の範囲（px）。ルーラーの目盛りを見える分だけ描くのに使う。 */
+  const [view, setView] = useState({ left: 0, width: 1600 });
   const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+
+  useEffect(() => {
+    const box = scrollRef.current;
+    if (!box) return;
+    let raf = 0;
+    const read = () => {
+      raf = 0;
+      setView((prev) =>
+        Math.abs(prev.left - box.scrollLeft) < 40 && Math.abs(prev.width - box.clientWidth) < 1
+          ? prev
+          : { left: box.scrollLeft, width: box.clientWidth },
+      );
+    };
+    const schedule = () => {
+      if (!raf) raf = requestAnimationFrame(read);
+    };
+    read();
+    box.addEventListener('scroll', schedule, { passive: true });
+    const observer = new ResizeObserver(schedule);
+    observer.observe(box);
+    return () => {
+      box.removeEventListener('scroll', schedule);
+      observer.disconnect();
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
 
   const tracks = useMemo(() => displayTracks(sequence), [sequence]);
   const duration = Math.max(sequenceDuration(sequence), 12);
@@ -274,7 +302,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
                 aria-hidden
               />
             )}
-            <Ruler pps={pps} duration={duration} onScrub={scrub} />
+            <Ruler pps={pps} duration={duration} view={view} onScrub={scrub} />
             <div className="tl-lanes" ref={lanesRef} onPointerDown={(e) => e.target === e.currentTarget && startMarquee(e)}>
               {tracks.map((track) => (
                 <Lane
@@ -335,10 +363,24 @@ function TrackHead({ track, compact }: { track: Track; compact: boolean }) {
   );
 }
 
-function Ruler({ pps, duration, onScrub }: { pps: number; duration: number; onScrub: (clientX: number) => void }) {
+function Ruler({
+  pps,
+  duration,
+  view,
+  onScrub,
+}: {
+  pps: number;
+  duration: number;
+  view: { left: number; width: number };
+  onScrub: (clientX: number) => void;
+}) {
   const step = pps >= 90 ? 1 : pps >= 45 ? 2 : pps >= 20 ? 5 : pps >= 10 ? 10 : 30;
+  // 長い素材（3 時間なら 5000 個以上）の目盛りを全部 DOM にすると、拡大縮小のたびに止まる。
+  // 見えている範囲と、その左右に画面 1 枚ぶんの余白だけを描く。
+  const from = Math.max(0, Math.floor((view.left - view.width) / pps / step) * step);
+  const to = Math.min(duration, (view.left + view.width * 2) / pps);
   const ticks: number[] = [];
-  for (let t = 0; t <= duration; t += step) ticks.push(t);
+  for (let t = from; t <= to; t += step) ticks.push(t);
 
   return (
     <div

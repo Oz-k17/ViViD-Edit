@@ -34,6 +34,14 @@ const RATE_EPSILON = 0.005;
 /** currentTime 書き換えを間引く最小差分（一時停止中の頭出し用）。 */
 const SEEK_EPSILON = 0.02;
 /**
+ * シークがこれだけ終わらなければ「止まった」とみなし、動画要素を作り直して最新の位置へ飛び直す。
+ * 長尺の素材（3 時間など）では、遅い読み出しや壊れたデコーダの状態でシークが完了しなくなることがあり、
+ * 「シークは 1 本だけ」という方針のままだと、その 1 本を永遠に待って固まってしまう。
+ */
+const SEEK_STALL_MS = 6000;
+/** 最後に映せた絵を持っておく大きさ（長辺, px）。シーク中・読み込み中にこれを出す。 */
+const LAST_FRAME_SIZE = 640;
+/**
  * シーク直後にミュートしておく時間（ミリ秒）。
  * シークはデコード位置を強制的に飛ばすため、直前・直後の音声データが不連続になり、
  * 必ず「プツッ」というクリックノイズが乗る。これはズレの補正がどれだけ賢くなっても
@@ -182,6 +190,12 @@ export class Player {
   private onFrame: ((time: number) => void) | null = null;
   /** クリップごとのドリフト補正状態。 */
   private drift = new Map<string, DriftController>();
+  /** クリップごとに、いま走っているシークをいつ始めたか（止まりの検出用）。 */
+  private seekSince = new Map<string, number>();
+  /** クリップごとの、最後に映せた絵（縮小コピー）。 */
+  private lastFrames = new Map<string, HTMLCanvasElement>();
+  /** 'seeked' で最後の絵を撮る仕掛けを付けた要素。 */
+  private watched = new WeakSet<HTMLMediaElement>();
   /** クリップごとの「この時刻までミュートしておく」（シーク直後のクリックノイズ隠し用）。 */
   private duckUntil = new Map<string, number>();
   /** 再生開始直後、実際に再生できる状態になるまで壁時計の進行を待っている間 true。 */
@@ -273,6 +287,8 @@ export class Player {
         mediaRegistry.releaseElement(key);
         this.drift.delete(key);
         this.duckUntil.delete(key);
+        this.seekSince.delete(key);
+        this.lastFrames.delete(key);
       }
     }
   }
@@ -471,6 +487,55 @@ export class Player {
     return controller;
   }
 
+  /** 時刻を書いてシークを始める。始めた時刻を覚えておく（止まりの検出に使う）。 */
+  private seekTo(el: HTMLMediaElement, clipId: string, target: number) {
+    try {
+      el.currentTime = target;
+      this.seekSince.set(clipId, performance.now());
+    } catch {
+      /* メタデータ待ち */
+    }
+  }
+
+  /** シークが終わるたびに、その絵を縮小して取っておく。 */
+  private watchFrames(clipId: string, el: HTMLVideoElement) {
+    if (this.watched.has(el)) return;
+    this.watched.add(el);
+    const capture = () => {
+      if (el.readyState < 2 || !el.videoWidth) return;
+      const scale = Math.min(1, LAST_FRAME_SIZE / Math.max(el.videoWidth, el.videoHeight));
+      let canvas = this.lastFrames.get(clipId);
+      if (!canvas) {
+        canvas = document.createElement('canvas');
+        this.lastFrames.set(clipId, canvas);
+      }
+      canvas.width = Math.max(1, Math.round(el.videoWidth * scale));
+      canvas.height = Math.max(1, Math.round(el.videoHeight * scale));
+      try {
+        canvas.getContext('2d')?.drawImage(el, 0, 0, canvas.width, canvas.height);
+      } catch {
+        /* 取れなければ、次の seeked で */
+      }
+    };
+    el.addEventListener('seeked', capture);
+    el.addEventListener('loadeddata', capture);
+  }
+
+  /** 止まったシークを見つけたら、要素を作り直す。作り直したら true。 */
+  private recoverIfStalled(clip: Clip, el: HTMLMediaElement): boolean {
+    if (!el.seeking) {
+      this.seekSince.delete(clip.id);
+      return false;
+    }
+    const since = this.seekSince.get(clip.id);
+    if (since === undefined || performance.now() - since < SEEK_STALL_MS) return false;
+    this.seekSince.delete(clip.id);
+    this.drift.delete(clip.id);
+    mediaRegistry.releaseElement(clip.id);
+    // 次の mediaElement() 呼び出しで作り直される。最新の位置へは、次のフレームの sync が飛ぶ。
+    return true;
+  }
+
   private sync() {
     const sequence = this.sequence;
     if (!sequence) return;
@@ -483,8 +548,14 @@ export class Player {
 
     for (const clip of sequence.clips) {
       if (clip.kind === 'text' || clip.kind === 'image') continue;
-      const el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
+      let el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
       if (!el) continue;
+      if (el instanceof HTMLVideoElement) this.watchFrames(clip.id, el);
+      if (this.recoverIfStalled(clip, el)) {
+        el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
+        if (!el) continue;
+        if (el instanceof HTMLVideoElement) this.watchFrames(clip.id, el);
+      }
       const entry = active.get(clip.id);
 
       if (!entry) {
@@ -494,11 +565,7 @@ export class Player {
         // これから使うクリップだけ先読みを許す（全クリップが長い素材を読み込み始めないように）。
         if (distance > 0 && distance < PREROLL * 2 && el.preload !== 'auto') el.preload = 'auto';
         if (distance > 0 && distance < PREROLL && !el.seeking && Math.abs(el.currentTime - clip.sourceIn) > SEEK_EPSILON) {
-          try {
-            el.currentTime = clip.sourceIn;
-          } catch {
-            /* メタデータ待ち */
-          }
+          this.seekTo(el, clip.id, clip.sourceIn);
         }
         this.drift.get(clip.id)?.reset();
         this.duckUntil.delete(clip.id);
@@ -530,11 +597,7 @@ export class Player {
           // 音が 160ms 途切れて「再生開始のたびにカクつく」ことになる。
           if (Math.abs(el.currentTime - target) > SEEK_EPSILON) {
             this.duckUntil.set(clip.id, now + SEEK_DUCK_MS);
-            try {
-              el.currentTime = target;
-            } catch {
-              /* noop */
-            }
+            this.seekTo(el, clip.id, target);
           }
           this.drift.get(clip.id)?.reset(speed);
           if (el.playbackRate !== speed) el.playbackRate = speed;
@@ -551,11 +614,7 @@ export class Player {
           if (shouldSeek) {
             // シークの瞬間は必ずクリックノイズが乗るので、その前後をミュートして隠す。
             this.duckUntil.set(clip.id, now + SEEK_DUCK_MS);
-            try {
-              el.currentTime = target;
-            } catch {
-              /* noop */
-            }
+            this.seekTo(el, clip.id, target);
           }
           if (Math.abs(el.playbackRate - rate) > RATE_EPSILON) {
             el.playbackRate = rate;
@@ -574,13 +633,7 @@ export class Player {
         // 毎フレーム currentTime を書き直すと、長い動画ではデコードが終わる前に
         // 次のシークが始まってしまい、どのシークも完了せず、プレビューが固まる。
         // （currentTime は書いた時点の値が即座に読めるので、読み返すだけでは判別できない。）
-        if (!el.seeking && Math.abs(el.currentTime - target) > SEEK_EPSILON) {
-          try {
-            el.currentTime = target;
-          } catch {
-            /* noop */
-          }
-        }
+        if (!el.seeking && Math.abs(el.currentTime - target) > SEEK_EPSILON) this.seekTo(el, clip.id, target);
         this.drift.get(clip.id)?.reset(speed);
       }
     }
@@ -598,7 +651,9 @@ export class Player {
         }
         if (clip.kind !== 'video') return null;
         const el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
-        return el instanceof HTMLVideoElement && el.readyState >= 2 ? el : null;
+        if (el instanceof HTMLVideoElement && el.readyState >= 2) return el;
+        // シーク中・読み込み中は、最後に映せた絵を出し続ける（真っ黒や固まって見えるのを避ける）。
+        return this.lastFrames.get(clip.id) ?? null;
       },
       sizeFor: (clip) => {
         const asset = mediaRegistry.get(clip.mediaId);
