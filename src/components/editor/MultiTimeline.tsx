@@ -183,7 +183,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
         >
           <Icon name="magnet" />スナップ
         </button>
-        <button type="button" className={follow ? 'active' : ''} onClick={() => setFollow((f) => !f)} title="再生に合わせてスクロール">
+        <button type="button" className={follow ? 'active' : ''} onClick={() => setFollow((f) => !f)} title="再生中だけ、再生ヘッドに合わせてスクロール">
           <Icon name="link" />追従
         </button>
         <div className="zoom">
@@ -559,7 +559,8 @@ function Playhead({
     return player.subscribeFrame((time) => {
       const x = time * pps;
       if (ref.current) ref.current.style.transform = `translateX(${x}px)`;
-      if (!follow) return;
+      // 追従は再生中だけ。停止中にシーク・コマ送り・編集点移動をしても、見ている位置を動かさない。
+      if (!follow || !player.playing) return;
       const now = performance.now();
       if (now - lastCheck < FOLLOW_CHECK_MS) return;
       lastCheck = now;
