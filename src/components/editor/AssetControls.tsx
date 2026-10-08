@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { formatBytes, mediaRegistry, type MediaAsset } from '../../engine/media';
 import { cancelProxy, canMakeProxy, removeProxy, requestProxies, shouldSuggestProxy, useProxyJobs } from '../../engine/proxy';
+import { useStripProgress } from '../../engine/thumbstrip';
 import { ASSET_SORT_LABELS, type AssetSortKey } from '../../model/assetView';
 import { chooseSort, toggleDirection, useAssetView } from '../../store/assetView';
 import { moveAssetsToBin } from '../../store/bins';
@@ -135,11 +136,14 @@ export function ProxyStatus({ asset, always = false, withRemove = false }: { ass
   }
   if (job?.state === 'error') {
     return (
-      <span className="proxy-status error" title={job.message} onClick={stop} onDoubleClick={stop}>
-        軽量版 失敗
-        <button type="button" className="ghost proxy-cancel" title="もう一度作る" onClick={() => requestProxies([asset.id])}>
-          ↻
-        </button>
+      <span className="proxy-error-wrap" onClick={stop} onDoubleClick={stop}>
+        <span className="proxy-status error" title={job.message}>
+          軽量版 失敗
+          <button type="button" className="ghost proxy-cancel" title="もう一度作る" onClick={() => requestProxies([asset.id])}>
+            ↻
+          </button>
+        </span>
+        <span className="proxy-error-text">{job.message}</span>
       </span>
     );
   }
@@ -188,5 +192,16 @@ export function MakeProxiesButton({ ids }: { ids: string[] }) {
     <button type="button" className="ghost" title="選んだ動画に、プレビュー用の軽い複製を作る" onClick={() => requestProxies(targets)}>
       軽量版を作る（{targets.length}）
     </button>
+  );
+}
+
+/** 下見の絵を作っている間だけ、進み具合を出す。 */
+export function StripStatus({ asset }: { asset: MediaAsset }) {
+  const progress = useStripProgress()[asset.id];
+  if (progress === undefined) return null;
+  return (
+    <span className="proxy-status busy" title="飛ばし見を軽くするための下見の絵を、裏で作っています（作業はそのまま続けられます）">
+      下見 {Math.round(progress * 100)}%
+    </span>
   );
 }

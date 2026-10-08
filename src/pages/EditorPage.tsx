@@ -11,6 +11,8 @@ import { TopBar } from '../components/editor/TopBar';
 import { TransitionPicker } from '../components/editor/TransitionPicker';
 import { DockProvider, DockSlot, DockSplitter, useDockGrip } from '../components/editor/PanelDock';
 import { player } from '../engine/player';
+import { mediaRegistry } from '../engine/media';
+import { ensureStrips } from '../engine/thumbstrip';
 import { textClip } from '../model/factory';
 import { placeClip, removeClips, splitAt, tracksOf } from '../model/ops';
 import {
@@ -168,6 +170,12 @@ export default function EditorPage() {
 
   useEffect(() => {
     void seedSoundEffects();
+  }, []);
+
+  // 長い動画の下見の絵を、裏で作っておく（素材が増えたら、その分も）。
+  useEffect(() => {
+    ensureStrips();
+    return mediaRegistry.subscribe(ensureStrips);
   }, []);
 
   const addText = () => {

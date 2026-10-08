@@ -604,6 +604,9 @@ function Transport({ guides, onToggleGuides }: { guides: boolean; onToggleGuides
           step={0.01}
           defaultValue={0}
           onChange={(e) => player.seek(Number(e.target.value))}
+          onPointerDown={() => player.setScrubbing(true)}
+          onPointerUp={() => player.setScrubbing(false)}
+          onPointerCancel={() => player.setScrubbing(false)}
           aria-label="再生位置"
         />
       </div>

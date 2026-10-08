@@ -1,5 +1,6 @@
 import { audioGraph } from './audio';
 import { mediaRegistry } from './media';
+import { hasStrip, stripFrameAt } from './thumbstrip';
 import { fadeEnvelope, type RenderSources } from './renderer';
 import { clipAtTime, previousAdjacent, sequenceDuration } from '../model/ops';
 import { sourceTimeAt, type Clip, type Sequence } from '../model/types';
@@ -41,6 +42,11 @@ const SEEK_EPSILON = 0.02;
 const SEEK_STALL_MS = 6000;
 /** 最後に映せた絵を持っておく大きさ（長辺, px）。シーク中・読み込み中にこれを出す。 */
 const LAST_FRAME_SIZE = 640;
+/**
+ * ドラッグ中（スクラブ中）に、本物の動画をシークするまで手が止まっている必要のある時間（ms）。
+ * 動かし続けている間は一度もシークしない。長い動画では 1 回のシークが重く、積み上がると固まるため。
+ */
+const SCRUB_SETTLE_MS = 140;
 /**
  * シーク直後にミュートしておく時間（ミリ秒）。
  * シークはデコード位置を強制的に飛ばすため、直前・直後の音声データが不連続になり、
@@ -203,6 +209,10 @@ export class Player {
   private lastFrames = new Map<string, HTMLCanvasElement>();
   /** 'seeked' で最後の絵を撮る仕掛けを付けた要素。 */
   private watched = new WeakSet<HTMLMediaElement>();
+  /** ルーラーやスライダーをドラッグしている間 true。 */
+  private scrubbing = false;
+  /** 最後に再生位置が手で動かされた時刻（performance.now）。 */
+  private movedAt = 0;
   /** クリップごとの「この時刻までミュートしておく」（シーク直後のクリックノイズ隠し用）。 */
   private duckUntil = new Map<string, number>();
   /** 再生開始直後、実際に再生できる状態になるまで壁時計の進行を待っている間 true。 */
@@ -326,12 +336,24 @@ export class Player {
 
   seek(time: number) {
     this.time = Math.max(0, Math.min(this.duration, time));
+    this.movedAt = performance.now();
     // 手動シーク後は、蓄積していたドリフト補正の状態を持ち越さない。
     for (const controller of this.drift.values()) controller.reset();
     // 再生中のシークでは、基準クリップも含めて位置を合わせ直す必要がある
     // （基準は普段シークしないので、指示しないと元の位置へ引き戻されてしまう）。
     this.needsAlign = true;
     this.emitTime();
+  }
+
+  /** ドラッグの始まりと終わりに呼ぶ。終わったら、その位置へすぐシークする。 */
+  setScrubbing(on: boolean) {
+    this.scrubbing = on;
+    if (!on) this.movedAt = 0;
+  }
+
+  /** スクラブ中で、まだ手が止まっていないか。止まるまでは本物の動画をシークしない。 */
+  private scrubMoving(): boolean {
+    return this.scrubbing && performance.now() - this.movedAt < SCRUB_SETTLE_MS;
   }
 
   nudge(delta: number) {
@@ -654,7 +676,9 @@ export class Player {
         // 毎フレーム currentTime を書き直すと、長い動画ではデコードが終わる前に
         // 次のシークが始まってしまい、どのシークも完了せず、プレビューが固まる。
         // （currentTime は書いた時点の値が即座に読めるので、読み返すだけでは判別できない。）
-        if (!el.seeking && Math.abs(el.currentTime - target) > SEEK_EPSILON) this.seekTo(el, clip.id, target);
+        if (!el.seeking && !this.scrubMoving() && Math.abs(el.currentTime - target) > SEEK_EPSILON) {
+          this.seekTo(el, clip.id, target);
+        }
         this.drift.get(clip.id)?.reset(speed);
       }
     }
@@ -672,6 +696,16 @@ export class Player {
         }
         if (clip.kind !== 'video') return null;
         const el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
+        // 動画がまだ目的のコマを出せていない間（ドラッグ中・シーク中）は、下見の絵があればそれを出す。
+        if (!this.playing && hasStrip(clip.mediaId)) {
+          const target = this.targetSourceTime(clip, this.time);
+          const settled =
+            el instanceof HTMLVideoElement && el.readyState >= 2 && !el.seeking && Math.abs(el.currentTime - target) < 0.25;
+          if (!settled) {
+            const thumb = stripFrameAt(clip.mediaId, target);
+            if (thumb) return thumb;
+          }
+        }
         if (el instanceof HTMLVideoElement && el.readyState >= 2) return el;
         // シーク中・読み込み中は、最後に映せた絵を出し続ける（真っ黒や固まって見えるのを避ける）。
         return this.lastFrames.get(clip.id) ?? null;

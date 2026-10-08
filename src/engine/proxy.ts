@@ -38,6 +38,8 @@ const MAX_FPS = 30;
 const VIDEO_BITRATE = 700_000;
 const AUDIO_BITRATE = 96_000;
 const KEYFRAME_SECONDS = 1;
+/** OPFS が使えないとき、メモリで作ってよい大きさの上限。 */
+const MEMORY_LIMIT_BYTES = 350 * 1024 * 1024;
 
 /** 素材ごとの作業の様子。 */
 export type ProxyJob =
@@ -174,6 +176,17 @@ async function build(id: string) {
     const fileName = `${id}.${ext}`;
 
     const file = await openWritable(fileName);
+    // ファイル領域（OPFS）が使えないと、軽量版を丸ごとメモリに溜めることになる。長い動画では持たないので、始める前に止める。
+    if (!file) {
+      const duration = await input.computeDuration().catch(() => asset.duration);
+      const estimate = (duration * (VIDEO_BITRATE + AUDIO_BITRATE)) / 8;
+      if (estimate > MEMORY_LIMIT_BYTES) {
+        throw new Error(
+          'この開き方ではブラウザ内のファイル領域が使えず、長い動画の軽量版はメモリに収まりません' +
+            `（約 ${Math.round(estimate / 1024 / 1024)}MB）。index.html を直接開いている場合は、Web サーバ経由で開いてください。`,
+        );
+      }
+    }
     if (file) {
       partial = fileName;
       openFile = file;

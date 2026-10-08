@@ -10,7 +10,7 @@ import { pick, prune, sortAssets, type PickState } from '../../model/assetView';
 import { clipEnd } from '../../model/types';
 import { placeClips } from '../../model/editOps';
 import { useAssetView } from '../../store/assetView';
-import { BulkBar, MakeProxiesButton, ProxyStatus, SortControl, removeAssets, confirmRemoveAssets } from './AssetControls';
+import { BulkBar, MakeProxiesButton, ProxyStatus, SortControl, StripStatus, removeAssets, confirmRemoveAssets } from './AssetControls';
 import { startAssetDrag } from './assetDrag';
 import { BinTree, type BinSelection } from './BinTree';
 import { NasBrowser } from './NasBrowser';
@@ -254,6 +254,7 @@ export function MediaPanel() {
                   {asset.fps ? <em className="asset-fps">{asset.fps}fps</em> : null}
                 </span>
                 <ProxyStatus asset={asset} />
+                <StripStatus asset={asset} />
               </li>
             );
           })}

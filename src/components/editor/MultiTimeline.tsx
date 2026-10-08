@@ -386,8 +386,14 @@ function Ruler({
     <div
       className="tl-ruler"
       onPointerDown={(event) => {
+        // ドラッグ中は本物の動画をシークしない（手を止めたときに 1 回だけ。player.setScrubbing）。
+        player.setScrubbing(true);
         onScrub(event.clientX);
-        beginDrag(event, (_dx, _dy, native) => onScrub(native.clientX));
+        beginDrag(
+          event,
+          (_dx, _dy, native) => onScrub(native.clientX),
+          () => player.setScrubbing(false),
+        );
       }}
     >
       {ticks.map((t) => (

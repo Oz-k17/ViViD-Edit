@@ -2846,3 +2846,18 @@ hr {
   font-size: 11px;
   line-height: 1;
 }
+
+.proxy-error-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-self: stretch;
+}
+
+.proxy-error-text {
+  font-size: 10px;
+  line-height: 1.35;
+  color: #ff6961;
+  white-space: normal;
+  word-break: break-word;
+}
