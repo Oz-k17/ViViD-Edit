@@ -10,6 +10,7 @@
  */
 
 import { audioGraph } from './audio';
+import { mediaRegistry } from './media';
 import {
   FrameExportUnsupported,
   isFrameExportSupported,
@@ -200,6 +201,9 @@ export class Exporter {
     this.sequence = { ...sequence, aspect: settings.aspect, width: size.width, height: size.height };
 
     const wasLooping = player.loop;
+    // 実時間収録はプレビューの再生要素をそのまま録るので、軽量版ではなく元の素材で再生させる。
+    const usedProxies = mediaRegistry.useProxies;
+    mediaRegistry.useProxies = false;
     player.setLoop(false);
     player.pause();
     player.seek(0);
@@ -243,6 +247,7 @@ export class Exporter {
       player.pause();
       if (recorder.state !== 'inactive') recorder.stop();
       await finished;
+      mediaRegistry.useProxies = usedProxies;
       this.active = false;
       this.canvas = null;
       this.ctx = null;

@@ -17,6 +17,7 @@ import {
   setCurrentProfileId,
   type Profile,
 } from './profile';
+import { mediaRegistry } from '../engine/media';
 import {
   loadMediaRoots,
   personalBaseFor,
@@ -272,12 +273,14 @@ export function showPanel(layout: PanelLayout, id: PanelId): Partial<PanelLayout
 }
 
 /** プレビューを描く解像度（長辺の px）。書き出しの画質には影響しない。 */
-export type PreviewQuality = 480 | 720 | 1080;
+export type PreviewQuality = 360 | 480 | 720 | 1080;
 
 export interface Settings {
   lang: Lang;
   layout: LayoutMode;
   previewQuality: PreviewQuality;
+  /** 軽量版（プロキシ）がある素材は、プレビューと再生にそちらを使う。 */
+  useProxies: boolean;
   exportQuality: number;
   exportAspect: AspectKey;
   exportFormat: 'auto' | 'mp4' | 'webm';
@@ -302,6 +305,7 @@ export const DEFAULT_SETTINGS: Settings = {
   lang: 'ja',
   layout: 'desktop',
   previewQuality: 720,
+  useProxies: true,
   exportQuality: 1080,
   exportAspect: '9:16',
   exportFormat: 'auto',
@@ -414,6 +418,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return [];
     }
   });
+
+  useEffect(() => {
+    mediaRegistry.useProxies = settings.useProxies;
+  }, [settings.useProxies]);
 
   useEffect(() => {
     setLang(settings.lang);

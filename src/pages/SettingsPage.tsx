@@ -135,6 +135,7 @@ export default function SettingsPage() {
                 { value: '1080', label: '高' },
                 { value: '720', label: '標準' },
                 { value: '480', label: '軽い' },
+                { value: '360', label: '最軽量' },
               ]}
               onChange={(value) => updateSettings({ previewQuality: Number(value) as PreviewQuality })}
             />
@@ -142,6 +143,16 @@ export default function SettingsPage() {
           <p className="muted small">
             重い素材で再生がカクつくときは「軽い」にすると滑らかになります。プレビューの表示だけが粗くなり、
             書き出される動画の画質は変わりません。
+          </p>
+          <Toggle
+            label="軽量版（プロキシ）がある素材は、プレビューにそちらを使う"
+            checked={settings.useProxies}
+            onChange={(useProxies) => updateSettings({ useProxies })}
+          />
+          <p className="muted small">
+            画質の設定は表示を小さくするだけで、元の動画を読み解く重さは変わりません。長い・大きい動画で重いときは、
+            素材パネルで動画を選び「軽量版を作る」を押してください。プレビュー用の小さな複製（長辺 640px・1 秒ごとに
+            キーフレーム）を作り、再生と飛ばし見が軽くなります。書き出しと自動解析は元の動画を使います。
           </p>
         </Panel>
 

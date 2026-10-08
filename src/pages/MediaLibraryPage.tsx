@@ -6,7 +6,7 @@ import { formatBytes, formatTime, mediaRegistry, UNSORTED } from '../engine/medi
 import { matchesQuery } from '../model/bins';
 import { pick, prune, sortAssets, type PickState } from '../model/assetView';
 import { BinTree, useBinOptions, type BinSelection } from '../components/editor/BinTree';
-import { BulkBar, SortControl } from '../components/editor/AssetControls';
+import { BulkBar, MakeProxiesButton, ProxyStatus, SortControl } from '../components/editor/AssetControls';
 import { startAssetDrag } from '../components/editor/assetDrag';
 import { useAssetView } from '../store/assetView';
 import { Panel } from '../components/ui';
@@ -87,7 +87,9 @@ export default function MediaLibraryPage() {
             total={orderedIds.length}
             onClear={() => setPicked({ selected: [], anchor: null })}
             onSelectAll={() => setPicked({ selected: orderedIds, anchor: orderedIds[0] ?? null })}
-          />
+          >
+            <MakeProxiesButton ids={picked.selected} />
+          </BulkBar>
           <label className="media-select-all">
             <input
               type="checkbox"
@@ -142,6 +144,7 @@ export default function MediaLibraryPage() {
                       {asset.kind === 'image' ? '画像' : formatTime(asset.duration)} ・ {formatBytes(asset.size)}
                       {asset.width > 0 && ` ・ ${asset.width}×${asset.height}`}
                     </span>
+                    <ProxyStatus asset={asset} always withRemove />
                   </div>
                   <select
                     value={asset.folder || UNSORTED}

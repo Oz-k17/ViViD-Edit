@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { mediaRegistry } from '../../engine/media';
+import { formatBytes, mediaRegistry, type MediaAsset } from '../../engine/media';
+import { cancelProxy, canMakeProxy, removeProxy, requestProxies, shouldSuggestProxy, useProxyJobs } from '../../engine/proxy';
 import { ASSET_SORT_LABELS, type AssetSortKey } from '../../model/assetView';
 import { chooseSort, toggleDirection, useAssetView } from '../../store/assetView';
 import { moveAssetsToBin } from '../../store/bins';
@@ -108,5 +109,84 @@ export function BulkBar({
         解除
       </button>
     </div>
+  );
+}
+
+/**
+ * 軽量版（プロキシ）の状態と操作。
+ * - 作成中: 進み具合と中止
+ * - あり: 印（`withRemove` なら消すボタンも）
+ * - なし: 長い・大きい動画なら作成ボタン（`always` なら動画すべてに出す）
+ */
+export function ProxyStatus({ asset, always = false, withRemove = false }: { asset: MediaAsset; always?: boolean; withRemove?: boolean }) {
+  const jobs = useProxyJobs();
+  const job = jobs[asset.id];
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+  if (asset.kind !== 'video') return null;
+  if (job?.state === 'running' || job?.state === 'queued') {
+    return (
+      <span className="proxy-status busy" onClick={stop} onDoubleClick={stop}>
+        {job.state === 'running' ? `軽量版 ${Math.round(job.progress * 100)}%` : '軽量版 待機中'}
+        <button type="button" className="ghost proxy-cancel" title="軽量版の作成をやめる" onClick={() => void cancelProxy(asset.id)}>
+          ×
+        </button>
+      </span>
+    );
+  }
+  if (job?.state === 'error') {
+    return (
+      <span className="proxy-status error" title={job.message} onClick={stop} onDoubleClick={stop}>
+        軽量版 失敗
+        <button type="button" className="ghost proxy-cancel" title="もう一度作る" onClick={() => requestProxies([asset.id])}>
+          ↻
+        </button>
+      </span>
+    );
+  }
+  if (asset.proxy) {
+    return (
+      <span
+        className="proxy-status ready"
+        title={`軽量版あり（${asset.proxy.width}×${asset.proxy.height}・${formatBytes(asset.proxy.size)}）。プレビューと再生はこちらを使います`}
+        onClick={stop}
+        onDoubleClick={stop}
+      >
+        軽量版
+        {withRemove && (
+          <button type="button" className="ghost proxy-cancel" title="軽量版を消す（元の素材はそのまま）" onClick={() => void removeProxy(asset.id)}>
+            ×
+          </button>
+        )}
+      </span>
+    );
+  }
+  if (always ? canMakeProxy(asset.id) : shouldSuggestProxy(asset.id)) {
+    return (
+      <button
+        type="button"
+        className="ghost proxy-make"
+        title="プレビュー用の軽い複製を作る（書き出しは元の画質のまま）"
+        onClick={(e) => {
+          e.stopPropagation();
+          requestProxies([asset.id]);
+        }}
+        onDoubleClick={stop}
+      >
+        軽量版を作る
+      </button>
+    );
+  }
+  return null;
+}
+
+/** 選んだ素材のうち、軽量版を作れる動画に作る。作れるものが無ければ出さない。 */
+export function MakeProxiesButton({ ids }: { ids: string[] }) {
+  useProxyJobs();
+  const targets = ids.filter((id) => canMakeProxy(id));
+  if (targets.length === 0) return null;
+  return (
+    <button type="button" className="ghost" title="選んだ動画に、プレビュー用の軽い複製を作る" onClick={() => requestProxies(targets)}>
+      軽量版を作る（{targets.length}）
+    </button>
   );
 }

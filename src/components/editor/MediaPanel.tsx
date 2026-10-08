@@ -10,7 +10,7 @@ import { pick, prune, sortAssets, type PickState } from '../../model/assetView';
 import { clipEnd } from '../../model/types';
 import { placeClips } from '../../model/editOps';
 import { useAssetView } from '../../store/assetView';
-import { BulkBar, SortControl, removeAssets, confirmRemoveAssets } from './AssetControls';
+import { BulkBar, MakeProxiesButton, ProxyStatus, SortControl, removeAssets, confirmRemoveAssets } from './AssetControls';
 import { startAssetDrag } from './assetDrag';
 import { BinTree, type BinSelection } from './BinTree';
 import { NasBrowser } from './NasBrowser';
@@ -208,6 +208,7 @@ export function MediaPanel() {
         <button type="button" className="ghost" onClick={() => addToTimeline(selectedAssets)} title={insertMode ? '再生ヘッドへ挿入（Enter）' : '再生ヘッドへ置く（Enter）'}>
           タイムラインへ
         </button>
+        <MakeProxiesButton ids={picked.selected} />
       </BulkBar>
 
       {error && <p className="error-note">{error}</p>}
@@ -252,6 +253,7 @@ export function MediaPanel() {
                   {asset.warning ? <><Icon name="warning" size={13} />読み取れず</> : asset.kind === 'image' ? '画像' : formatTime(asset.duration)}
                   {asset.fps ? <em className="asset-fps">{asset.fps}fps</em> : null}
                 </span>
+                <ProxyStatus asset={asset} />
               </li>
             );
           })}

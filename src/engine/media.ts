@@ -43,6 +43,46 @@ export interface MediaAsset {
    * 絶対 URL で持つと、NAS のホスト名や口を変えた瞬間に全プロジェクトが壊れる。
    */
   src?: string;
+  /**
+   * プレビュー用の軽い複製（プロキシ）の情報。作っていなければ undefined。
+   * 実体はブラウザ内のファイル領域（OPFS）か、置けない環境では IndexedDB に入れる（`proxy.ts`）。
+   */
+  proxy?: ProxyInfo;
+  /** プロキシを読むための一時 URL（保存しない。起動のたびに作り直す）。 */
+  proxyUrl?: string;
+}
+
+export interface ProxyInfo {
+  /** どこに置いたか。`opfs` は OPFS の `vivid-proxies/<file>`、`idb` は素材レコードの proxyBlob。 */
+  store: 'opfs' | 'idb';
+  file: string;
+  width: number;
+  height: number;
+  size: number;
+  createdAt: number;
+}
+
+export const PROXY_DIR = 'vivid-proxies';
+
+/** OPFS に置いたプロキシを File として開く。無ければ null。 */
+export async function openProxyFile(name: string): Promise<File | null> {
+  try {
+    const root = await navigator.storage.getDirectory();
+    const dir = await root.getDirectoryHandle(PROXY_DIR);
+    return await (await dir.getFileHandle(name)).getFile();
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteProxyFile(name: string): Promise<void> {
+  try {
+    const root = await navigator.storage.getDirectory();
+    const dir = await root.getDirectoryHandle(PROXY_DIR);
+    await dir.removeEntry(name);
+  } catch {
+    /* もう無い */
+  }
 }
 
 export const UNSORTED = '未分類';
@@ -76,9 +116,11 @@ function openDb(): Promise<IDBDatabase | null> {
   });
 }
 
-interface StoredAsset extends Omit<MediaAsset, 'url'> {
+interface StoredAsset extends Omit<MediaAsset, 'url' | 'proxyUrl'> {
   /** 取り込んだ実体。参照（src あり）の素材では持たない。 */
   blob?: Blob;
+  /** OPFS が使えない環境で作ったプロキシの実体。 */
+  proxyBlob?: Blob;
 }
 
 async function dbPut(record: StoredAsset): Promise<void> {
@@ -453,12 +495,20 @@ class MediaRegistry {
     this.restored = true;
     await migrateLegacyAssets();
     for (const record of await dbAll()) {
-      const { blob, ...rest } = record;
+      const { blob, proxyBlob, ...rest } = record;
       // 参照の素材は相対パスで持っているので、いまのページを基準に解く。
       // 取り込みの素材は Blob から一時 URL を作る。
       const url = rest.src ? absoluteSrc(rest.src) : blob ? URL.createObjectURL(blob) : '';
       if (!url) continue; // 実体も在り処も無い壊れたレコード。読み飛ばす。
-      this.assets.set(rest.id, { ...rest, url });
+      let proxyUrl: string | undefined;
+      if (rest.proxy?.store === 'idb' && proxyBlob) proxyUrl = URL.createObjectURL(proxyBlob);
+      if (rest.proxy?.store === 'opfs') {
+        const file = await openProxyFile(rest.proxy.file);
+        if (file) proxyUrl = URL.createObjectURL(file);
+      }
+      // 実体が消えていた（ブラウザがファイル領域を片付けた等）プロキシは、無かったことにする。
+      const proxy = proxyUrl ? rest.proxy : undefined;
+      this.assets.set(rest.id, { ...rest, proxy, url, proxyUrl });
     }
     this.emit();
   }
@@ -598,9 +648,51 @@ class MediaRegistry {
     })();
   }
 
+  /**
+   * プレビューにプロキシを使うか。実時間収録の書き出し中は、元の画質で収録するために外す。
+   * 切り替えると、使っている再生要素は次に呼ばれたときに作り直される。
+   */
+  useProxies = true;
+
+  /** プロキシを付ける（作り終えたとき）。`blob` は IndexedDB に置く場合だけ渡す。 */
+  async attachProxy(id: string, info: ProxyInfo, file: Blob) {
+    const asset = this.assets.get(id);
+    if (!asset) return;
+    if (asset.proxyUrl) URL.revokeObjectURL(asset.proxyUrl);
+    this.assets.set(id, { ...asset, proxy: info, proxyUrl: URL.createObjectURL(file) });
+    this.emit();
+    const stored = (await dbAll()).find((r) => r.id === id);
+    if (stored) await dbPut({ ...stored, proxy: info, proxyBlob: info.store === 'idb' ? file : undefined });
+  }
+
+  /** プロキシを捨てる（元の素材は触らない）。 */
+  async detachProxy(id: string) {
+    const asset = this.assets.get(id);
+    if (!asset?.proxy) return;
+    if (asset.proxyUrl) URL.revokeObjectURL(asset.proxyUrl);
+    const { proxy, proxyUrl: _proxyUrl, ...rest } = asset;
+    this.assets.set(id, rest);
+    this.emit();
+    if (proxy.store === 'opfs') await deleteProxyFile(proxy.file);
+    const stored = (await dbAll()).find((r) => r.id === id);
+    if (stored) {
+      const { proxy: _p, proxyBlob: _b, ...plain } = stored;
+      await dbPut(plain);
+    }
+  }
+
+  /** いま再生に使う URL（プロキシがあって、使う設定ならプロキシ）。 */
+  playbackUrl(asset: MediaAsset): string {
+    return this.useProxies && asset.proxyUrl ? asset.proxyUrl : asset.url;
+  }
+
   remove(id: string) {
     const asset = this.assets.get(id);
     if (!asset) return;
+    if (asset.proxy) {
+      if (asset.proxyUrl) URL.revokeObjectURL(asset.proxyUrl);
+      if (asset.proxy.store === 'opfs') void deleteProxyFile(asset.proxy.file);
+    }
     // 参照の素材の url は NAS を指しているだけなので、取り消すものが無い。
     if (!asset.src) URL.revokeObjectURL(asset.url);
     this.assets.delete(id);
@@ -616,8 +708,10 @@ class MediaRegistry {
   mediaElement(key: string, mediaId: string | null): HTMLVideoElement | HTMLAudioElement | null {
     const asset = this.get(mediaId);
     if (!asset || asset.kind === 'image') return null;
+    const url = this.playbackUrl(asset);
     const existing = this.elements.get(key);
-    if (existing && existing.dataset.mediaId === asset.id) return existing;
+    // 同じ素材でも、プロキシ ⇄ 元素材を切り替えたら作り直す。
+    if (existing && existing.dataset.mediaId === asset.id && existing.dataset.src === url) return existing;
     if (existing) this.releaseElement(key);
 
     const el = asset.kind === 'video' ? document.createElement('video') : document.createElement('audio');
@@ -625,7 +719,8 @@ class MediaRegistry {
     // 作った時点では先読みしない。長い素材をシーン分割などで何十クリップにすると、
     // 全クリップが一斉に同じ素材を読み込み始めてしまう。使う直前に player が 'auto' へ上げる。
     el.preload = 'metadata';
-    el.src = asset.url;
+    el.dataset.src = url;
+    el.src = url;
     if (el instanceof HTMLVideoElement) {
       el.playsInline = true;
       el.disablePictureInPicture = true;

@@ -51,7 +51,8 @@ export function buildProjectFile(project: Project): ProjectFile {
       localOnly.push(asset.name);
       continue;
     }
-    const { url: _url, src, ...rest } = asset;
+    // プロキシはこの端末の中だけのもの。ファイルには持たせない。
+    const { url: _url, src, proxy: _proxy, proxyUrl: _proxyUrl, ...rest } = asset;
     assets.push({ ...rest, src });
   }
 

@@ -2802,3 +2802,47 @@ hr {
   background: none;
   border-right: none;
 }
+
+/* ---------- 軽量版（プロキシ） ---------- */
+
+.proxy-status,
+.proxy-make {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 1px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.proxy-status.ready {
+  color: #30d158;
+  background: rgba(48, 209, 88, 0.14);
+}
+
+.proxy-status.busy {
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.proxy-status.error {
+  color: #ff453a;
+  background: rgba(255, 69, 58, 0.14);
+}
+
+.proxy-make {
+  border: 1px dashed var(--line);
+  color: var(--text-dim);
+  min-height: 0;
+}
+
+.proxy-cancel {
+  min-height: 0;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 1;
+}
