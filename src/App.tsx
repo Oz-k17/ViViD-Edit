@@ -1,4 +1,4 @@
-import { HashRouter, Route, Routes } from 'react-router-dom';
+import { Routes } from './router';
 import EditorPage from './pages/EditorPage';
 import MediaLibraryPage from './pages/MediaLibraryPage';
 import SettingsPage from './pages/SettingsPage';
@@ -10,16 +10,16 @@ export default function App() {
   return (
     <AppProvider>
       <EditorProvider>
-        {/* 静的ホスティングでも深いリンクが壊れないよう HashRouter を使う */}
-        <HashRouter>
-          <Routes>
-            <Route path="/" element={<EditorPage />} />
-            <Route path="/media-library" element={<MediaLibraryPage />} />
-            <Route path="/templates" element={<TemplatesPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="*" element={<EditorPage />} />
-          </Routes>
-        </HashRouter>
+        {/* 静的ホスティングでも深いリンクが壊れないよう、ハッシュで切り替える（router.tsx） */}
+        <Routes
+          routes={{
+            '/': () => <EditorPage />,
+            '/media-library': () => <MediaLibraryPage />,
+            '/templates': () => <TemplatesPage />,
+            '/settings': () => <SettingsPage />,
+          }}
+          fallback={() => <EditorPage />}
+        />
       </EditorProvider>
     </AppProvider>
   );

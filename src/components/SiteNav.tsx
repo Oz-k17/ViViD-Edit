@@ -1,4 +1,4 @@
-import { NavLink } from 'react-router-dom';
+import { NavLink } from '../router';
 import { t } from '../i18n';
 import { useApp } from '../store/app';
 
@@ -16,7 +16,7 @@ export function SiteNav() {
   return (
     <nav className="site-nav">
       {LINKS.map((link) => (
-        <NavLink key={link.to} to={link.to} end={link.end} className={({ isActive }) => (isActive ? 'active' : '')}>
+        <NavLink key={link.to} to={link.to} end={link.end}>
           {t(short ? link.short : link.label)}
         </NavLink>
       ))}

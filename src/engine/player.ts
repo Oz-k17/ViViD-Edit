@@ -51,6 +51,13 @@ const SEEK_DUCK_MS = 160;
 /** 次のクリップを何秒前から頭出ししておくか。 */
 const PREROLL = 1.2;
 /**
+ * 動画要素を持っておく範囲（再生位置からの秒数）。
+ * 長い素材をシーン分割などで数百クリップにしても、全クリップぶんの要素を作ると
+ * 同じ素材を数百本同時に開くことになる。これから使う（先）・いま使った（後）クリップだけ持つ。
+ */
+const KEEP_AHEAD = PREROLL * 2;
+const KEEP_BEHIND = 3;
+/**
  * 再生開始時にデコードの立ち上がりを待つ上限（ミリ秒）。
  * play() を呼んだ瞬間から壁時計を進めてしまうと、<video> の再生開始（バッファ待ち含む）は
  * 非同期でそれより遅れるため、重い素材ほど開始直後だけ大きなズレが生じて
@@ -275,12 +282,10 @@ export class Player {
     this.duration = sequenceDuration(sequence);
     if (this.time > this.duration) this.time = this.duration;
 
+    // 要素はここでは作らない。sync() が、いま必要なクリップの分だけ作る。
     const live = new Set<string>();
     for (const clip of sequence.clips) {
-      if (clip.kind === 'video' || clip.kind === 'audio') {
-        live.add(clip.id);
-        mediaRegistry.mediaElement(clip.id, clip.mediaId);
-      }
+      if (clip.kind === 'video' || clip.kind === 'audio') live.add(clip.id);
     }
     for (const key of mediaRegistry.activeKeys()) {
       if (!live.has(key)) {
@@ -342,9 +347,14 @@ export class Player {
     const sequence = this.sequence;
     if (!sequence) return;
     for (const clip of sequence.clips) {
-      const el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
+      const el = mediaRegistry.peekElement(clip.id);
       if (el && !el.paused) el.pause();
     }
+  }
+
+  /** この時刻のまわりで、クリップの動画要素を持っておくべきか。 */
+  private wanted(clip: Clip, time: number): boolean {
+    return clip.start - time <= KEEP_AHEAD && time - (clip.start + clip.duration) <= KEEP_BEHIND;
   }
 
   /** その時刻に鳴っている / 映っているクリップ（トランジション中の前カットを含む）。 */
@@ -548,6 +558,17 @@ export class Player {
 
     for (const clip of sequence.clips) {
       if (clip.kind === 'text' || clip.kind === 'image') continue;
+      if (!this.wanted(clip, this.time)) {
+        // 遠いクリップの要素は手放す（作り直しは、近づいたときに行う）。
+        if (mediaRegistry.peekElement(clip.id)) {
+          mediaRegistry.releaseElement(clip.id);
+          this.drift.delete(clip.id);
+          this.duckUntil.delete(clip.id);
+          this.seekSince.delete(clip.id);
+          this.lastFrames.delete(clip.id);
+        }
+        continue;
+      }
       let el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
       if (!el) continue;
       if (el instanceof HTMLVideoElement) this.watchFrames(clip.id, el);

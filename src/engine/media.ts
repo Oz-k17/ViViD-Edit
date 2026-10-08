@@ -636,6 +636,11 @@ class MediaRegistry {
     return el;
   }
 
+  /** すでにある要素だけを返す（無ければ作らない）。後始末や一時停止など、作る必要のない場面用。 */
+  peekElement(key: string): HTMLVideoElement | HTMLAudioElement | null {
+    return (this.elements.get(key) as HTMLVideoElement | HTMLAudioElement | undefined) ?? null;
+  }
+
   imageElement(mediaId: string | null): HTMLImageElement | null {
     const asset = this.get(mediaId);
     if (!asset || asset.kind !== 'image') return null;

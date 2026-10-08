@@ -15,6 +15,7 @@ import {
   snapCropRect,
   type CropHandle,
 } from '../../engine/crop';
+import { mediaRegistry } from '../../engine/media';
 import { cropDestForSelection, cropDestFromRect, cropDestRect, renderFrame, type Rect } from '../../engine/renderer';
 import { clipAtTime, clipsOnTrack, splitAt } from '../../model/ops';
 import { clipEnd, type Clip, type Sequence } from '../../model/types';
@@ -94,11 +95,30 @@ export function PreviewStage() {
     // getContext は毎フレーム呼ばず一度だけ取る。
     let ctx: CanvasRenderingContext2D | null = null;
     let ctxOwner: HTMLCanvasElement | null = null;
+
+    // 停止中は、入力が変わったときだけ描く（何も変わらないのに毎フレーム全部を描き直さない）。
+    // 入力 = 時刻・シーケンス・選択・ガイド・切り抜き指定・キャンバスの大きさ。
+    // 加えて、時刻が同じでも絵が変わる出来事（動画のシーク完了・読み込み、画像・フォントの読み込み、
+    // 素材の増減）は dirty で知らせる。取りこぼしても困らないよう、一定間隔でも描く。
+    let dirty = true;
+    let drawnAt = 0;
+    let last = { time: -1, seq: null as unknown, sel: null as unknown, g: null as unknown, crop: null as unknown, w: 0, h: 0 };
+    const markDirty = () => {
+      dirty = true;
+    };
+    // media イベントは要素の外へ伝わらないが、捕捉（capture）なら document で拾える。
+    const events = ['seeked', 'loadeddata', 'canplay', 'loadedmetadata', 'load'];
+    for (const name of events) document.addEventListener(name, markDirty, true);
+    document.fonts?.addEventListener?.('loadingdone', markDirty);
+    const unsubscribeAssets = mediaRegistry.subscribe(markDirty);
+    const IDLE_REDRAW_MS = 400;
+
     player.start((time) => {
       const canvas = canvasRef.current;
       if (canvas && canvas !== ctxOwner) {
         ctx = canvas.getContext('2d', { alpha: false });
         ctxOwner = canvas;
+        dirty = true;
       }
       const { sequence: seq, selection: sel, guides: g, cropTarget: crop } = latest.current;
       // 書き出し中はプレビューを描かない。モーダルの裏に隠れて見えないうえ、
@@ -108,11 +128,35 @@ export function PreviewStage() {
         if (exporter.ctx && exporter.sequence) {
           renderFrame(exporter.ctx, exporter.sequence, time, sources, { guides: false, selectedIds: [] });
         }
+        dirty = true;
       } else if (ctx) {
+        const now = performance.now();
+        const w = canvas?.width ?? 0;
+        const h = canvas?.height ?? 0;
+        const changed =
+          dirty ||
+          player.playing ||
+          time !== last.time ||
+          seq !== last.seq ||
+          sel !== last.sel ||
+          g !== last.g ||
+          crop !== last.crop ||
+          w !== last.w ||
+          h !== last.h ||
+          now - drawnAt > IDLE_REDRAW_MS;
+        if (!changed) return;
+        dirty = false;
+        drawnAt = now;
+        last = { time, seq, sel, g, crop, w, h };
         boundsRef.current = renderFrame(ctx, seq, time, sources, { guides: g, selectedIds: sel, cropTarget: crop });
       }
     });
-    return () => player.stop();
+    return () => {
+      for (const name of events) document.removeEventListener(name, markDirty, true);
+      document.fonts?.removeEventListener?.('loadingdone', markDirty);
+      unsubscribeAssets();
+      player.stop();
+    };
   }, []);
 
   const toSequenceCoords = useCallback(

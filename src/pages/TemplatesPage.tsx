@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from '../router';
 import { LayoutToggle } from '../components/LayoutToggle';
 import { Brand, SiteNav } from '../components/SiteNav';
 import { Panel } from '../components/ui';
