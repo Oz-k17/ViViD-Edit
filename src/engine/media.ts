@@ -622,7 +622,9 @@ class MediaRegistry {
 
     const el = asset.kind === 'video' ? document.createElement('video') : document.createElement('audio');
     el.dataset.mediaId = asset.id;
-    el.preload = 'auto';
+    // 作った時点では先読みしない。長い素材をシーン分割などで何十クリップにすると、
+    // 全クリップが一斉に同じ素材を読み込み始めてしまう。使う直前に player が 'auto' へ上げる。
+    el.preload = 'metadata';
     el.src = asset.url;
     if (el instanceof HTMLVideoElement) {
       el.playsInline = true;

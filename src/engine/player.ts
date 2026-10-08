@@ -491,7 +491,9 @@ export class Player {
         if (!el.paused) el.pause();
         audioGraph.setGain(el, 0);
         const distance = clip.start - this.time;
-        if (distance > 0 && distance < PREROLL && Math.abs(el.currentTime - clip.sourceIn) > SEEK_EPSILON) {
+        // これから使うクリップだけ先読みを許す（全クリップが長い素材を読み込み始めないように）。
+        if (distance > 0 && distance < PREROLL * 2 && el.preload !== 'auto') el.preload = 'auto';
+        if (distance > 0 && distance < PREROLL && !el.seeking && Math.abs(el.currentTime - clip.sourceIn) > SEEK_EPSILON) {
           try {
             el.currentTime = clip.sourceIn;
           } catch {
@@ -503,6 +505,7 @@ export class Player {
         continue;
       }
 
+      if (el.preload !== 'auto') el.preload = 'auto';
       const track = trackById.get(clip.trackId);
       const target = this.targetSourceTime(clip, this.time);
       const speed = Math.max(0.0625, Math.min(16, clip.speed || 1));
@@ -567,7 +570,11 @@ export class Player {
         audioGraph.setGain(el, baseGain);
         if (!el.paused) el.pause();
         if (el.playbackRate !== speed) el.playbackRate = speed;
-        if (Math.abs(el.currentTime - target) > SEEK_EPSILON) {
+        // 停止中のスクラブ。シークは**常に 1 本だけ**走らせ、終わってから最新の目標へ飛ぶ。
+        // 毎フレーム currentTime を書き直すと、長い動画ではデコードが終わる前に
+        // 次のシークが始まってしまい、どのシークも完了せず、プレビューが固まる。
+        // （currentTime は書いた時点の値が即座に読めるので、読み返すだけでは判別できない。）
+        if (!el.seeking && Math.abs(el.currentTime - target) > SEEK_EPSILON) {
           try {
             el.currentTime = target;
           } catch {
