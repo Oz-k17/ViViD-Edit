@@ -25,6 +25,7 @@ import {
   Mp4OutputFormat,
   Output,
   Quality,
+  UrlSource,
   WebMOutputFormat,
   getFirstEncodableAudioCodec,
   getFirstEncodableVideoCodec,
@@ -197,6 +198,21 @@ export async function assetBlob(mediaId: string): Promise<Blob | null> {
   }
 }
 
+/** デコードした断片を 1 本の AudioBuffer につなぐ。元の標本化周波数のまま（ミックス側で WebAudio が変換する）。 */
+function mergeAudioParts(parts: AudioBuffer[]): AudioBuffer {
+  const channels = Math.max(...parts.map((p) => p.numberOfChannels));
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const merged = new AudioBuffer({ length: total, numberOfChannels: channels, sampleRate: parts[0].sampleRate });
+  let offset = 0;
+  for (const part of parts) {
+    for (let channel = 0; channel < channels; channel += 1) {
+      merged.copyToChannel(part.getChannelData(Math.min(channel, part.numberOfChannels - 1)), channel, offset);
+    }
+    offset += part.length;
+  }
+  return merged;
+}
+
 /**
  * 素材の音を丸ごと 1 本の AudioBuffer にする。
  *
@@ -223,20 +239,7 @@ export async function decodeAssetAudio(mediaId: string): Promise<AudioBuffer | n
       const sink = new AudioBufferSink(track);
       const parts: AudioBuffer[] = [];
       for await (const wrapped of sink.buffers()) parts.push(wrapped.buffer);
-      if (parts.length > 0) {
-        const channels = Math.max(...parts.map((p) => p.numberOfChannels));
-        const total = parts.reduce((n, p) => n + p.length, 0);
-        // 元の標本化周波数のままで良い。ミックス側へ流し込むときに WebAudio が変換する。
-        const merged = new AudioBuffer({ length: total, numberOfChannels: channels, sampleRate: parts[0].sampleRate });
-        let offset = 0;
-        for (const part of parts) {
-          for (let channel = 0; channel < channels; channel += 1) {
-            merged.copyToChannel(part.getChannelData(Math.min(channel, part.numberOfChannels - 1)), channel, offset);
-          }
-          offset += part.length;
-        }
-        return merged;
-      }
+      if (parts.length > 0) return mergeAudioParts(parts);
     }
   } catch {
     /* 映像コンテナではない、音声トラックが無い、デコードに失敗した等。下の方法へ。 */
@@ -250,6 +253,59 @@ export async function decodeAssetAudio(mediaId: string): Promise<AudioBuffer | n
   } catch {
     return null;
   }
+}
+
+/**
+ * 素材の音のうち、`from`〜`to`（素材内の秒）だけを取り出す。
+ *
+ * 長い素材（3 時間など）で、使うのが数十秒でも全部をデコードしてしまうと、
+ * メモリも時間も素材の長さに比例して食う。ここは使う範囲だけ。
+ * 返す `start` は、先頭の標本が素材の何秒にあたるか（コマの区切りで `from` とは少しずれる）。
+ * NAS 参照の素材は、ファイルを丸ごと落とさず、必要な範囲だけを Range で読む。
+ */
+export async function decodeAssetAudioRange(
+  mediaId: string,
+  from: number,
+  to: number,
+): Promise<{ buffer: AudioBuffer; start: number } | null> {
+  const asset = mediaRegistry.get(mediaId);
+  if (!asset) return null;
+  const begin = Math.max(0, from);
+
+  let input: Input | null = null;
+  try {
+    const source = asset.src ? new UrlSource(asset.url) : new BlobSource((await assetBlob(mediaId)) as Blob);
+    input = new Input({ source, formats: VIDEO_INPUT_FORMATS });
+    const track = await input.getPrimaryAudioTrack();
+    if (track) {
+      const sink = new AudioBufferSink(track);
+      const parts: AudioBuffer[] = [];
+      let start = begin;
+      for await (const wrapped of sink.buffers(begin, to)) {
+        if (parts.length === 0) start = wrapped.timestamp;
+        parts.push(wrapped.buffer);
+      }
+      if (parts.length > 0) {
+        const merged = mergeAudioParts(parts);
+        // 範囲が素材の外だと、最後の断片が 1 つだけ返ることがある。範囲に掛かっていなければ「無い」とする。
+        if (start >= to || start + merged.duration <= begin) return null;
+        return { buffer: merged, start };
+      }
+    }
+  } catch {
+    /* 映像コンテナではない、音声トラックが無い、デコードに失敗した等。下の方法へ。 */
+  } finally {
+    input?.dispose();
+  }
+
+  // mp3・wav など。こちらは全部を読むしかないので、読んだあとで範囲だけ切り出す。
+  const whole = await decodeAssetAudio(mediaId);
+  if (!whole) return null;
+  const rate = whole.sampleRate;
+  const first = Math.min(whole.length, Math.floor(begin * rate));
+  const last = Math.min(whole.length, Math.ceil(to * rate));
+  if (last <= first) return null;
+  return { buffer: sliceAudio(whole, first, last - first), start: first / rate };
 }
 
 /**

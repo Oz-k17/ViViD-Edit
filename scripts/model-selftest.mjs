@@ -1085,6 +1085,44 @@ eq('空文字', wrap('', 10), ['']);
   check('変わらなければ同じ参照', prune(same, order) === same);
 }
 
+// ---- 文字起こし: 選んだクリップの割り振り ----
+{
+  const { groupTranscribeTargets, cuesByPart, mergeClipCues, clipTimeline } = await import('../src/model/transcript.ts');
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
+  const T = (id, mediaId, start, duration, sourceIn, speed = 1) => ({ id, mediaId, start, duration, sourceIn, speed });
+  const cue = (start, end, text) => ({ start, end, text, speaker: null });
+
+  // 素材ごとにまとめ、使う範囲だけ（余白つき）を求める
+  const clips = [T('b', 'M2', 20, 4, 100), T('a', 'M1', 0, 5, 3600), T('c', 'M1', 5, 5, 7200), T('d', 'M1', 12, 2, 3602, 2)];
+  const groups = groupTranscribeTargets(clips, 1);
+  check('素材ごとに 2 つへまとまる（先頭のクリップの時刻順）', groups.length === 2 && groups[0].mediaId === 'M1' && groups[1].mediaId === 'M2');
+  check('同じ素材は、使う範囲の最初から最後まで（余白 1 秒）', near(groups[0].from, 3599) && near(groups[0].to, 7206), JSON.stringify([groups[0].from, groups[0].to]));
+  check('3 時間のうち使わない部分は含めない（範囲は 3599〜7206 の外へ出ない）', groups[0].from > 3000 && groups[0].to < 7300);
+  check('倍速クリップは素材内の長さで数える（3602 + 2×2）', groups[0].clips.length === 3 && near(groups[1].to, 105));
+  check('余白で 0 を下回らない', near(groupTranscribeTargets([T('x', 'M', 0, 3, 0.4)], 1)[0].from, 0));
+
+  // つないだ音 → 区間ごとの素材内時刻
+  const parts = [{ offset: 0, length: 10, from: 3600 }, { offset: 12, length: 6, from: 100 }];
+  const cues = [cue(1, 3, 'あ'), cue(13, 15, 'い'), cue(8.5, 10.5, '境目'), cue(11.2, 11.8, '無音の中')];
+  const byPart = cuesByPart(cues, parts);
+  check('1 つ目の区間の行は素材内の時刻へ戻る', byPart[0].some((c) => c.text === 'あ' && near(c.start, 3601) && near(c.end, 3603)));
+  check('2 つ目の区間の行も戻る（offset 12 → 素材の 100 秒〜）', byPart[1].some((c) => c.text === 'い' && near(c.start, 101) && near(c.end, 103)));
+  check('区間にまたがる行は、区間の中だけ残す', byPart[0].some((c) => c.text === '境目' && near(c.end, 3610)));
+  check('区間のあいだの無音に出た行は捨てる', byPart.flat().every((c) => c.text !== '無音の中'));
+
+  // 素材内時刻 → 各クリップのタイムライン時刻
+  const g1 = [{ mediaId: 'M', from: 9, to: 31, clips: [T('p', 'M', 0, 10, 10), T('q', 'M', 50, 10, 20)] }];
+  const merged = mergeClipCues(g1, [[cue(11, 13, 'x'), cue(21, 23, 'y'), cue(35, 36, '使われない')]]);
+  check('各クリップの窓に合わせて時刻が移る', merged.length === 2 && near(merged[0].start, 1) && near(merged[1].start, 51), JSON.stringify(merged.map((c) => [c.text, c.start])));
+  check('どのクリップにも使われない行は落ちる', merged.every((c) => c.text !== '使われない'));
+  const overlap = mergeClipCues(
+    [{ mediaId: 'M', from: 0, to: 10, clips: [T('p', 'M', 0, 10, 0), T('q', 'M', 0, 10, 0)] }],
+    [[cue(1, 2, '同じ')]],
+  );
+  check('同じ場面を重ねて使うと、同じ行は 1 つにする', overlap.length === 1);
+  check('結果は時刻順', mergeClipCues(groups.map((g) => ({ ...g })), [[cue(3601, 3602, 'm1')], [cue(101, 102, 'm2')]]).every((c, i, a) => i === 0 || a[i - 1].start <= c.start));
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

@@ -7,9 +7,17 @@ import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
 import { buildThreeBand } from '../../model/threeBand';
 import { DEFAULT_EFFECT_TIMING, EFFECT_SHAPES, type EffectTiming } from '../../model/effects';
-import { buildCaptionClips, clipTimeline, parseTranscript, tidyCues } from '../../model/transcript';
+import {
+  buildCaptionClips,
+  cuesByPart,
+  groupTranscribeTargets,
+  mergeClipCues,
+  parseTranscript,
+  tidyCues,
+  type ConcatPart,
+} from '../../model/transcript';
 import { WHISPER_MODELS, checkWhisper, toMono16k, transcribe, type WhisperDevice, type WhisperSupport } from '../../engine/transcribe';
-import { decodeAssetAudio } from '../../engine/offline-export';
+import { decodeAssetAudioRange } from '../../engine/offline-export';
 import { CARD_ICON_LABELS, CARD_ICON_NAMES } from '../../engine/cardIcons';
 import { sortSpeakers } from '../../engine/speakerSort';
 import {
@@ -324,7 +332,7 @@ function WhisperSection({
   setNote: (v: string) => void;
   maxChars: number;
 }) {
-  const { sequence } = useEditor();
+  const { sequence, selection } = useEditor();
   const [support, setSupport] = useState<WhisperSupport | null>(null);
   const [modelId, setModelId] = useState<string>(WHISPER_MODELS[1].id);
   const [device, setDevice] = useState<WhisperDevice>('wasm');
@@ -343,6 +351,10 @@ function WhisperSection({
 
   const sources = sequence.clips.filter((c) => c.mediaId && (c.kind === 'video' || c.kind === 'audio'));
   const chosen = sources.find((c) => c.id === sourceId) ?? sources[0] ?? null;
+  // 選んでいるクリップがあれば、そのすべてから起こす。何も選んでいないときだけ、下の「どの素材から」を使う。
+  const selectedSources = sources.filter((c) => selection.includes(c.id));
+  const targets = selectedSources.length > 0 ? selectedSources : chosen ? [chosen] : [];
+  const mediaCount = new Set(targets.map((c) => c.mediaId)).size;
 
   if (!support) return null;
   if (!support.installed) {
@@ -355,18 +367,43 @@ function WhisperSection({
   }
 
   const run = async () => {
-    if (!chosen?.mediaId || busy) return;
+    if (targets.length === 0 || busy) return;
     setBusy(true);
     // どこで止まったかで、言うべきことが変わる。
     let stage = 'audio';
     try {
-      setNote('音を取り出しています…');
-      const buffer = await decodeAssetAudio(chosen.mediaId);
-      if (!buffer) {
-        setNote('この素材から音を取り出せませんでした。');
-        return;
+      // 素材ごとに、選んだクリップが使う範囲だけを取り出し、全部を 1 本につないで 1 回で起こす
+      // （起こすたびにモデルを読み込み直すと遅いので）。つなぎ目には無音を挟み、行が混ざらないようにする。
+      const groups = groupTranscribeTargets(
+        targets.map((c) => ({
+          id: c.id,
+          mediaId: c.mediaId as string,
+          start: c.start,
+          duration: c.duration,
+          sourceIn: c.sourceIn,
+          speed: c.speed || 1,
+        })),
+      );
+      const RATE = 16000;
+      const GAP = 2;
+      const pieces: Array<{ samples: Float32Array; part: ConcatPart }> = [];
+      let cursor = 0;
+      for (let i = 0; i < groups.length; i += 1) {
+        const group = groups[i];
+        const name = mediaRegistry.get(group.mediaId)?.name ?? group.mediaId;
+        setNote(`音を取り出しています… ${i + 1} / ${groups.length}（${name}）`);
+        const decoded = await decodeAssetAudioRange(group.mediaId, group.from, group.to);
+        if (!decoded) {
+          setNote(`「${name}」から音を取り出せませんでした。`);
+          return;
+        }
+        const samples = await toMono16k(decoded.buffer);
+        pieces.push({ samples, part: { offset: cursor, length: samples.length / RATE, from: decoded.start } });
+        cursor += samples.length / RATE + GAP;
       }
-      const audio = await toMono16k(buffer);
+      const audio = new Float32Array(Math.max(1, Math.ceil((cursor - GAP) * RATE)));
+      for (const piece of pieces) audio.set(piece.samples, Math.round(piece.part.offset * RATE));
+
       const result = await transcribe(audio, {
         modelId,
         device,
@@ -400,7 +437,14 @@ function WhisperSection({
       const extra =
         `声のある所は全体の ${Math.round(result.kept * 100)}%。` +
         (dropped > 0 ? `幻とみて ${dropped} 行落としました（${parts.join(' / ')}）。` : '');
-      place(clipTimeline(result.cues, chosen), extra);
+      // つないだ音の中の時刻 → 素材内の時刻 → 選んだ各クリップのタイムライン上の時刻。
+      const placed = mergeClipCues(groups, cuesByPart(result.cues, pieces.map((p) => p.part)));
+      if (placed.length === 0) {
+        setNote('選んだクリップの範囲に、言葉は見つかりませんでした。');
+        return;
+      }
+      const scope = targets.length > 1 ? `選んだ ${targets.length} 個のクリップ（素材 ${mediaCount} 本）から起こしました。` : '';
+      place(placed, scope + extra);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // 取りに行けなかったときは、どちらを取りに行って駄目だったのかまで言わないと直せない。
@@ -421,8 +465,13 @@ function WhisperSection({
   return (
     <>
       <p className="muted small">または、音から直接起こす</p>
-      <Field label="どの素材から">
-        <select value={chosen?.id ?? ''} onChange={(e) => setSourceId(e.target.value)}>
+      {selectedSources.length > 0 ? (
+        <p className="muted small">
+          選んでいる {selectedSources.length} 個のクリップ（素材 {mediaCount} 本）から、使っている範囲だけを起こします。
+        </p>
+      ) : null}
+      <Field label={selectedSources.length > 0 ? 'どの素材から（クリップを選んでいないとき）' : 'どの素材から'}>
+        <select value={chosen?.id ?? ''} onChange={(e) => setSourceId(e.target.value)} disabled={selectedSources.length > 0}>
           {sources.length === 0 && <option value="">（タイムラインに映像か音がありません）</option>}
           {sources.map((c) => (
             <option key={c.id} value={c.id}>
@@ -461,7 +510,7 @@ function WhisperSection({
         onChange={setCareful}
       />
       <Toggle label="手元に置いたモデルだけを使う（ネット無し）" checked={local} onChange={setLocal} />
-      <button type="button" className="wide" disabled={busy || !chosen} onClick={() => void run()}>
+      <button type="button" className="wide" disabled={busy || targets.length === 0} onClick={() => void run()}>
         {busy ? '起こしています…' : '音から文字を起こす'}
       </button>
     </>

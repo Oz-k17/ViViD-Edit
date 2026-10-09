@@ -68,6 +68,10 @@ function beginDrag(
 ) {
   event.preventDefault();
   event.stopPropagation();
+  // preventDefault はフォーカスの移動も止めてしまう。直前に素材パネルなどにあったフォーカスが残ると、
+  // タイムラインを触ったあとの Delete / Ctrl+A がそちらへ飛ぶ（素材の削除確認が出てしまう）。外しておく。
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active !== document.body) active.blur();
   const startX = event.clientX;
   const startY = event.clientY;
   const move = (e: PointerEvent) => onMove(e.clientX - startX, e.clientY - startY, e);

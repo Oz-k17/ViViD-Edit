@@ -425,6 +425,99 @@ export function clipTimeline(cues: Cue[], window: ClipWindow): Cue[] {
   return out;
 }
 
+/** 文字起こしの対象にするクリップ（素材と、その使い方）。 */
+export interface TranscribeTarget extends ClipWindow {
+  id: string;
+  mediaId: string;
+}
+
+/** 同じ素材から選ばれたクリップのまとまり。`from`〜`to` の範囲だけ起こせば足りる。 */
+export interface TranscribeGroup<T extends TranscribeTarget = TranscribeTarget> {
+  mediaId: string;
+  /** 素材内の秒。クリップが使う範囲の外側に `pad` 秒ずつ余白を足してある。 */
+  from: number;
+  to: number;
+  clips: T[];
+}
+
+/**
+ * 選んだクリップを素材ごとにまとめ、素材ごとに「使う範囲だけ」を求める。
+ * 同じ素材を何度も起こさず、使わない部分（3 時間のうちの 10 秒、など）は起こさない。
+ * 余白 `pad` は、範囲の端で言葉が切れて聞き取りにくくなるのを避けるため。
+ * 順番は、最初に出てくるクリップの時刻順。
+ */
+export function groupTranscribeTargets<T extends TranscribeTarget>(clips: T[], pad = 1): TranscribeGroup<T>[] {
+  const groups = new Map<string, TranscribeGroup<T>>();
+  const ordered = [...clips].sort((a, b) => a.start - b.start);
+  for (const clip of ordered) {
+    const speed = clip.speed || 1;
+    const from = clip.sourceIn;
+    const to = clip.sourceIn + clip.duration * speed;
+    const group = groups.get(clip.mediaId);
+    if (!group) {
+      groups.set(clip.mediaId, { mediaId: clip.mediaId, from, to, clips: [clip] });
+    } else {
+      group.from = Math.min(group.from, from);
+      group.to = Math.max(group.to, to);
+      group.clips.push(clip);
+    }
+  }
+  return [...groups.values()].map((g) => ({ ...g, from: Math.max(0, g.from - pad), to: g.to + pad }));
+}
+
+/** つないだ音の中の 1 区間。`offset` は、つないだ音の中での位置（秒）、`from` は素材内の位置（秒）。 */
+export interface ConcatPart {
+  offset: number;
+  length: number;
+  from: number;
+}
+
+/**
+ * 複数の素材の音を 1 本につないで起こした結果を、区間ごとの「素材内の時刻」へ戻す。
+ * 行はまんなかの時刻で区間に振り分ける（区間のあいだには無音を挟むので、またがる行はほぼ無い）。
+ * 区間にまたがっていても、区間の外へはみ出した分は切る。
+ */
+export function cuesByPart(cues: Cue[], parts: ConcatPart[]): Cue[][] {
+  const out: Cue[][] = parts.map(() => []);
+  for (const cue of cues) {
+    const mid = (cue.start + cue.end) / 2;
+    const index = parts.findIndex((p) => mid >= p.offset && mid < p.offset + p.length);
+    if (index === -1) continue;
+    const part = parts[index];
+    const to = (t: number) => Math.min(part.from + part.length, Math.max(part.from, t - part.offset + part.from));
+    const start = to(cue.start);
+    const end = to(cue.end);
+    if (end <= start) continue;
+    out[index].push({
+      ...cue,
+      start,
+      end,
+      words: cue.words?.map((w) => ({ ...w, start: to(w.start), end: to(w.end) })),
+    });
+  }
+  return out;
+}
+
+/**
+ * 素材ごとの結果（素材内の時刻）を、選んだ各クリップのタイムライン上の時刻へ置き直して 1 本にする。
+ * 2 つのクリップが同じ場面を重ねて使っていると、同じ行が 2 つできるので、同じ時刻・同じ文は 1 つにする。
+ */
+export function mergeClipCues<T extends TranscribeTarget>(groups: TranscribeGroup<T>[], cuesPerGroup: Cue[][]): Cue[] {
+  const seen = new Set<string>();
+  const out: Cue[] = [];
+  groups.forEach((group, i) => {
+    for (const clip of group.clips) {
+      for (const cue of clipTimeline(cuesPerGroup[i] ?? [], clip)) {
+        const key = `${Math.round(cue.start * 100)}|${Math.round(cue.end * 100)}|${cue.text}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(cue);
+      }
+    }
+  });
+  return out.sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
 export interface TidyOptions {
   /** 1 つのテロップに入れる文字数の上限。 */
   maxChars?: number;
