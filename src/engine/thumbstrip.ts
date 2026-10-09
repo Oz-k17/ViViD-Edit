@@ -13,6 +13,7 @@
  */
 import { BlobSource, CanvasSink, EncodedPacketSink, Input, UrlSource } from 'mediabunny';
 import { useSyncExternalStore } from 'react';
+import { isNativeHost } from './exporter';
 import { VIDEO_INPUT_FORMATS } from './formats';
 import { mediaRegistry } from './media';
 
@@ -75,6 +76,9 @@ export function stripFrameAt(id: string | null, sourceTime: number): ImageBitmap
 
 /** 長い動画すべてについて、まだ無ければ作る（1 本ずつ、裏で）。 */
 export function ensureStrips() {
+  // iPad アプリ版（WKWebView）は、メモリが足りなくなると表示ごと終了させられる。
+  // 裏で何百枚もデコードする下見の絵は、ここでは作らない（普通のシークだけで動く）。
+  if (isNativeHost()) return;
   // 消された素材の絵は手放す。
   for (const id of [...strips.keys()]) if (!mediaRegistry.get(id)) dropStrip(id);
   for (const asset of mediaRegistry.all()) {

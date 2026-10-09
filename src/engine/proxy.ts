@@ -30,6 +30,7 @@ import {
   type StreamTargetChunk,
 } from 'mediabunny';
 import { useSyncExternalStore } from 'react';
+import { isNativeHost } from './exporter';
 import { VIDEO_INPUT_FORMATS } from './formats';
 import { deleteProxyFile, mediaRegistry, PROXY_DIR, type ProxyInfo } from './media';
 
@@ -40,6 +41,7 @@ const AUDIO_BITRATE = 96_000;
 const KEYFRAME_SECONDS = 1;
 /** OPFS が使えないとき、メモリで作ってよい大きさの上限。 */
 const MEMORY_LIMIT_BYTES = 350 * 1024 * 1024;
+const NATIVE_MEMORY_LIMIT_BYTES = 80 * 1024 * 1024;
 
 /** 素材ごとの作業の様子。 */
 export type ProxyJob =
@@ -180,10 +182,15 @@ async function build(id: string) {
     if (!file) {
       const duration = await input.computeDuration().catch(() => asset.duration);
       const estimate = (duration * (VIDEO_BITRATE + AUDIO_BITRATE)) / 8;
-      if (estimate > MEMORY_LIMIT_BYTES) {
+      // iPad アプリ版は、使えるメモリが小さく、超えると表示ごと終了させられるので、上限を低くする。
+      const limit = isNativeHost() ? NATIVE_MEMORY_LIMIT_BYTES : MEMORY_LIMIT_BYTES;
+      if (estimate > limit) {
         throw new Error(
-          'この開き方ではブラウザ内のファイル領域が使えず、長い動画の軽量版はメモリに収まりません' +
-            `（約 ${Math.round(estimate / 1024 / 1024)}MB）。index.html を直接開いている場合は、Web サーバ経由で開いてください。`,
+          isNativeHost()
+            ? `iPad アプリ版では、軽量版はメモリに収まる短い動画（目安 数分）だけ作れます（この動画は約 ${Math.round(estimate / 1024 / 1024)}MB 必要）。` +
+                '長い動画は、NAS の Docker に作らせるか、元の動画のまま使ってください。'
+            : 'この開き方ではブラウザ内のファイル領域が使えず、長い動画の軽量版はメモリに収まりません' +
+                `（約 ${Math.round(estimate / 1024 / 1024)}MB）。index.html を直接開いている場合は、Web サーバ経由で開いてください。`,
         );
       }
     }

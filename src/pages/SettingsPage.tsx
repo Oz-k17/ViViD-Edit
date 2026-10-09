@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { Diagnostics } from '../components/Diagnostics';
 import { LayoutToggle } from '../components/LayoutToggle';
 import { Brand, SiteNav } from '../components/SiteNav';
 import { Field, Panel, Segmented, Toggle } from '../components/ui';
@@ -398,6 +399,14 @@ export default function SettingsPage() {
             直したはずのものが出ないときは、まずこの日時を見てください。
             古ければ、配り先（NAS のコンテナ・GitHub Pages・落とした zip）が入れ替わっていません。
           </p>
+        </Panel>
+
+        <Panel title="この端末の診断">
+          <p className="muted small">
+            動きが不安定なとき、何が使えない端末なのかを調べます。iPad のように開発者ツールが使えない端末で、
+            症状を伝える手がかりになります。下をコピーして、症状と一緒に送ってください。
+          </p>
+          <Diagnostics />
         </Panel>
       </main>
     </div>
