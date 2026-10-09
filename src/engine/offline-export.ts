@@ -14,11 +14,11 @@
  */
 
 import { finishMix } from './finish';
+import { canWriteFiles, FILE_SINK_THRESHOLD_BYTES, openExportSink } from './export-sink';
 import {
   AudioBufferSink,
   AudioBufferSource,
   BlobSource,
-  BufferTarget,
   CanvasSink,
   CanvasSource,
   Input,
@@ -45,6 +45,8 @@ const SAMPLE_RATE = 48_000;
 const CHANNELS = 2;
 /** 音を出力へ流し込む単位（秒）。まとめて渡すとメモリを食うので刻む。 */
 const AUDIO_CHUNK_SECONDS = 1;
+/** 音量の仕上げ（全体を見て整える）をする上限の長さ。これを超えると全長のバッファが大きすぎる。 */
+const FINISH_AUDIO_MAX_SECONDS = 600;
 
 /** この方式が使えない環境であることを示す（呼び出し側は従来の収録方式へ切り替える）。 */
 export class FrameExportUnsupported extends Error {}
@@ -59,6 +61,10 @@ export interface FrameExportOptions {
   format: 'auto' | 'mp4' | 'webm';
   /** 書き出す音に音量仕上げ（-14 LUFS・-1 dBTP）を当てる（試験的）。 */
   finishAudio?: boolean;
+  /** 大きい出力をファイルへ書き始める見込みサイズ（バイト）。試験用に変えられる。 */
+  fileThresholdBytes?: number;
+  /** 音を区間に分けて作る長さ（秒）。試験用に変えられる。 */
+  audioSegmentSeconds?: number;
   /**
    * 高速エンコード（既定は切）。ソフトウェアの符号化（VP9 など）で `latencyMode: 'realtime'` を使う。
    * 画面の動きが激しい合成フレームでは、画質・サイズを変えずに 2.6 倍速かった（43ms → 17ms / コマ）が、
@@ -142,9 +148,11 @@ async function pickTarget(
   height: number,
   bitrate: number,
   needsAudio: boolean,
+  streaming: boolean,
 ): Promise<PickedTarget | null> {
   const mp4 = {
-    make: () => new Mp4OutputFormat({ fastStart: 'in-memory' as const }),
+    // ファイルへ書くときは目次（moov）を末尾に置く。先頭に置くには全部をメモリに溜める必要がある。
+    make: () => new Mp4OutputFormat({ fastStart: streaming ? (false as const) : ('in-memory' as const) }),
     ext: 'mp4',
     // MP4 を選ぶ意味は「どこでも再生できる」ことなので、H.264 / H.265 が使えないなら
     // 中途半端な MP4 を作らず WebM に回す。
@@ -318,140 +326,91 @@ export async function decodeAssetAudioRange(
   return { buffer: sliceAudio(whole, first, last - first), start: first / rate };
 }
 
+/** 音量の時間変化。折れ線（時刻は絶対秒）。 */
+type GainPoints = { t: number; v: number }[];
+
+function gainAt(points: GainPoints, t: number): number {
+  if (points.length === 0) return 1;
+  if (t <= points[0].t) return points[0].v;
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1];
+    const b = points[i];
+    if (t <= b.t) return b.t === a.t ? b.v : a.v + ((b.v - a.v) * (t - a.t)) / (b.t - a.t);
+  }
+  return points[points.length - 1].v;
+}
+
+/** 1 本ぶんの鳴らし方（タイムライン上の絶対時刻で持つ）。 */
+interface AudioJob {
+  mediaId: string;
+  /** タイムライン上の開始秒と長さ。 */
+  at: number;
+  wall: number;
+  /** 素材内の開始秒。 */
+  sourceOffset: number;
+  speed: number;
+  gain: GainPoints;
+  /** ループするクリップは素材の頭から繰り返す（素材の全体が要る）。 */
+  loop: { start: number } | null;
+}
+
+/** 区間ごとに作れるミキサー。全長を 1 本のバッファにせず、30 秒ずつなど必要な所だけ作る。 */
+export interface AudioMixer {
+  /** 全長（標本数）。 */
+  length: number;
+  /** `fromSample` から `count` 標本ぶんをミックスする。 */
+  renderSegment(fromSample: number, count: number): Promise<AudioBuffer>;
+  dispose(): void;
+}
+
+/** 区間の手前から余分にデコードする長さ（秒）。 */
+const AUDIO_PREROLL_SECONDS = 0.5;
+
+/** ミキサーが 1 区間で作る長さ（秒）。 */
+export const AUDIO_SEGMENT_SECONDS = 30;
+
 /**
- * タイムライン全体の音を 1 本にミックスする。
- * 実時間で鳴らさず OfflineAudioContext で一括計算するので、
- * 端末が重くてもプチノイズや欠落が入りようがない。
+ * タイムライン全体の音を、区間ごとにミックスできる形で用意する。
+ * 実時間で鳴らさず OfflineAudioContext で計算するので、端末が重くてもプチノイズや欠落が入りようがない。
+ *
+ * 全長を 1 本で作ると、3 時間ならそれだけで約 4GB になる。区間ごとに作って、
+ * 出力へ流し込んだらすぐ捨てれば、長さに関わらずメモリは区間ぶんで済む。
+ * どの素材にも音が無いときは null。
  */
-async function renderAudioMix(sequence: Sequence, duration: number): Promise<AudioBuffer | null> {
+export async function createAudioMixer(sequence: Sequence, duration: number): Promise<AudioMixer | null> {
   const sounding = sequence.clips.filter((c) => (c.kind === 'video' || c.kind === 'audio') && c.mediaId);
   if (sounding.length === 0) return null;
-
   const trackById = new Map(sequence.tracks.map((t) => [t.id, t]));
 
-  // 素材ごとに、実際に鳴らす範囲だけをデコードする。素材全体をデコードすると、
-  // メモリも時間も**素材の長さ**に比例して食う（3 時間の素材なら音だけで約 4GB。使うのが 10 秒でも）。
-  // ループするクリップは素材の頭から繰り返すので、そこだけは全体が要る。
-  const needs = new Map<string, { from: number; to: number; whole: boolean }>();
-  const want = (mediaId: string, from: number, to: number, whole = false) => {
-    const need = needs.get(mediaId);
-    if (!need) needs.set(mediaId, { from, to, whole });
-    else {
-      need.from = Math.min(need.from, from);
-      need.to = Math.max(need.to, to);
-      need.whole = need.whole || whole;
-    }
-  };
+  const jobs: AudioJob[] = [];
   for (const clip of sounding) {
     if (clip.muted || trackById.get(clip.trackId)?.muted) continue;
-    const end = Math.min(duration, clip.start + clip.duration);
-    if (end <= Math.max(0, clip.start)) continue;
-    const speed = clampSpeed(clip.speed);
-    want(clip.mediaId as string, clip.sourceIn, clip.sourceIn + (end - Math.max(0, clip.start)) * speed, clip.loop);
-  }
-  for (const clip of sequence.clips) {
-    if (clip.kind !== 'video') continue;
-    const transition = clip.transitionIn;
-    if (transition.type === 'none' || transition.duration <= 0) continue;
-    const previous = previousAdjacent(sequence, clip);
-    if (!previous || !previous.mediaId || previous.muted || trackById.get(previous.trackId)?.muted) continue;
-    const speed = clampSpeed(previous.speed);
-    const from = previous.sourceIn + previous.duration * speed;
-    want(previous.mediaId, from, from + transition.duration * speed);
-  }
-
-  /** デコードした音と、その先頭が素材の何秒にあたるか。 */
-  interface DecodedAudio {
-    buffer: AudioBuffer;
-    start: number;
-  }
-  const decoded = new Map<string, DecodedAudio | null>();
-  for (const [mediaId, need] of needs) {
-    if (need.whole) {
-      const buffer = await decodeAssetAudio(mediaId);
-      decoded.set(mediaId, buffer ? { buffer, start: 0 } : null);
-    } else {
-      // 範囲の前後に少し余白を持たせる（コマの区切りで、端が欠けないように）。
-      decoded.set(mediaId, await decodeAssetAudioRange(mediaId, need.from - 0.1, need.to + 0.1));
-    }
-  }
-
-  if (![...decoded.values()].some(Boolean)) return null;
-
-  const length = Math.max(1, Math.ceil(duration * SAMPLE_RATE));
-  const ctx = new OfflineAudioContext(CHANNELS, length, SAMPLE_RATE);
-  let scheduled = 0;
-
-  /** 1 本ぶんの音を置く。gainShape が音量の時間変化を組み立てる。 */
-  const place = (
-    audio: DecodedAudio,
-    startAt: number,
-    sourceOffset: number,
-    wallSeconds: number,
-    speed: number,
-    shape: (gain: GainNode, from: number, to: number) => void,
-    loop: { start: number } | null,
-  ) => {
-    const { buffer } = audio;
-    // sourceOffset は素材内の秒。範囲だけをデコードしたときは、バッファの先頭が素材の `audio.start` 秒にあたる。
-    let offset = sourceOffset - audio.start;
-    let at = startAt;
-    let wall = wallSeconds;
-    if (offset < 0) {
-      // デコードできた範囲の手前（コマの区切りのずれ）。そのぶん開始を遅らせる。
-      const shift = -offset / speed;
-      at += shift;
-      wall -= shift;
-      offset = 0;
-    }
-    if (wall <= 0 || offset >= buffer.duration) return;
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.playbackRate.value = speed;
-    const gain = ctx.createGain();
-    source.connect(gain);
-    gain.connect(ctx.destination);
-    shape(gain, at, at + wall);
-    if (loop) {
-      source.loop = true;
-      source.loopStart = Math.min(loop.start - audio.start, Math.max(0, buffer.duration - 0.05));
-      source.loopEnd = buffer.duration;
-    }
-    source.start(at, offset, wall * speed);
-    source.stop(at + wall);
-    scheduled += 1;
-  };
-
-  for (const clip of sounding) {
-    const buffer = decoded.get(clip.mediaId as string);
-    if (!buffer) continue;
-    if (clip.muted || trackById.get(clip.trackId)?.muted) continue;
-
     const start = Math.max(0, clip.start);
     const end = Math.min(duration, clip.start + clip.duration);
     if (end <= start) continue;
     const volume = Math.max(0, clip.volume);
     const speed = clampSpeed(clip.speed);
-
-    place(
-      buffer,
-      start,
-      clip.sourceIn,
-      end - start,
+    // プレビュー側の fadeEnvelope と同じ直線フェード。
+    const wall = end - start;
+    const fadeIn = Math.max(0, Math.min(clip.fadeIn, wall));
+    const fadeOut = Math.max(0, Math.min(clip.fadeOut, wall));
+    const gain: GainPoints = [{ t: start, v: fadeIn > 0 ? 0 : volume }];
+    if (fadeIn > 0) gain.push({ t: start + fadeIn, v: volume });
+    if (fadeOut > 0) {
+      gain.push({ t: Math.max(start, end - fadeOut), v: volume });
+      gain.push({ t: end, v: 0 });
+    } else {
+      gain.push({ t: end, v: volume });
+    }
+    jobs.push({
+      mediaId: clip.mediaId as string,
+      at: start,
+      wall,
+      sourceOffset: clip.sourceIn,
       speed,
-      (gain, from, to) => {
-        // プレビュー側の fadeEnvelope と同じ直線フェード。
-        const fadeIn = Math.max(0, Math.min(clip.fadeIn, to - from));
-        const fadeOut = Math.max(0, Math.min(clip.fadeOut, to - from));
-        gain.gain.setValueAtTime(fadeIn > 0 ? 0 : volume, from);
-        if (fadeIn > 0) gain.gain.linearRampToValueAtTime(volume, from + fadeIn);
-        if (fadeOut > 0) {
-          gain.gain.setValueAtTime(volume, Math.max(from, to - fadeOut));
-          gain.gain.linearRampToValueAtTime(0, to);
-        }
-      },
-      clip.loop ? { start: clip.sourceIn } : null,
-    );
+      gain,
+      loop: clip.loop ? { start: clip.sourceIn } : null,
+    });
   }
 
   // トランジション中は前のカットの音も引き延ばして重ねる（プレビューと同じ）。
@@ -464,29 +423,150 @@ async function renderAudioMix(sequence: Sequence, duration: number): Promise<Aud
     if (previous.muted || trackById.get(previous.trackId)?.muted) continue;
     // プレビュー側は fadeOut があると引き延ばし分が無音になるので、ここでも合わせる。
     if (previous.fadeOut > 0) continue;
-    const buffer = decoded.get(previous.mediaId);
-    if (!buffer) continue;
-
     const speed = clampSpeed(previous.speed);
-    const startAt = clip.start;
-    const span = Math.min(transition.duration, Math.max(0, duration - startAt));
+    const span = Math.min(transition.duration, Math.max(0, duration - clip.start));
+    if (span <= 0) continue;
     const volume = Math.max(0, previous.volume);
-    place(
-      buffer,
-      startAt,
-      previous.sourceIn + previous.duration * speed,
-      span,
+    jobs.push({
+      mediaId: previous.mediaId,
+      at: clip.start,
+      wall: span,
+      sourceOffset: previous.sourceIn + previous.duration * speed,
       speed,
-      (gain, from, to) => {
-        gain.gain.setValueAtTime(volume, from);
-        gain.gain.linearRampToValueAtTime(0, to);
-      },
-      null,
-    );
+      gain: [
+        { t: clip.start, v: volume },
+        { t: clip.start + span, v: 0 },
+      ],
+      loop: null,
+    });
   }
+  if (jobs.length === 0) return null;
 
-  if (scheduled === 0) return null;
-  return ctx.startRendering();
+  // 音を持つ素材があるか。素材ごとに頭の少しだけデコードして確かめる（全部は読まない）。
+  let anyAudio = false;
+  for (const mediaId of new Set(jobs.map((j) => j.mediaId))) {
+    const probe = await decodeAssetAudioRange(mediaId, 0, 0.5).catch(() => null);
+    if (probe) {
+      anyAudio = true;
+      break;
+    }
+  }
+  if (!anyAudio) return null;
+
+  /** 全体が要る素材（ループ）は一度だけデコードして持つ。 */
+  const wholeCache = new Map<string, { buffer: AudioBuffer; start: number } | null>();
+  const length = Math.max(1, Math.ceil(duration * SAMPLE_RATE));
+
+  const renderSegment = async (fromSample: number, count: number): Promise<AudioBuffer> => {
+    const t0 = fromSample / SAMPLE_RATE;
+    const t1 = (fromSample + count) / SAMPLE_RATE;
+    const ctx = new OfflineAudioContext(CHANNELS, Math.max(1, count), SAMPLE_RATE);
+
+    interface Piece {
+      job: AudioJob;
+      /** 区間内での開始・終了（絶対秒）。 */
+      a0: number;
+      a1: number;
+      offset: number;
+    }
+    const pieces: Piece[] = [];
+    for (const job of jobs) {
+      const a0 = Math.max(job.at, t0);
+      const a1 = Math.min(job.at + job.wall, t1);
+      if (a1 <= a0) continue;
+      pieces.push({ job, a0, a1, offset: job.sourceOffset + (a0 - job.at) * job.speed });
+    }
+
+    // 素材ごとに、この区間で鳴らす範囲だけをデコードする。
+    const need = new Map<string, { from: number; to: number }>();
+    for (const { job, offset, a0, a1 } of pieces) {
+      if (job.loop) continue;
+      const to = offset + (a1 - a0) * job.speed;
+      const n = need.get(job.mediaId);
+      if (!n) need.set(job.mediaId, { from: offset, to });
+      else {
+        n.from = Math.min(n.from, offset);
+        n.to = Math.max(n.to, to);
+      }
+    }
+    const decoded = new Map<string, { buffer: AudioBuffer; start: number } | null>();
+    for (const [mediaId, range] of need) {
+      // 範囲の前後に余白を持たせる（コマの区切りで端が欠けないように）。手前は長めに取る:
+      // 圧縮音声は途中から読み始めると、最初の数十ミリ秒はデコーダの状態が整わず、継ぎ目で小さなプチ音になる。
+      decoded.set(mediaId, await decodeAssetAudioRange(mediaId, range.from - AUDIO_PREROLL_SECONDS, range.to + 0.1));
+    }
+    for (const { job } of pieces) {
+      if (job.loop && !wholeCache.has(job.mediaId)) {
+        const buffer = await decodeAssetAudio(job.mediaId);
+        wholeCache.set(job.mediaId, buffer ? { buffer, start: 0 } : null);
+      }
+    }
+
+    for (const { job, a0, a1, offset: rawOffset } of pieces) {
+      const audio = job.loop ? wholeCache.get(job.mediaId) : decoded.get(job.mediaId);
+      if (!audio) continue;
+      const { buffer } = audio;
+      const speed = job.speed;
+      let offset = rawOffset - audio.start;
+      let at = a0;
+      let wall = a1 - a0;
+      if (job.loop) {
+        // 区間の途中から入るとき、ループ内の位置に直す。
+        const loopStart = Math.min(job.loop.start - audio.start, Math.max(0, buffer.duration - 0.05));
+        const span = buffer.duration - loopStart;
+        if (offset >= buffer.duration && span > 0) offset = loopStart + ((offset - loopStart) % span);
+      } else if (offset < 0) {
+        // デコードできた範囲の手前（コマの区切りのずれ）。そのぶん開始を遅らせる。
+        const shift = -offset / speed;
+        at += shift;
+        wall -= shift;
+        offset = 0;
+      }
+      if (wall <= 0 || offset >= buffer.duration) continue;
+      // 素材内の位置が標本のちょうど上にあるはずのとき、浮動小数点の誤差で 1 標本ずれないよう吸い寄せる
+      // （区間の継ぎ目で、位相が 1 標本ずれて小さなプチ音になるのを防ぐ）。
+      const frames = offset * buffer.sampleRate;
+      if (Math.abs(frames - Math.round(frames)) < 0.01) offset = Math.round(frames) / buffer.sampleRate;
+
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.playbackRate.value = speed;
+      const gain = ctx.createGain();
+      source.connect(gain);
+      gain.connect(ctx.destination);
+      // 音量: 折れ線を、この区間内の時刻（区間の先頭が 0 秒）に写して予約する。
+      const param = gain.gain;
+      param.setValueAtTime(gainAt(job.gain, at), at - t0);
+      for (const p of job.gain) {
+        if (p.t > at && p.t < at + wall) param.linearRampToValueAtTime(p.v, p.t - t0);
+      }
+      param.linearRampToValueAtTime(gainAt(job.gain, at + wall), at + wall - t0);
+      if (job.loop) {
+        source.loop = true;
+        source.loopStart = Math.min(job.loop.start - audio.start, Math.max(0, buffer.duration - 0.05));
+        source.loopEnd = buffer.duration;
+      }
+      source.start(at - t0, offset, wall * speed);
+      source.stop(at + wall - t0);
+    }
+    return ctx.startRendering();
+  };
+
+  return { length, renderSegment, dispose: () => wholeCache.clear() };
+}
+
+/**
+ * タイムライン全体の音を 1 本にミックスする（短い動画の音量仕上げ・試験用）。
+ * 長い動画では全長のバッファが巨大になるので、通常の書き出しは `createAudioMixer` の区間ごとを使う。
+ */
+export async function renderAudioMix(sequence: Sequence, duration: number): Promise<AudioBuffer | null> {
+  const mixer = await createAudioMixer(sequence, duration);
+  if (!mixer) return null;
+  try {
+    return await mixer.renderSegment(0, mixer.length);
+  } finally {
+    mixer.dispose();
+  }
 }
 
 /** ミックス済みの音を、出力へ渡せる長さに切り出す。 */
@@ -536,25 +616,44 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
   // 「音を載せられる入れ物か」で形式を選び分けるのにも要るため。
   // 音の取り出しに失敗しても、映像だけは必ず書き出せるようにする
   // （そのぶん下で警告を出す）。
-  let mix = await renderAudioMix(sequence, duration).catch(() => null);
+  let mixer = await createAudioMixer(sequence, duration).catch(() => null);
+  /** 音量仕上げをしたときだけ、全長を 1 本にしたもの（短い動画に限る）。 */
+  let wholeMix: AudioBuffer | null = null;
   let note: string | undefined;
-  if (mix && options.finishAudio) {
-    try {
-      const finished = finishMix(mix);
-      mix = finished.buffer;
-      note = `音量を整えました: ${finished.report.summary}`;
-    } catch {
-      note = '音量を整えられなかったので、そのまま書き出しました';
+  if (mixer && options.finishAudio) {
+    if (duration > FINISH_AUDIO_MAX_SECONDS) {
+      note = `長い動画（${Math.round(FINISH_AUDIO_MAX_SECONDS / 60)} 分超）では、音量の仕上げは省きました（全体を一度に計算するとメモリが足りなくなるため）`;
+    } else {
+      try {
+        const rendered = await mixer.renderSegment(0, mixer.length);
+        try {
+          const finished = finishMix(rendered);
+          wholeMix = finished.buffer;
+          note = `音量を整えました: ${finished.report.summary}`;
+        } catch {
+          wholeMix = rendered;
+          note = '音量を整えられなかったので、そのまま書き出しました';
+        }
+      } catch {
+        mixer.dispose();
+        mixer = null;
+      }
     }
   }
   if (isCancelled()) throw new Error('書き出しを中止しました');
+
+  // 出力が大きいときはメモリに溜めず、ファイルへ書く。
+  const estimateBytes = Math.ceil(((options.bitrate + (mixer ? 128_000 : 0)) * duration * 1.1) / 8);
+  const fileThreshold = options.fileThresholdBytes ?? FILE_SINK_THRESHOLD_BYTES;
+  const streaming = estimateBytes >= fileThreshold && (await canWriteFiles());
 
   const picked = await pickTarget(
     options.format,
     sequence.width,
     sequence.height,
     options.bitrate,
-    mix !== null,
+    mixer !== null,
+    streaming,
   );
   if (!picked) throw new FrameExportUnsupported('この環境では書き出しに使えるコーデックが見つかりませんでした');
 
@@ -564,7 +663,17 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
   const ctx = canvas.getContext('2d', { alpha: false });
   if (!ctx) throw new Error('キャンバスを初期化できませんでした');
 
-  const output = new Output({ format: picked.format, target: new BufferTarget() });
+  const sink = await openExportSink(estimateBytes, picked.ext, fileThreshold);
+  if (sink.wantedFile && sink.kind === 'memory') {
+    const mb = Math.round(estimateBytes / 1024 / 1024);
+    note = [
+      note,
+      `出力が大きい（約 ${mb}MB）のに、この環境ではファイルへ逃がせないため、メモリ上で書き出します。途中で止まるときは、長さを分けるか画質を下げてください`,
+    ]
+      .filter(Boolean)
+      .join(' / ');
+  }
+  const output = new Output({ format: picked.format, target: sink.target });
   let packets = 0;
   const realtime = fast && picked.videoCodec !== 'avc' && picked.videoCodec !== 'hevc';
   const videoSource = new CanvasSource(canvas, {
@@ -580,7 +689,7 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
   output.addVideoTrack(videoSource, { frameRate: fps });
 
   const audioSource =
-    mix && picked.audioCodec
+    mixer && picked.audioCodec
       ? new AudioBufferSource({ codec: picked.audioCodec, quality: new Quality({ bitrate: 128_000 }) })
       : null;
   if (audioSource) output.addAudioTrack(audioSource);
@@ -729,21 +838,41 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
     inputs.clear();
   });
 
+  let audioFailed = false;
   try {
     await output.start();
 
-    const mixChannels = mix?.numberOfChannels ?? 0;
-    const mixLength = mix?.length ?? 0;
+    const mixLength = mixer?.length ?? 0;
     let audioSamplesSent = 0;
     const chunkSamples = Math.round(AUDIO_CHUNK_SECONDS * SAMPLE_RATE);
+    const segmentSamples = Math.round((options.audioSegmentSeconds ?? AUDIO_SEGMENT_SECONDS) * SAMPLE_RATE);
+    /** いま流し込んでいる区間（それより前は捨てる）。 */
+    let segment: { from: number; buffer: AudioBuffer } | null = wholeMix ? { from: 0, buffer: wholeMix } : null;
+
+    const segmentAt = async (sample: number) => {
+      if (segment && sample >= segment.from && sample < segment.from + segment.buffer.length) return segment;
+      const count = Math.min(segmentSamples, mixLength - sample);
+      let buffer: AudioBuffer;
+      try {
+        buffer = await (mixer as AudioMixer).renderSegment(sample, count);
+      } catch {
+        // この区間の音だけ作れなかった。映像は書き出し続け、無音で埋めて、最後に知らせる。
+        audioFailed = true;
+        buffer = new AudioBuffer({ length: count, numberOfChannels: CHANNELS, sampleRate: SAMPLE_RATE });
+      }
+      segment = { from: sample, buffer };
+      return segment;
+    };
 
     const pushAudioUpTo = async (seconds: number) => {
-      if (!mix || !audioSource || mixChannels === 0) return;
+      if (!mixer || !audioSource) return;
       const wanted = Math.min(mixLength, Math.ceil(seconds * SAMPLE_RATE));
       while (audioSamplesSent < wanted) {
-        const count = Math.min(chunkSamples, mixLength - audioSamplesSent);
+        const current = await segmentAt(audioSamplesSent);
+        const inSegment = current.from + current.buffer.length - audioSamplesSent;
+        const count = Math.min(chunkSamples, mixLength - audioSamplesSent, inSegment);
         if (count <= 0) break;
-        await audioSource.add(sliceAudio(mix, audioSamplesSent, count));
+        await audioSource.add(sliceAudio(current.buffer, audioSamplesSent - current.from, count));
         audioSamplesSent += count;
       }
     };
@@ -791,22 +920,24 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
     await output.finalize();
   } catch (error) {
     if (output.state === 'started' || output.state === 'pending') await output.cancel().catch(() => undefined);
+    await sink.discard();
     throw error;
   } finally {
     cleanup.forEach((fn) => fn());
+    mixer?.dispose();
   }
 
-  const buffer = (output.target as BufferTarget).buffer;
-  if (!buffer) throw new Error('書き出したデータを取り出せませんでした');
   const mimeType = await output.getMimeType();
+  const blob = await sink.finish(mimeType);
   // 音のあるプロジェクトなのに音を載せられなかった場合は、黙って無音の動画を渡さない。
   let warning: string | undefined;
   if (soundingClips(sequence) > 0) {
-    if (!mix) warning = '素材から音を取り出せなかったため、音の入っていない動画になりました。';
+    if (!mixer) warning = '素材から音を取り出せなかったため、音の入っていない動画になりました。';
     else if (!picked.audioCodec) warning = `この環境では ${picked.ext.toUpperCase()} に音を入れられませんでした。`;
+    else if (audioFailed) warning = '一部の区間で音を作れず、その間は無音になっています。';
   }
   return {
-    blob: new Blob([buffer], { type: mimeType }),
+    blob,
     mimeType,
     ext: picked.ext,
     warning,
