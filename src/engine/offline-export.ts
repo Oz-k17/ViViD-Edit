@@ -59,6 +59,14 @@ export interface FrameExportOptions {
   format: 'auto' | 'mp4' | 'webm';
   /** 書き出す音に音量仕上げ（-14 LUFS・-1 dBTP）を当てる（試験的）。 */
   finishAudio?: boolean;
+  /**
+   * 高速エンコード（既定は切）。ソフトウェアの符号化（VP9 など）で `latencyMode: 'realtime'` を使う。
+   * 画面の動きが激しい合成フレームでは、画質・サイズを変えずに 2.6 倍速かった（43ms → 17ms / コマ）が、
+   * 動きの少ない実際のプロジェクトでは差が測れなかった。**効果は中身しだい**なので、既定は切にしてある。
+   * H.264 / H.265 には使わない（ハードウェア符号化は元から速く、効果を測れていない）。
+   * エンコーダが追いつかずコマを落としたら、自動で通常モードでやり直す。
+   */
+  fast?: boolean;
   onProgress: (ratio: number) => void;
   isCancelled: () => boolean;
 }
@@ -71,6 +79,8 @@ export interface FrameExportOutput {
   warning?: string;
   /** 音量仕上げの結果など、伝えておくとよいこと。 */
   note?: string;
+  /** エンコーダが落としたコマ数（通常は 0）。呼び出し側へは渡さない内部用。 */
+  dropped?: number;
 }
 
 export function isFrameExportSupported(): boolean {
@@ -318,12 +328,52 @@ async function renderAudioMix(sequence: Sequence, duration: number): Promise<Aud
   if (sounding.length === 0) return null;
 
   const trackById = new Map(sequence.tracks.map((t) => [t.id, t]));
-  const decoded = new Map<string, AudioBuffer | null>();
 
+  // 素材ごとに、実際に鳴らす範囲だけをデコードする。素材全体をデコードすると、
+  // メモリも時間も**素材の長さ**に比例して食う（3 時間の素材なら音だけで約 4GB。使うのが 10 秒でも）。
+  // ループするクリップは素材の頭から繰り返すので、そこだけは全体が要る。
+  const needs = new Map<string, { from: number; to: number; whole: boolean }>();
+  const want = (mediaId: string, from: number, to: number, whole = false) => {
+    const need = needs.get(mediaId);
+    if (!need) needs.set(mediaId, { from, to, whole });
+    else {
+      need.from = Math.min(need.from, from);
+      need.to = Math.max(need.to, to);
+      need.whole = need.whole || whole;
+    }
+  };
   for (const clip of sounding) {
-    const mediaId = clip.mediaId as string;
-    if (decoded.has(mediaId)) continue;
-    decoded.set(mediaId, await decodeAssetAudio(mediaId));
+    if (clip.muted || trackById.get(clip.trackId)?.muted) continue;
+    const end = Math.min(duration, clip.start + clip.duration);
+    if (end <= Math.max(0, clip.start)) continue;
+    const speed = clampSpeed(clip.speed);
+    want(clip.mediaId as string, clip.sourceIn, clip.sourceIn + (end - Math.max(0, clip.start)) * speed, clip.loop);
+  }
+  for (const clip of sequence.clips) {
+    if (clip.kind !== 'video') continue;
+    const transition = clip.transitionIn;
+    if (transition.type === 'none' || transition.duration <= 0) continue;
+    const previous = previousAdjacent(sequence, clip);
+    if (!previous || !previous.mediaId || previous.muted || trackById.get(previous.trackId)?.muted) continue;
+    const speed = clampSpeed(previous.speed);
+    const from = previous.sourceIn + previous.duration * speed;
+    want(previous.mediaId, from, from + transition.duration * speed);
+  }
+
+  /** デコードした音と、その先頭が素材の何秒にあたるか。 */
+  interface DecodedAudio {
+    buffer: AudioBuffer;
+    start: number;
+  }
+  const decoded = new Map<string, DecodedAudio | null>();
+  for (const [mediaId, need] of needs) {
+    if (need.whole) {
+      const buffer = await decodeAssetAudio(mediaId);
+      decoded.set(mediaId, buffer ? { buffer, start: 0 } : null);
+    } else {
+      // 範囲の前後に少し余白を持たせる（コマの区切りで、端が欠けないように）。
+      decoded.set(mediaId, await decodeAssetAudioRange(mediaId, need.from - 0.1, need.to + 0.1));
+    }
   }
 
   if (![...decoded.values()].some(Boolean)) return null;
@@ -334,29 +384,41 @@ async function renderAudioMix(sequence: Sequence, duration: number): Promise<Aud
 
   /** 1 本ぶんの音を置く。gainShape が音量の時間変化を組み立てる。 */
   const place = (
-    buffer: AudioBuffer,
+    audio: DecodedAudio,
     startAt: number,
-    offset: number,
+    sourceOffset: number,
     wallSeconds: number,
     speed: number,
     shape: (gain: GainNode, from: number, to: number) => void,
     loop: { start: number } | null,
   ) => {
-    if (wallSeconds <= 0 || offset >= buffer.duration) return;
+    const { buffer } = audio;
+    // sourceOffset は素材内の秒。範囲だけをデコードしたときは、バッファの先頭が素材の `audio.start` 秒にあたる。
+    let offset = sourceOffset - audio.start;
+    let at = startAt;
+    let wall = wallSeconds;
+    if (offset < 0) {
+      // デコードできた範囲の手前（コマの区切りのずれ）。そのぶん開始を遅らせる。
+      const shift = -offset / speed;
+      at += shift;
+      wall -= shift;
+      offset = 0;
+    }
+    if (wall <= 0 || offset >= buffer.duration) return;
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.playbackRate.value = speed;
     const gain = ctx.createGain();
     source.connect(gain);
     gain.connect(ctx.destination);
-    shape(gain, startAt, startAt + wallSeconds);
+    shape(gain, at, at + wall);
     if (loop) {
       source.loop = true;
-      source.loopStart = Math.min(loop.start, Math.max(0, buffer.duration - 0.05));
+      source.loopStart = Math.min(loop.start - audio.start, Math.max(0, buffer.duration - 0.05));
       source.loopEnd = buffer.duration;
     }
-    source.start(startAt, offset, wallSeconds * speed);
-    source.stop(startAt + wallSeconds);
+    source.start(at, offset, wall * speed);
+    source.stop(at + wall);
     scheduled += 1;
   };
 
@@ -443,6 +505,22 @@ function sliceAudio(source: AudioBuffer, fromSample: number, sampleCount: number
 // ---------- 本体 ----------
 
 export async function runFrameAccurateExport(options: FrameExportOptions): Promise<FrameExportOutput> {
+  const fast = options.fast === true;
+  const first = await runPass(options, fast);
+  const { dropped = 0, ...output } = first;
+  if (fast && dropped > 0) {
+    // 高速モードで、エンコーダが追いつかずにコマを落とした。コマ落ちのある動画は渡さず、通常モードでやり直す。
+    const retry = await runPass(options, false);
+    const { dropped: _ignored, ...redone } = retry;
+    return {
+      ...redone,
+      note: [redone.note, `高速モードでコマが ${dropped} 個落ちたので、通常モードで書き出し直しました`].filter(Boolean).join(' / '),
+    };
+  }
+  return output;
+}
+
+async function runPass(options: FrameExportOptions, fast: boolean): Promise<FrameExportOutput> {
   const { sequence, fps, duration, onProgress, isCancelled } = options;
   if (!isFrameExportSupported()) {
     throw new FrameExportUnsupported('この環境では WebCodecs が使えません');
@@ -487,10 +565,17 @@ export async function runFrameAccurateExport(options: FrameExportOptions): Promi
   if (!ctx) throw new Error('キャンバスを初期化できませんでした');
 
   const output = new Output({ format: picked.format, target: new BufferTarget() });
+  let packets = 0;
+  const realtime = fast && picked.videoCodec !== 'avc' && picked.videoCodec !== 'hevc';
   const videoSource = new CanvasSource(canvas, {
     codec: picked.videoCodec,
     quality: new Quality({ bitrate: options.bitrate }),
     keyFrameInterval: 2,
+    latencyMode: realtime ? 'realtime' : 'quality',
+    // 出力に入ったコマを数えておく（高速モードで落とされていないかの確認用）。
+    onEncodedPacket: () => {
+      packets += 1;
+    },
   });
   output.addVideoTrack(videoSource, { frameRate: fps });
 
@@ -510,6 +595,8 @@ export async function runFrameAccurateExport(options: FrameExportOptions): Promi
     opened?: boolean;
     input?: Input;
     iterator?: AsyncGenerator<WrappedCanvas | null, void, unknown>;
+    /** 次のコマのデコード（エンコードを待つあいだに先に進めておく）。 */
+    pending?: Promise<IteratorResult<WrappedCanvas | null, void>>;
   }
   const streams = new Map<string, ClipStream>();
 
@@ -561,29 +648,86 @@ export async function runFrameAccurateExport(options: FrameExportOptions): Promi
    * 最後のコマを取り出したら即座に閉じる。こうすると同時に開くのは
    * 「その瞬間に映っているクリップ」の分だけで済む。
    */
+  /**
+   * 素材ごとの Input（ファイルの目次を読んだもの）を、書き出しのあいだ使い回す。
+   * クリップごとに素材を読み直さない。シーン分割で同じ素材を何十個にも分けていると、
+   * 以前は NAS 参照の素材でその回数ぶん**ファイル全体をダウンロード**していた。
+   * NAS 参照の素材は Range で必要な所だけ読む（`UrlSource`）。
+   * 同時に持つのは数本まで。使い終わった（参照が 0 の）ものから手放す。
+   */
+  const inputs = new Map<string, { input: Input; refs: number }>();
+  const MAX_INPUTS = 4;
+  const acquireInput = async (mediaId: string): Promise<Input | null> => {
+    const cached = inputs.get(mediaId);
+    if (cached) {
+      cached.refs += 1;
+      // 使った順に並べ直す（Map は挿入順なので、入れ直せば最後尾＝最近使った）。
+      inputs.delete(mediaId);
+      inputs.set(mediaId, cached);
+      return cached.input;
+    }
+    const asset = mediaRegistry.get(mediaId);
+    if (!asset) return null;
+    let source: BlobSource | UrlSource;
+    if (asset.src) {
+      source = new UrlSource(asset.url);
+    } else {
+      const blob = await assetBlob(mediaId);
+      if (!blob) return null;
+      source = new BlobSource(blob);
+    }
+    const input = new Input({ source, formats: VIDEO_INPUT_FORMATS });
+    inputs.set(mediaId, { input, refs: 1 });
+    for (const [key, entry] of inputs) {
+      if (inputs.size <= MAX_INPUTS) break;
+      if (entry.refs === 0 && key !== mediaId) {
+        entry.input.dispose();
+        inputs.delete(key);
+      }
+    }
+    return input;
+  };
+  const releaseInput = (mediaId: string) => {
+    const entry = inputs.get(mediaId);
+    if (entry) entry.refs = Math.max(0, entry.refs - 1);
+  };
+
+  /**
+   * デコーダは端末ごとに同時に持てる数が限られている（超えると decoder failure になる）。
+   * クリップの数だけ最初に開くのではなく、必要になった時に開き、そのクリップの
+   * 最後のコマを取り出したら即座に閉じる。こうすると同時に開くのは
+   * 「その瞬間に映っているクリップ」の分だけで済む。
+   */
   const openStream = async (stream: ClipStream) => {
     if (stream.opened) return;
     stream.opened = true;
-    const blob = await assetBlob(stream.clip.mediaId as string);
-    if (!blob) return;
-    const input = new Input({ source: new BlobSource(blob), formats: VIDEO_INPUT_FORMATS });
+    const mediaId = stream.clip.mediaId as string;
+    const input = await acquireInput(mediaId);
+    if (!input) return;
     const track = await input.getPrimaryVideoTrack();
     if (!track) {
-      input.dispose();
+      releaseInput(mediaId);
       return;
     }
     stream.input = input;
-    stream.iterator = new CanvasSink(track).canvasesAtTimestamps(stream.times);
+    // poolSize: デコードしたコマを入れるキャンバスを輪番で使い回す。先読み（次のコマを、いまのコマの描画後に
+    // すぐ始める）でも、描画中のコマが上書きされないよう、3 枚持つ。
+    stream.iterator = new CanvasSink(track, { poolSize: 3 }).canvasesAtTimestamps(stream.times);
   };
 
   const closeStream = (stream: ClipStream) => {
     void stream.iterator?.return(undefined);
     stream.iterator = undefined;
-    stream.input?.dispose();
+    stream.pending = undefined;
+    if (stream.input) releaseInput(stream.clip.mediaId as string);
     stream.input = undefined;
   };
 
   cleanup.push(() => streams.forEach(closeStream));
+  cleanup.push(() => {
+    for (const entry of inputs.values()) entry.input.dispose();
+    inputs.clear();
+  });
 
   try {
     await output.start();
@@ -610,6 +754,7 @@ export async function runFrameAccurateExport(options: FrameExportOptions): Promi
 
       // このフレームで要る素材フレームを取り出す。取り出せるまで待つので、
       // 端末が遅くても「間に合わなかった」コマは発生しない。
+      const advanced: ClipStream[] = [];
       for (const stream of streams.values()) {
         if (stream.frames[stream.cursor] !== i) continue;
         stream.cursor += 1;
@@ -618,13 +763,23 @@ export async function runFrameAccurateExport(options: FrameExportOptions): Promi
           frames.set(stream.clip.id, null);
           continue;
         }
-        const next = await stream.iterator.next();
+        // 先読みが済んでいればそれを、無ければここで取り出す。
+        const next = await (stream.pending ?? stream.iterator.next());
+        stream.pending = undefined;
         frames.set(stream.clip.id, next.done ? null : (next.value?.canvas ?? null));
         // このクリップは使い終わったので、デコーダを次のクリップへ譲る。
         if (stream.cursor >= stream.frames.length) closeStream(stream);
+        else advanced.push(stream);
       }
 
       renderFrame(ctx, sequence, time, sources, { guides: false, selectedIds: [] });
+      // 次のコマのデコードを、エンコードを待つあいだに先に進めておく（描画は済んだので、キャンバスを渡してよい）。
+      // デコードとエンコードを直列に待つと、どちらかが必ず遊んでしまう。
+      for (const stream of advanced) {
+        stream.pending = stream.iterator
+          ?.next()
+          .catch(() => ({ done: true, value: undefined }) as IteratorResult<WrappedCanvas | null, void>);
+      }
       await videoSource.add(time, 1 / fps);
       // 映像より少し先まで音を流し込んでおく（多重化のバッファを膨らませないため）。
       await pushAudioUpTo(time + AUDIO_CHUNK_SECONDS * 2);
@@ -650,5 +805,12 @@ export async function runFrameAccurateExport(options: FrameExportOptions): Promi
     if (!mix) warning = '素材から音を取り出せなかったため、音の入っていない動画になりました。';
     else if (!picked.audioCodec) warning = `この環境では ${picked.ext.toUpperCase()} に音を入れられませんでした。`;
   }
-  return { blob: new Blob([buffer], { type: mimeType }), mimeType, ext: picked.ext, warning, note };
+  return {
+    blob: new Blob([buffer], { type: mimeType }),
+    mimeType,
+    ext: picked.ext,
+    warning,
+    note,
+    dropped: realtime ? Math.max(0, totalFrames - packets) : 0,
+  };
 }

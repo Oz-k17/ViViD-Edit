@@ -92,6 +92,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const [bitrate, setBitrate] = useState(8);
   const [fps, setFps] = useState(sequence.fps || 30);
   const [finishAudio, setFinishAudio] = useState(false);
+  const [fast, setFast] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
   const [result, setResult] = useState<ExportResult | null>(null);
   const [saved, setSaved] = useState(false);
@@ -154,7 +155,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         withoutCaption ? `${project.name}_字幕なし` : project.name,
         withoutCaption ? withoutCaptions(sequence) : sequence,
         player,
-        { aspect, quality: effectiveQuality, fps, bitrate: effectiveBitrate, format, finishAudio: frameAccurate && finishAudio },
+        { aspect, quality: effectiveQuality, fps, bitrate: effectiveBitrate, format, finishAudio: frameAccurate && finishAudio, fast },
         setProgress,
       );
       setResult(output);
@@ -253,6 +254,15 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             disabled={running || !frameAccurate}
             onChange={setFinishAudio}
             label="音量を整えて書き出す"
+          />
+        </Field>
+
+        <Field label="エンコード" hint={frameAccurate ? 'WebM のとき、動きの激しい映像で速くなることがあります（画質は同じ）' : 'この環境では使えません'}>
+          <Toggle
+            checked={fast && frameAccurate}
+            disabled={running || !frameAccurate}
+            onChange={setFast}
+            label="高速エンコード（WebM 向け）"
           />
         </Field>
 

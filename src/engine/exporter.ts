@@ -30,6 +30,8 @@ export interface ExportSettings {
   format: 'auto' | 'mp4' | 'webm';
   /** 音量を整える（試験的。高精度書き出しのときだけ効く）。 */
   finishAudio?: boolean;
+  /** 高速エンコード（既定は切。高精度書き出しの WebM で、動きの激しい映像ほど効く）。 */
+  fast?: boolean;
 }
 
 export interface ExportResult {
@@ -160,6 +162,7 @@ export class Exporter {
         bitrate: Math.round(settings.bitrate * 1_000_000),
         format: settings.format,
         finishAudio: settings.finishAudio,
+        fast: settings.fast,
         onProgress,
         isCancelled: () => this.cancelled,
       });
