@@ -17,7 +17,7 @@ import {
   type ConcatPart,
 } from '../../model/transcript';
 import { WHISPER_MODELS, checkWhisper, toMono16k, transcribe, type WhisperDevice, type WhisperSupport } from '../../engine/transcribe';
-import { decodeAssetAudioRange } from '../../engine/offline-export';
+import { decodeAssetAudioRange, describeMediaSupport } from '../../engine/offline-export';
 import { CARD_ICON_LABELS, CARD_ICON_NAMES } from '../../engine/cardIcons';
 import { sortSpeakers } from '../../engine/speakerSort';
 import {
@@ -394,7 +394,7 @@ function WhisperSection({
         setNote(`音を取り出しています… ${i + 1} / ${groups.length}（${name}）`);
         const decoded = await decodeAssetAudioRange(group.mediaId, group.from, group.to);
         if (!decoded) {
-          setNote(`「${name}」から音を取り出せませんでした。`);
+          setNote(`「${name}」から音を取り出せませんでした。（${await describeMediaSupport(group.mediaId)}）`);
           return;
         }
         const samples = await toMono16k(decoded.buffer);

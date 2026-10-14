@@ -274,6 +274,36 @@ export async function decodeAssetAudio(mediaId: string): Promise<AudioBuffer | n
 }
 
 /**
+ * 素材のコーデックと、このブラウザでデコードできるかを 1 行で説明する（失敗の理由を知るため）。
+ * 例: 「映像 hevc（デコード不可）／音 aac（可）」
+ */
+export async function describeMediaSupport(mediaId: string): Promise<string> {
+  const asset = mediaRegistry.get(mediaId);
+  if (!asset) return '素材が見つかりません';
+  let input: Input | null = null;
+  try {
+    const source = asset.src ? new UrlSource(asset.url) : new BlobSource((await assetBlob(mediaId)) as Blob);
+    input = new Input({ source, formats: VIDEO_INPUT_FORMATS });
+    const parts: string[] = [];
+    const video = await input.getPrimaryVideoTrack();
+    if (video) {
+      const ok = await video.canDecode().catch(() => false);
+      parts.push(`映像 ${video.codec ?? '不明'}（${ok ? '可' : 'デコード不可'}）`);
+    } else parts.push('映像なし');
+    const audio = await input.getPrimaryAudioTrack();
+    if (audio) {
+      const ok = await audio.canDecode().catch(() => false);
+      parts.push(`音 ${audio.codec ?? '不明'}（${ok ? '可' : 'デコード不可'}）`);
+    } else parts.push('音なし');
+    return parts.join(' ／ ');
+  } catch (error) {
+    return `ファイルを開けません（${error instanceof Error ? error.message : String(error)}）`;
+  } finally {
+    input?.dispose();
+  }
+}
+
+/**
  * 素材の音のうち、`from`〜`to`（素材内の秒）だけを取り出す。
  *
  * 長い素材（3 時間など）で、使うのが数十秒でも全部をデコードしてしまうと、

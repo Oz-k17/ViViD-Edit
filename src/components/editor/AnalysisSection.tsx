@@ -14,7 +14,7 @@ import { frameToImage, exportName, decodeFramesAt } from '../../analysis/cover-e
 import { AnalysisError, detectScenes, pickCovers, planClipReframe, type CoverCandidate } from '../../engine/analyze';
 import { saveBlob } from '../../engine/exporter';
 import { formatTime, mediaRegistry } from '../../engine/media';
-import { assetBlob } from '../../engine/offline-export';
+import { assetBlob, describeMediaSupport } from '../../engine/offline-export';
 import { player } from '../../engine/player';
 import { applyReframeSegments, sourceToTimeline, splitAtSceneBoundaries } from '../../model/analysisEdits';
 import type { Clip } from '../../model/types';
@@ -49,7 +49,9 @@ export function AnalysisSection({ clip }: { clip: Clip }) {
       setNote(
         error instanceof AnalysisError
           ? error.message
-          : `解析できませんでした: ${error instanceof Error ? error.message : String(error)}`,
+          : `解析できませんでした: ${error instanceof Error ? error.message : String(error)}${
+              clip.mediaId ? `（${await describeMediaSupport(clip.mediaId)}）` : ''
+            }`,
       );
     } finally {
       setJob(null);
