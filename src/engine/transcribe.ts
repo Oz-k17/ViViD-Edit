@@ -33,6 +33,9 @@ export const WHISPER_MODELS = [
   { id: 'onnx-community/whisper-base', label: 'base（いちばん軽い・粗い）' },
 ] as const;
 
+/** モデルの準備にかけてよい時間。これを超えたら固まったとみなす。 */
+const LOAD_TIMEOUT_MINUTES = 10;
+
 export type WhisperDevice = 'webgpu' | 'wasm';
 
 /** いまの環境で回せそうかどうか。 */
@@ -166,7 +169,10 @@ export function transcribe(input: Float32Array, options: TranscribeOptions): Pro
       return;
     }
 
+    // モデルの組み立てが終わらないまま固まったとき、永遠に待たせない。
+    let loadTimer: number | null = null;
     const done = (finish: () => void) => {
+      if (loadTimer !== null) window.clearTimeout(loadTimer);
       worker.terminate();
       finish();
     };
@@ -175,6 +181,21 @@ export function transcribe(input: Float32Array, options: TranscribeOptions): Pro
     worker.addEventListener('message', (event: MessageEvent) => {
       const data = event.data as { type: string; [key: string]: unknown };
       if (data.type === 'stage') {
+        if (data.stage === 'model' && loadTimer === null) {
+          loadTimer = window.setTimeout(
+            () =>
+              done(() =>
+                reject(
+                  new Error(
+                    `モデルの準備が ${LOAD_TIMEOUT_MINUTES} 分たっても終わりませんでした。` +
+                      'メモリが足りないか、onnxruntime の部品（wasm）を取れていない可能性があります。' +
+                      '軽いモデル（base）にするか、「処理する場所」を切り替えて試してください',
+                  ),
+                ),
+              ),
+            LOAD_TIMEOUT_MINUTES * 60_000,
+          );
+        }
         options.onStage?.(String(data.stage));
         return;
       }
@@ -186,6 +207,10 @@ export function transcribe(input: Float32Array, options: TranscribeOptions): Pro
         return;
       }
       if (data.type === 'ready') {
+        if (loadTimer !== null) {
+          window.clearTimeout(loadTimer);
+          loadTimer = null;
+        }
         worker.postMessage(
           {
             type: 'run',

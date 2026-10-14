@@ -119,6 +119,16 @@ async function run(message: RunMessage): Promise<void> {
   post({ type: 'result', text: output.text ?? '', chunks: output.chunks ?? [] });
 }
 
+// Promise の外で起きた失敗（onnxruntime の内部など）も、握りつぶさず知らせる。
+// これが無いと、モデルの組み立てが失敗しても「100% のまま止まる」ように見える。
+(globalThis as unknown as { addEventListener(type: string, handler: (event: { reason?: unknown }) => void): void }).addEventListener(
+  'unhandledrejection',
+  (event) => {
+    const reason = event.reason;
+    post({ type: 'error', message: reason instanceof Error ? reason.message : String(reason) });
+  },
+);
+
 ctx.addEventListener('message', (event: MessageEvent) => {
   const data = event.data as LoadMessage | RunMessage;
   const work = data.type === 'load' ? load(data) : run(data);

@@ -371,6 +371,7 @@ function WhisperSection({
     setBusy(true);
     // どこで止まったかで、言うべきことが変わる。
     let stage = 'audio';
+    let initTimer: number | null = null;
     try {
       // 素材ごとに、選んだクリップが使う範囲だけを取り出し、全部を 1 本につないで 1 回で起こす
       // （起こすたびにモデルを読み込み直すと遅いので）。つなぎ目には無音を挟み、行が混ざらないようにする。
@@ -414,6 +415,10 @@ function WhisperSection({
         localWasm: local ? 'ort/' : null,
         onStage: (next) => {
           stage = next;
+          if (initTimer !== null && next !== 'model') {
+            window.clearInterval(initTimer);
+            initTimer = null;
+          }
           setNote(
             next === 'library'
               ? '文字起こしの部品を読み込んでいます…'
@@ -422,7 +427,24 @@ function WhisperSection({
                 : '書き起こしています…',
           );
         },
-        onProgress: (percent, file) => setNote(`モデルを読み込んでいます… ${percent.toFixed(0)}% ${file}`),
+        onProgress: (percent, file) => {
+          if (percent < 100) {
+            setNote(`モデルを読み込んでいます… ${percent.toFixed(0)}% ${file}`);
+            return;
+          }
+          // 100% は「ファイルを受け取り終えた」だけ。このあと、モデルを計算機の中へ組み立てる時間がかかる
+          // （CPU では 1〜数分、画面に動きが出ない）。止まって見えるので、経過を出して動いていることを示す。
+          if (initTimer === null) {
+            const since = Date.now();
+            const tick = () =>
+              setNote(
+                `モデルを受け取りました。計算の準備をしています… ${Math.round((Date.now() - since) / 1000)} 秒`
+                  + '（CPU では 1〜数分かかることがあります。動いています）',
+              );
+            tick();
+            initTimer = window.setInterval(tick, 1000);
+          }
+        },
       });
       if (result.cues.length === 0) {
         setNote('言葉が見つかりませんでした。声の入っている素材か確かめてください。');
@@ -458,6 +480,7 @@ function WhisperSection({
             + '「手元に置いたモデルだけを使う」にするか、つないでから試してください）';
       setNote(`文字起こしに失敗しました: ${message}${hint}`);
     } finally {
+      if (initTimer !== null) window.clearInterval(initTimer);
       setBusy(false);
     }
   };
