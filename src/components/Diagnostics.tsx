@@ -31,7 +31,7 @@ async function collect(): Promise<string[]> {
     await navigator.storage.getDirectory();
     lines.push('ブラウザ内のファイル領域（OPFS）: ○');
   } catch {
-    lines.push('ブラウザ内のファイル領域（OPFS）: ×（軽量版はメモリで作るため、短い動画だけ）');
+    lines.push('ブラウザ内のファイル領域（OPFS）: ×（大きい書き出しはメモリで行うため、長い動画は分けて書き出してください）');
   }
   try {
     const estimate = await navigator.storage.estimate();
@@ -51,7 +51,7 @@ async function collect(): Promise<string[]> {
   const total = assets.reduce((n, a) => n + (a.src ? 0 : a.size), 0);
   const longest = assets.reduce((m, a) => Math.max(m, a.duration), 0);
   lines.push(
-    `素材: ${assets.length} 本（取り込み ${Math.round(total / 1024 / 1024)}MB / 最長 ${Math.round(longest / 60)} 分 / 軽量版 ${assets.filter((a) => a.proxy).length} 本）`,
+    `素材: ${assets.length} 本（取り込み ${Math.round(total / 1024 / 1024)}MB / 最長 ${Math.round(longest / 60)} 分 / NAS の軽量版 ${assets.filter((a) => a.proxy).length} 本）`,
   );
 
   try {

@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react';
-import { formatBytes, mediaRegistry, type MediaAsset } from '../../engine/media';
-import { cancelProxy, canMakeProxy, removeProxy, requestProxies, shouldSuggestProxy, useProxyJobs } from '../../engine/proxy';
+import { mediaRegistry, type MediaAsset } from '../../engine/media';
 import { useStripProgress } from '../../engine/thumbstrip';
 import { ASSET_SORT_LABELS, type AssetSortKey } from '../../model/assetView';
 import { chooseSort, toggleDirection, useAssetView } from '../../store/assetView';
@@ -114,91 +113,6 @@ export function BulkBar({
       </button>
       {ids.length === 1 && single && <NoteField key={single.id} asset={single} />}
     </div>
-  );
-}
-
-/**
- * 軽量版（プロキシ）の状態と操作。
- * - 作成中: 進み具合と中止
- * - あり: 印（`withRemove` なら消すボタンも）
- * - なし: 長い・大きい動画なら作成ボタン（`always` なら動画すべてに出す）
- */
-export function ProxyStatus({ asset, always = false, withRemove = false }: { asset: MediaAsset; always?: boolean; withRemove?: boolean }) {
-  const jobs = useProxyJobs();
-  const job = jobs[asset.id];
-  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
-  if (asset.kind !== 'video') return null;
-  if (job?.state === 'running' || job?.state === 'queued') {
-    return (
-      <span className="proxy-status busy">
-        {job.state === 'running' ? `軽量版 ${Math.round(job.progress * 100)}%` : '軽量版 待機中'}
-        <button type="button" className="ghost proxy-cancel" title="軽量版の作成をやめる" onClick={(e) => { stop(e); void cancelProxy(asset.id); }} onDoubleClick={stop}>
-          ×
-        </button>
-      </span>
-    );
-  }
-  if (job?.state === 'error') {
-    return (
-      <span className="proxy-error-wrap">
-        <span className="proxy-status error" title={job.message}>
-          軽量版 失敗
-          <button type="button" className="ghost proxy-cancel" title="もう一度作る" onClick={(e) => { stop(e); requestProxies([asset.id]); }} onDoubleClick={stop}>
-            ↻
-          </button>
-        </span>
-        <span className="proxy-error-text">{job.message}</span>
-      </span>
-    );
-  }
-  if (asset.proxy) {
-    const fromServer = asset.proxy.store === 'server';
-    return (
-      <span
-        className="proxy-status ready"
-        title={
-          fromServer
-            ? `NAS の軽量版あり（Docker の proxy.sh が作成${asset.proxy.size ? '・' + formatBytes(asset.proxy.size) : ''}）。プレビューと再生はこちらを使います`
-            : `軽量版あり（${asset.proxy.width}×${asset.proxy.height}・${formatBytes(asset.proxy.size)}）。プレビューと再生はこちらを使います`
-        }
-      >
-        {fromServer ? 'NAS の軽量版' : '軽量版'}
-        {withRemove && !fromServer && (
-          <button type="button" className="ghost proxy-cancel" title="軽量版を消す（元の素材はそのまま）" onClick={(e) => { stop(e); void removeProxy(asset.id); }} onDoubleClick={stop}>
-            ×
-          </button>
-        )}
-      </span>
-    );
-  }
-  if (always ? canMakeProxy(asset.id) : shouldSuggestProxy(asset.id)) {
-    return (
-      <button
-        type="button"
-        className="ghost proxy-make"
-        title="プレビュー用の軽い複製を作る（書き出しは元の画質のまま）"
-        onClick={(e) => {
-          e.stopPropagation();
-          requestProxies([asset.id]);
-        }}
-        onDoubleClick={stop}
-      >
-        軽量版を作る
-      </button>
-    );
-  }
-  return null;
-}
-
-/** 選んだ素材のうち、軽量版を作れる動画に作る。作れるものが無ければ出さない。 */
-export function MakeProxiesButton({ ids }: { ids: string[] }) {
-  useProxyJobs();
-  const targets = ids.filter((id) => canMakeProxy(id));
-  if (targets.length === 0) return null;
-  return (
-    <button type="button" className="ghost" title="選んだ動画に、プレビュー用の軽い複製を作る" onClick={() => requestProxies(targets)}>
-      軽量版を作る（{targets.length}）
-    </button>
   );
 }
 

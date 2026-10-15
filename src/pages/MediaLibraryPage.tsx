@@ -6,7 +6,7 @@ import { formatBytes, formatTime, mediaRegistry, UNSORTED } from '../engine/medi
 import { matchesAssetQuery, matchesLabel, type LabelFilter } from '../model/labels';
 import { pick, prune, sortAssets, type PickState } from '../model/assetView';
 import { BinTree, useBinOptions, type BinSelection } from '../components/editor/BinTree';
-import { BulkBar, MakeProxiesButton, ProxyStatus, SortControl } from '../components/editor/AssetControls';
+import { BulkBar, SortControl } from '../components/editor/AssetControls';
 import { LabelDot, LabelFilterBar, NoteBadge } from '../components/editor/LabelControls';
 import { startAssetDrag } from '../components/editor/assetDrag';
 import { useAssetView } from '../store/assetView';
@@ -143,7 +143,6 @@ export default function MediaLibraryPage() {
                       {asset.kind === 'image' ? '画像' : formatTime(asset.duration)} ・ {formatBytes(asset.size)}
                       {asset.width > 0 && ` ・ ${asset.width}×${asset.height}`}
                     </span>
-                    <ProxyStatus asset={asset} always withRemove />
                     {(asset.color || asset.note) && (
                       <span className="media-labels">
                         <LabelDot color={asset.color} />
@@ -174,9 +173,7 @@ export default function MediaLibraryPage() {
             total={orderedIds.length}
             onClear={() => setPicked({ selected: [], anchor: null })}
             onSelectAll={() => setPicked({ selected: orderedIds, anchor: orderedIds[0] ?? null })}
-          >
-            <MakeProxiesButton ids={picked.selected} />
-          </BulkBar>
+          />
         </Panel>
       </main>
     </div>

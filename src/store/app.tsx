@@ -17,7 +17,6 @@ import {
   setCurrentProfileId,
   type Profile,
 } from './profile';
-import { mediaRegistry } from '../engine/media';
 import {
   loadMediaRoots,
   personalBaseFor,
@@ -286,8 +285,6 @@ export interface Settings {
   uiMode: UiMode;
   layout: LayoutMode;
   previewQuality: PreviewQuality;
-  /** 軽量版（プロキシ）がある素材は、プレビューと再生にそちらを使う。 */
-  useProxies: boolean;
   exportQuality: number;
   exportAspect: AspectKey;
   exportFormat: 'auto' | 'mp4' | 'webm';
@@ -313,7 +310,6 @@ export const DEFAULT_SETTINGS: Settings = {
   uiMode: 'easy',
   layout: 'desktop',
   previewQuality: 720,
-  useProxies: true,
   exportQuality: 1080,
   exportAspect: '9:16',
   exportFormat: 'auto',
@@ -447,10 +443,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return [];
     }
   });
-
-  useEffect(() => {
-    mediaRegistry.useProxies = settings.useProxies;
-  }, [settings.useProxies]);
 
   useEffect(() => {
     setLang(settings.lang);

@@ -49,20 +49,17 @@ export interface MediaAsset {
    */
   src?: string;
   /**
-   * プレビュー用の軽い複製（プロキシ）の情報。作っていなければ undefined。
-   * 実体はブラウザ内のファイル領域（OPFS）か、置けない環境では IndexedDB に入れる（`proxy.ts`）。
+   * NAS の軽量版（プロキシ）の情報。見つかったときだけ付く（Docker の `deploy/nas/proxy.sh` が作ったもの）。
+   * ブラウザの中で軽量版を作る機能は無い（以前はあったが、失敗しやすく画面も複雑になるので外した）。
    */
   proxy?: ProxyInfo;
-  /** プロキシを読むための一時 URL（保存しない。起動のたびに作り直す）。 */
+  /** 軽量版を読むための URL（保存しない。開くたびに探す）。 */
   proxyUrl?: string;
 }
 
 export interface ProxyInfo {
-  /**
-   * どこに置いたか。`opfs` は OPFS の `vivid-proxies/<file>`、`idb` は素材レコードの proxyBlob、
-   * `server` は NAS の Docker（`deploy/nas/proxy.sh`）が作ったもの。`server` は保存せず、開くたびに探す。
-   */
-  store: 'opfs' | 'idb' | 'server';
+  /** NAS の Docker（`deploy/nas/proxy.sh`）が作ったもの。保存せず、開くたびに探す。 */
+  store: 'server';
   file: string;
   width: number;
   height: number;
@@ -80,17 +77,7 @@ export function serverProxyPath(src: string): string {
   return `proxy/${src.replace(/^\/+/, '')}.proxy.mp4`;
 }
 
-/** OPFS に置いたプロキシを File として開く。無ければ null。 */
-export async function openProxyFile(name: string): Promise<File | null> {
-  try {
-    const root = await navigator.storage.getDirectory();
-    const dir = await root.getDirectoryHandle(PROXY_DIR);
-    return await (await dir.getFileHandle(name)).getFile();
-  } catch {
-    return null;
-  }
-}
-
+/** 以前のバージョンがブラウザ内に作った軽量版のファイルを片付ける（いまは作らない）。 */
 export async function deleteProxyFile(name: string): Promise<void> {
   try {
     const root = await navigator.storage.getDirectory();
@@ -135,7 +122,7 @@ function openDb(): Promise<IDBDatabase | null> {
 interface StoredAsset extends Omit<MediaAsset, 'url' | 'proxyUrl'> {
   /** 取り込んだ実体。参照（src あり）の素材では持たない。 */
   blob?: Blob;
-  /** OPFS が使えない環境で作ったプロキシの実体。 */
+  /** 以前のバージョンが作った軽量版の実体（読み込み時に捨てる）。 */
   proxyBlob?: Blob;
 }
 
@@ -510,24 +497,25 @@ class MediaRegistry {
     if (this.restored) return;
     this.restored = true;
     await migrateLegacyAssets();
+    const legacyProxyIds: string[] = [];
     for (const record of await dbAll()) {
-      const { blob, proxyBlob, ...rest } = record;
+      const { blob, proxyBlob: _proxyBlob, ...rest } = record;
       // 参照の素材は相対パスで持っているので、いまのページを基準に解く。
       // 取り込みの素材は Blob から一時 URL を作る。
       const url = rest.src ? absoluteSrc(rest.src) : blob ? URL.createObjectURL(blob) : '';
       if (!url) continue; // 実体も在り処も無い壊れたレコード。読み飛ばす。
-      let proxyUrl: string | undefined;
-      if (rest.proxy?.store === 'idb' && proxyBlob) proxyUrl = URL.createObjectURL(proxyBlob);
-      if (rest.proxy?.store === 'opfs') {
-        const file = await openProxyFile(rest.proxy.file);
-        if (file) proxyUrl = URL.createObjectURL(file);
+      // 以前のバージョンがブラウザ内に作った軽量版は、もう使わない。場所を食うので片付ける。
+      const legacy = rest.proxy as { store?: string; file?: string } | undefined;
+      if (legacy && legacy.store !== 'server') {
+        if (legacy.store === 'opfs' && legacy.file) void deleteProxyFile(legacy.file);
+        legacyProxyIds.push(rest.id);
       }
-      // 実体が消えていた（ブラウザがファイル領域を片付けた等）プロキシは、無かったことにする。
-      const proxy = proxyUrl ? rest.proxy : undefined;
       const labels = sanitizeLabels(rest);
-      this.assets.set(rest.id, { ...rest, color: labels.color, note: labels.note, proxy, url, proxyUrl });
+      const { proxy: _proxy, ...base } = rest;
+      this.assets.set(rest.id, { ...base, color: labels.color, note: labels.note, url });
     }
     this.emit();
+    if (legacyProxyIds.length > 0) void this.dropLegacyProxies(legacyProxyIds);
     this.probeServerProxies(true);
     // NAS の軽量版は後から出来上がることがある。画面に戻ってきたときに探し直す（30 秒に 1 回まで）。
     if (typeof document !== 'undefined') {
@@ -776,31 +764,12 @@ class MediaRegistry {
     }
   }
 
-  /** プロキシを付ける（作り終えたとき）。`blob` は IndexedDB に置く場合だけ渡す。 */
-  async attachProxy(id: string, info: ProxyInfo, file: Blob) {
-    const asset = this.assets.get(id);
-    if (!asset) return;
-    if (asset.proxyUrl) URL.revokeObjectURL(asset.proxyUrl);
-    this.assets.set(id, { ...asset, proxy: info, proxyUrl: URL.createObjectURL(file) });
-    this.emit();
-    const stored = (await dbAll()).find((r) => r.id === id);
-    if (stored) await dbPut({ ...stored, proxy: info, proxyBlob: info.store === 'idb' ? file : undefined });
-  }
-
-  /** プロキシを捨てる（元の素材は触らない）。 */
-  async detachProxy(id: string) {
-    const asset = this.assets.get(id);
-    if (!asset?.proxy) return;
-    // サーバーの軽量版は、こちらからは消せない（NAS のものなので）。
-    if (asset.proxy.store === 'server') return;
-    if (asset.proxyUrl) URL.revokeObjectURL(asset.proxyUrl);
-    const { proxy, proxyUrl: _proxyUrl, ...rest } = asset;
-    this.assets.set(id, rest);
-    this.emit();
-    if (proxy.store === 'opfs') await deleteProxyFile(proxy.file);
-    const stored = (await dbAll()).find((r) => r.id === id);
-    if (stored) {
-      const { proxy: _p, proxyBlob: _b, ...plain } = stored;
+  /** 保存してある、以前の軽量版の情報（と実体）を落とす。 */
+  private async dropLegacyProxies(ids: string[]) {
+    const drop = new Set(ids);
+    for (const record of await dbAll()) {
+      if (!drop.has(record.id)) continue;
+      const { proxy: _p, proxyBlob: _b, ...plain } = record;
       await dbPut(plain);
     }
   }
@@ -813,10 +782,6 @@ class MediaRegistry {
   remove(id: string) {
     const asset = this.assets.get(id);
     if (!asset) return;
-    if (asset.proxy && asset.proxy.store !== 'server') {
-      if (asset.proxyUrl) URL.revokeObjectURL(asset.proxyUrl);
-      if (asset.proxy.store === 'opfs') void deleteProxyFile(asset.proxy.file);
-    }
     // 参照の素材の url は NAS を指しているだけなので、取り消すものが無い。
     if (!asset.src) URL.revokeObjectURL(asset.url);
     this.assets.delete(id);
