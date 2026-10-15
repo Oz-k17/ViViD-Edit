@@ -3,10 +3,11 @@ import { LayoutToggle } from '../components/LayoutToggle';
 import { Brand, SiteNav } from '../components/SiteNav';
 import { useMediaAssets, importFiles } from '../components/editor/MediaPanel';
 import { formatBytes, formatTime, mediaRegistry, UNSORTED } from '../engine/media';
-import { matchesQuery } from '../model/bins';
+import { matchesAssetQuery, matchesLabel, type LabelFilter } from '../model/labels';
 import { pick, prune, sortAssets, type PickState } from '../model/assetView';
 import { BinTree, useBinOptions, type BinSelection } from '../components/editor/BinTree';
 import { BulkBar, MakeProxiesButton, ProxyStatus, SortControl } from '../components/editor/AssetControls';
+import { LabelDot, LabelFilterBar, NoteBadge } from '../components/editor/LabelControls';
 import { startAssetDrag } from '../components/editor/assetDrag';
 import { useAssetView } from '../store/assetView';
 import { Panel } from '../components/ui';
@@ -17,6 +18,7 @@ export default function MediaLibraryPage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [folder, setFolder] = useState<BinSelection>(null);
   const [query, setQuery] = useState('');
+  const [labelFilter, setLabelFilter] = useState<LabelFilter>(null);
   const [busy, setBusy] = useState(false);
   const { sortKey, direction } = useAssetView();
   const binOptions = useBinOptions();
@@ -24,13 +26,17 @@ export default function MediaLibraryPage() {
 
   const searching = query.trim().length > 0;
   const ordered = useMemo(() => {
-    const filtered = searching
-      ? assets.filter((a) => matchesQuery(a.name, a.folder || UNSORTED, query))
+    const inScope = searching
+      ? assets.filter((a) => matchesAssetQuery({ ...a, folder: a.folder || UNSORTED }, query))
       : folder === null
         ? assets
         : assets.filter((a) => (a.folder || UNSORTED) === folder);
-    return sortAssets(filtered, sortKey, direction);
-  }, [assets, folder, query, searching, sortKey, direction]);
+    return sortAssets(
+      inScope.filter((a) => matchesLabel(a, labelFilter)),
+      sortKey,
+      direction,
+    );
+  }, [assets, folder, query, searching, sortKey, direction, labelFilter]);
   const orderedIds = useMemo(() => ordered.map((a) => a.id), [ordered]);
   const filtered = ordered;
 
@@ -82,6 +88,7 @@ export default function MediaLibraryPage() {
 
         <Panel title={`素材（${filtered.length}）`}>
           <SortControl />
+          <LabelFilterBar assets={assets} value={labelFilter} onChange={setLabelFilter} />
           <label className="media-select-all">
             <input
               type="checkbox"
@@ -95,7 +102,7 @@ export default function MediaLibraryPage() {
             type="search"
             className="asset-search"
             value={query}
-            placeholder="素材を検索（名前・ビン）"
+            placeholder="素材を検索（名前・ビン・メモ）"
             aria-label="素材を検索"
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -137,6 +144,12 @@ export default function MediaLibraryPage() {
                       {asset.width > 0 && ` ・ ${asset.width}×${asset.height}`}
                     </span>
                     <ProxyStatus asset={asset} always withRemove />
+                    {(asset.color || asset.note) && (
+                      <span className="media-labels">
+                        <LabelDot color={asset.color} />
+                        <NoteBadge note={asset.note} />
+                      </span>
+                    )}
                   </div>
                   <select
                     value={asset.folder || UNSORTED}

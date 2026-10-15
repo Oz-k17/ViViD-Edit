@@ -1123,6 +1123,28 @@ eq('空文字', wrap('', 10), ['']);
   check('結果は時刻順', mergeClipCues(groups.map((g) => ({ ...g })), [[cue(3601, 3602, 'm1')], [cue(101, 102, 'm2')]]).every((c, i, a) => i === 0 || a[i - 1].start <= c.start));
 }
 
+// ---- 素材の色タグとメモ ----
+{
+  const L = await import('../src/model/labels.ts');
+  const A = (name, folder, color, note) => ({ name, folder, color, note });
+  check('色は 7 色', L.LABEL_COLORS.length === 7 && L.LABEL_COLORS.every((c) => L.LABEL_NAMES[c] && L.LABEL_HEX[c]));
+  check('色の判定', L.isLabelColor('red') && !L.isLabelColor('pink') && !L.isLabelColor(3) && !L.isLabelColor(undefined));
+  check('絞り込みなし（null）は全部通す', L.matchesLabel(A('a', ''), null) && L.matchesLabel(A('a', '', 'red'), null));
+  check('色で絞る', L.matchesLabel(A('a', '', 'red'), 'red') && !L.matchesLabel(A('a', '', 'blue'), 'red') && !L.matchesLabel(A('a', ''), 'red'));
+  check('「色なし」で絞る', L.matchesLabel(A('a', ''), 'none') && !L.matchesLabel(A('a', '', 'red'), 'none'));
+  eq('空白だけのメモはメモなし', L.normalizeNote('  \n  '), undefined);
+  eq('メモは前後の空白を落とす', L.normalizeNote('  どこが良い \n'), 'どこが良い');
+  eq('改行は \\n に揃える', L.normalizeNote('a\r\nb\rc'), 'a\nb\nc');
+  check('メモは上限で切る', L.normalizeNote('あ'.repeat(L.NOTE_MAX + 50)).length === L.NOTE_MAX);
+  check('検索: 名前', L.matchesAssetQuery(A('配信1.mp4', '未分類'), '配信'));
+  check('検索: メモの中身', L.matchesAssetQuery(A('a.mp4', '未分類', undefined, '3分あたりが面白い'), '面白い'));
+  check('検索: 色の名前', L.matchesAssetQuery(A('a.mp4', '未分類', 'red'), '赤') && !L.matchesAssetQuery(A('a.mp4', '未分類', 'blue'), '赤'));
+  check('検索: 空白区切りは AND（名前とメモにまたがってもよい）', L.matchesAssetQuery(A('a.mp4', 'x', undefined, '採用'), 'a.mp4 採用') && !L.matchesAssetQuery(A('a.mp4', 'x'), 'a.mp4 採用'));
+  eq('色ごとの件数', L.labelCounts([A('1', '', 'red'), A('2', '', 'red'), A('3', ''), A('4', '', 'gray')]), { red: 2, orange: 0, yellow: 0, green: 0, blue: 0, purple: 0, gray: 1, none: 1 });
+  eq('壊れた保存値は捨てる', L.sanitizeLabels({ color: 'pink', note: 42 }), {});
+  eq('正しい保存値は残す', L.sanitizeLabels({ color: 'green', note: ' ok ' }), { color: 'green', note: 'ok' });
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

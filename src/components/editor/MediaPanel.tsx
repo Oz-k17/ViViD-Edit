@@ -5,7 +5,7 @@ import { player } from '../../engine/player';
 import { clipFromAsset } from '../../model/factory';
 import { adoptSourceFps, tracksOf } from '../../model/ops';
 import { useEditor } from '../../store/editor';
-import { matchesQuery } from '../../model/bins';
+import { matchesAssetQuery, matchesLabel, type LabelFilter } from '../../model/labels';
 import { pick, prune, sortAssets, type PickState } from '../../model/assetView';
 import { clipEnd } from '../../model/types';
 import { placeClips } from '../../model/editOps';
@@ -13,6 +13,7 @@ import { useAssetView } from '../../store/assetView';
 import { BulkBar, MakeProxiesButton, ProxyStatus, SortControl, StripStatus, removeAssets, confirmRemoveAssets } from './AssetControls';
 import { startAssetDrag } from './assetDrag';
 import { BinTree, type BinSelection } from './BinTree';
+import { LabelDot, LabelFilterBar, NoteBadge } from './LabelControls';
 import { NasBrowser } from './NasBrowser';
 import { EmptyHint, Panel } from '../ui';
 import { Icon } from '../Icon';
@@ -60,6 +61,7 @@ export function MediaPanel() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [folder, setFolder] = useState<BinSelection>(null);
   const [query, setQuery] = useState('');
+  const [labelFilter, setLabelFilter] = useState<LabelFilter>(null);
   const [shown, setShown] = useState(CHUNK);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,13 +71,17 @@ export function MediaPanel() {
   // 検索しているときはビンを問わず全体から探す（どこに入れたか忘れても見つかるように）。
   const searching = query.trim().length > 0;
   const ordered = useMemo(() => {
-    const filtered = searching
-      ? assets.filter((a) => matchesQuery(a.name, a.folder || UNSORTED, query))
+    const inScope = searching
+      ? assets.filter((a) => matchesAssetQuery({ ...a, folder: a.folder || UNSORTED }, query))
       : folder === null
         ? assets
         : assets.filter((a) => (a.folder || UNSORTED) === folder);
-    return sortAssets(filtered, sortKey, direction);
-  }, [assets, folder, query, searching, sortKey, direction]);
+    return sortAssets(
+      inScope.filter((a) => matchesLabel(a, labelFilter)),
+      sortKey,
+      direction,
+    );
+  }, [assets, folder, query, searching, sortKey, direction, labelFilter]);
   const orderedIds = useMemo(() => ordered.map((a) => a.id), [ordered]);
   const visible = ordered.slice(0, shown);
 
@@ -85,7 +91,7 @@ export function MediaPanel() {
   }, [orderedIds]);
   useEffect(() => {
     setShown(CHUNK);
-  }, [folder, query, sortKey, direction]);
+  }, [folder, query, sortKey, direction, labelFilter]);
 
   const handleFiles = async (files: FileList | File[]) => {
     setBusy(true);
@@ -192,18 +198,21 @@ export function MediaPanel() {
         type="search"
         className="asset-search"
         value={query}
-        placeholder="素材を検索（名前・ビン）"
+        placeholder="素材を検索（名前・ビン・メモ）"
         aria-label="素材を検索"
         onChange={(e) => setQuery(e.target.value)}
       />
 
       <SortControl />
+      <LabelFilterBar assets={assets} value={labelFilter} onChange={setLabelFilter} />
 
       {error && <p className="error-note">{error}</p>}
 
       {ordered.length === 0 ? (
         searching ? (
           <EmptyHint>「{query.trim()}」に合う素材はありません。</EmptyHint>
+        ) : labelFilter !== null && assets.length > 0 ? (
+          <EmptyHint>この色の素材はありません。色の絞り込みを外すか、素材を選んで色を付けてください。</EmptyHint>
         ) : assets.length > 0 ? (
           <EmptyHint>このビンには素材がありません。中のビンを選ぶか、素材をドラッグして入れてください。</EmptyHint>
         ) : (
@@ -234,6 +243,8 @@ export function MediaPanel() {
                 title={asset.warning ? `${asset.name}\n${asset.warning}` : `${asset.name}\nクリックで選択（Ctrl/⌘で追加、Shiftで範囲）・ダブルクリックでタイムラインへ・ドラッグで配置／ビンへ移動`}
               >
                 <div className="asset-thumb">
+                  <LabelDot color={asset.color} />
+                  <NoteBadge note={asset.note} />
                   {asset.thumbnail ? <img src={asset.thumbnail} alt="" draggable={false} /> : <span className="asset-icon"><Icon name={asset.kind === 'audio' ? 'music-note' : asset.kind === 'image' ? 'photo' : 'film'} size={26} /></span>}
                 </div>
                 <strong>{asset.name}</strong>

@@ -2871,3 +2871,121 @@ hr {
   background-color: var(--bg-panel, #1c1c1e);
   background-image: linear-gradient(var(--accent-soft), var(--accent-soft));
 }
+
+/* ---------- 素材の色タグ・メモ ---------- */
+
+.asset-thumb {
+  position: relative;
+}
+
+.label-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.45);
+  flex: none;
+}
+
+.asset-thumb > .label-dot {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 12px;
+  height: 12px;
+  z-index: 1;
+}
+
+.note-badge {
+  display: inline-block;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  cursor: help;
+}
+
+.asset-thumb > .note-badge {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  z-index: 1;
+}
+
+.label-swatches {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.label-swatches .swatch {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+}
+
+.label-swatches .swatch.on {
+  border-color: #fff;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.label-swatches .swatch-clear {
+  padding: 0 6px;
+}
+
+.label-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.label-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 13px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-dim);
+}
+
+.label-chip em {
+  font-style: normal;
+  opacity: 0.7;
+}
+
+.label-chip.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.note-field {
+  flex: 1 0 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.note-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font-size: 12px;
+}
+
+.media-labels {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}

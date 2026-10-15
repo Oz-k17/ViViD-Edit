@@ -6,6 +6,7 @@ import { ASSET_SORT_LABELS, type AssetSortKey } from '../../model/assetView';
 import { chooseSort, toggleDirection, useAssetView } from '../../store/assetView';
 import { moveAssetsToBin } from '../../store/bins';
 import { useBinOptions } from './BinTree';
+import { LabelSwatches, NoteField } from './LabelControls';
 
 const KEYS = Object.keys(ASSET_SORT_LABELS) as AssetSortKey[];
 
@@ -67,6 +68,7 @@ export function BulkBar({
 }) {
   const options = useBinOptions();
   if (ids.length === 0) return null;
+  const single = ids.length === 1 ? mediaRegistry.get(ids[0]) : undefined;
   return (
     <div className="bulk-bar" role="toolbar" aria-label="選択した素材の操作">
       <strong>{ids.length} 件選択中</strong>
@@ -93,6 +95,7 @@ export function BulkBar({
           ))}
         </select>
       </label>
+      <LabelSwatches ids={ids} />
       {children}
       <button
         type="button"
@@ -109,6 +112,7 @@ export function BulkBar({
       <button type="button" className="ghost" onClick={onClear}>
         解除
       </button>
+      {ids.length === 1 && single && <NoteField key={single.id} asset={single} />}
     </div>
   );
 }

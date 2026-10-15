@@ -17,6 +17,7 @@
 import { BlobSource, Input, UrlSource } from 'mediabunny';
 import { VIDEO_INPUT_FORMATS } from './formats';
 import { scopedDbName } from '../store/profile';
+import { sanitizeLabels, type LabelColor } from '../model/labels';
 
 export type MediaKind = 'video' | 'image' | 'audio';
 
@@ -35,6 +36,10 @@ export interface MediaAsset {
   size: number;
   folder: string;
   createdAt: number;
+  /** 色タグ（整理用）。付けていなければ undefined。 */
+  color?: LabelColor;
+  /** メモ（自由な文章）。無ければ undefined。 */
+  note?: string;
   /** 解析しきれなかった素材に付く注意書き（登録自体はする）。 */
   warning?: string;
   /**
@@ -519,7 +524,8 @@ class MediaRegistry {
       }
       // 実体が消えていた（ブラウザがファイル領域を片付けた等）プロキシは、無かったことにする。
       const proxy = proxyUrl ? rest.proxy : undefined;
-      this.assets.set(rest.id, { ...rest, proxy, url, proxyUrl });
+      const labels = sanitizeLabels(rest);
+      this.assets.set(rest.id, { ...rest, color: labels.color, note: labels.note, proxy, url, proxyUrl });
     }
     this.emit();
     this.probeServerProxies(true);
@@ -637,6 +643,41 @@ class MediaRegistry {
       this.probeServerProxies(true);
     }
     return added;
+  }
+
+  /**
+   * 複数の素材の色タグ・メモを 1 度に変える（再描画と保存を 1 回にまとめる）。
+   * `color: undefined` で色を外す。`note` は渡したものに置き換える（外すときは undefined）。
+   */
+  setLabels(ids: string[], patch: { color?: LabelColor | undefined; note?: string | undefined }) {
+    const keys = Object.keys(patch) as Array<'color' | 'note'>;
+    if (keys.length === 0) return;
+    const changed = new Set<string>();
+    for (const id of ids) {
+      const asset = this.assets.get(id);
+      if (!asset) continue;
+      const next = { ...asset };
+      let differs = false;
+      for (const key of keys) {
+        if (next[key] !== patch[key]) {
+          (next as Record<string, unknown>)[key] = patch[key];
+          differs = true;
+        }
+      }
+      if (!differs) continue;
+      this.assets.set(id, next);
+      changed.add(id);
+    }
+    if (changed.size === 0) return;
+    this.emit();
+    void (async () => {
+      for (const record of await dbAll()) {
+        if (!changed.has(record.id)) continue;
+        const next = { ...record };
+        for (const key of keys) (next as Record<string, unknown>)[key] = patch[key];
+        void dbPut(next);
+      }
+    })();
   }
 
   update(id: string, patch: Partial<Pick<MediaAsset, 'name' | 'folder'>>) {
