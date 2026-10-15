@@ -45,6 +45,7 @@ import {
   type TransitionType,
 } from '../../model/types';
 import { useApp } from '../../store/app';
+import { MoreSettings, useEasy } from '../UiModeToggle';
 import { useEditor } from '../../store/editor';
 import { ColorInput, EmptyHint, Field, MuteIcon, Panel, Segmented, Slider, SoundIcon, Tabs, Toggle } from '../ui';
 import { importFiles, useMediaAssets } from './MediaPanel';
@@ -77,6 +78,7 @@ export function Inspector() {
 
 function InspectorBody() {
   const { sequence, selection, apply } = useEditor();
+  const easy = useEasy();
   const [tab, setTab] = useState<TabKey>('props');
   const cursorRef: CursorRef = useRef(null);
 
@@ -88,12 +90,14 @@ function InspectorBody() {
     return (
       <Panel title={`${clips.length} 個のクリップ`}>
         <EmptyHint>複数選択中です。まとめて移動・削除できます。</EmptyHint>
-        <button type="button" className="wide" onClick={() => apply((seq) => removeClips(seq, selection, false))}>
+        <button type="button" className="wide" onClick={() => apply((seq) => removeClips(seq, selection, easy))}>
           まとめて削除
         </button>
-        <button type="button" className="wide ghost" onClick={() => apply((seq) => removeClips(seq, selection, true))}>
-          まとめてリップル削除
-        </button>
+        {!easy && (
+          <button type="button" className="wide ghost" onClick={() => apply((seq) => removeClips(seq, selection, true))}>
+            まとめてリップル削除
+          </button>
+        )}
       </Panel>
     );
   }
@@ -114,7 +118,7 @@ function InspectorBody() {
           <button type="button" onClick={() => player.seek(clip.start)}>
             頭出し
           </button>
-          <button type="button" className="danger" onClick={() => apply((seq) => removeClips(seq, [clip.id], false))}>
+          <button type="button" className="danger" onClick={() => apply((seq) => removeClips(seq, [clip.id], easy))}>
             削除
           </button>
         </div>
@@ -140,6 +144,7 @@ function useClipPatch(clip: Clip) {
 
 function SequenceInspector() {
   const { project, sequence, dispatch, apply } = useEditor();
+  const easy = useEasy();
   return (
     <Panel title="シーケンス">
       <Field label="タイトル">
@@ -164,6 +169,7 @@ function SequenceInspector() {
           ))}
         </div>
       </Field>
+      {!easy && (
       <div className="two-col">
         <Field label="フレームレート">
           <select value={sequence.fps} onChange={(e) => apply((seq) => ({ ...seq, fps: Number(e.target.value) }))}>
@@ -178,12 +184,13 @@ function SequenceInspector() {
           <ColorInput value={sequence.background} onChange={(background) => apply((seq) => ({ ...seq, background }), 'bg')} />
         </Field>
       </div>
+      )}
       <p className="muted">
         出力サイズ {sequence.width} × {sequence.height}
       </p>
       <SourceFpsHint />
       <EmptyHint>
-        クリップを選ぶと、ここで音量・不透明度・スケール・エフェクトを調整できます。
+        クリップを選ぶと、ここで音量・大きさ・エフェクトを調整できます。
         <br />
         プレビューはドラッグで移動、ホイールで拡大縮小です。
       </EmptyHint>
@@ -265,6 +272,7 @@ function TranscriptSection() {
   return (
     <>
       <p className="muted small">書き起こしから字幕を置く</p>
+      <MoreSettings summary="くわしい設定（見た目・文字数・書き起こしファイルの取り込み）">
       <div className="two-col">
         <Field label="体裁">
           <select value={preset} onChange={(e) => setPreset(e.target.value)}>
@@ -301,6 +309,7 @@ function TranscriptSection() {
       <button type="button" className="wide" onClick={() => fileRef.current?.click()}>
         書き起こしを選ぶ（SRT / VTT / JSON）
       </button>
+      </MoreSettings>
       <WhisperSection
         place={(cues, extra) => place(cues, '文字起こし', 0, extra)}
         busy={busy}
@@ -332,6 +341,7 @@ function WhisperSection({
   setNote: (v: string) => void;
   maxChars: number;
 }) {
+  const easy = useEasy();
   const { sequence, selection } = useEditor();
   const [support, setSupport] = useState<WhisperSupport | null>(null);
   const [modelId, setModelId] = useState<string>(WHISPER_MODELS[1].id);
@@ -487,7 +497,7 @@ function WhisperSection({
 
   return (
     <>
-      <p className="muted small">または、音から直接起こす</p>
+      <p className="muted small">{easy ? '音声から字幕を自動で作る' : 'または、音から直接起こす'}</p>
       {selectedSources.length > 0 ? (
         <p className="muted small">
           選んでいる {selectedSources.length} 個のクリップ（素材 {mediaCount} 本）から、使っている範囲だけを起こします。
@@ -503,6 +513,7 @@ function WhisperSection({
           ))}
         </select>
       </Field>
+      <MoreSettings summary="くわしい設定（精度・処理する場所・ネットなしで使う）">
       <div className="two-col">
         <Field label="モデル">
           <select value={modelId} onChange={(e) => setModelId(e.target.value)}>
@@ -533,6 +544,7 @@ function WhisperSection({
         onChange={setCareful}
       />
       <Toggle label="手元に置いたモデルだけを使う（ネット無し）" checked={local} onChange={setLocal} />
+      </MoreSettings>
       <button type="button" className="wide" disabled={busy || targets.length === 0} onClick={() => void run()}>
         {busy ? '起こしています…' : '音から文字を起こす'}
       </button>
@@ -574,6 +586,7 @@ function SourceFpsHint() {
 
 function PropsTab({ clip }: { clip: Clip }) {
   const patch = useClipPatch(clip);
+  const easy = useEasy();
   const asset = mediaRegistry.get(clip.mediaId);
   const visual = clip.kind === 'video' || clip.kind === 'image';
 
@@ -621,17 +634,7 @@ function PropsTab({ clip }: { clip: Clip }) {
         </>
       )}
 
-      <Field label="不透明度">
-        <Slider
-          value={clip.opacity}
-          min={0}
-          max={1}
-          onChange={(opacity) => patch({ opacity }, 'opacity')}
-          format={(v) => `${Math.round(v * 100)}%`}
-          onReset={() => patch({ opacity: 1 })}
-        />
-      </Field>
-      <Field label="スケール">
+      <Field label="大きさ">
         <Slider
           value={clip.scale}
           min={0.1}
@@ -642,7 +645,7 @@ function PropsTab({ clip }: { clip: Clip }) {
         />
       </Field>
       <div className="two-col">
-        <Field label="横位置">
+        <Field label="左右の位置">
           <Slider
             value={clip.x}
             min={-1}
@@ -652,7 +655,7 @@ function PropsTab({ clip }: { clip: Clip }) {
             onReset={() => patch({ x: 0 })}
           />
         </Field>
-        <Field label="縦位置">
+        <Field label="上下の位置">
           <Slider
             value={clip.y}
             min={-1}
@@ -663,18 +666,6 @@ function PropsTab({ clip }: { clip: Clip }) {
           />
         </Field>
       </div>
-      <Field label="回転">
-        <Slider
-          value={clip.rotate}
-          min={-180}
-          max={180}
-          step={1}
-          onChange={(rotate) => patch({ rotate }, 'rotate')}
-          format={(v) => `${v.toFixed(0)}°`}
-          onReset={() => patch({ rotate: 0 })}
-        />
-      </Field>
-
       <div className="two-col">
         <Field label="フェードイン" hint="秒">
           <Slider
@@ -699,6 +690,31 @@ function PropsTab({ clip }: { clip: Clip }) {
           />
         </Field>
       </div>
+
+      {easy ? (
+        <details className="more-settings">
+          <summary>くわしい設定（透明度・回転・切り抜きなど）</summary>
+      <Field label="濃さ（下げると透ける）">
+        <Slider
+          value={clip.opacity}
+          min={0}
+          max={1}
+          onChange={(opacity) => patch({ opacity }, 'opacity')}
+          format={(v) => `${Math.round(v * 100)}%`}
+          onReset={() => patch({ opacity: 1 })}
+        />
+      </Field>
+      <Field label="回転">
+        <Slider
+          value={clip.rotate}
+          min={-180}
+          max={180}
+          step={1}
+          onChange={(rotate) => patch({ rotate }, 'rotate')}
+          format={(v) => `${v.toFixed(0)}°`}
+          onReset={() => patch({ rotate: 0 })}
+        />
+      </Field>
 
       {visual && (
         <>
@@ -761,6 +777,96 @@ function PropsTab({ clip }: { clip: Clip }) {
 
           <hr />
           <TransitionControls clip={clip} />
+        </>
+      )}
+        </details>
+      ) : (
+        <>
+      <Field label="不透明度">
+        <Slider
+          value={clip.opacity}
+          min={0}
+          max={1}
+          onChange={(opacity) => patch({ opacity }, 'opacity')}
+          format={(v) => `${Math.round(v * 100)}%`}
+          onReset={() => patch({ opacity: 1 })}
+        />
+      </Field>
+      <Field label="回転">
+        <Slider
+          value={clip.rotate}
+          min={-180}
+          max={180}
+          step={1}
+          onChange={(rotate) => patch({ rotate }, 'rotate')}
+          format={(v) => `${v.toFixed(0)}°`}
+          onReset={() => patch({ rotate: 0 })}
+        />
+      </Field>
+
+      {visual && (
+        <>
+          <hr />
+          <Field label="画角への収め方">
+            <Segmented<'cover' | 'contain'>
+              value={clip.fit}
+              options={[
+                { value: 'cover', label: '全画面' },
+                { value: 'contain', label: '全体表示' },
+              ]}
+              onChange={(fit) => patch({ fit })}
+            />
+          </Field>
+
+          <Toggle
+            label="背景ぼかしで余白を埋める"
+            checked={clip.bgBlur.enabled}
+            onChange={(enabled) => patch({ bgBlur: { ...clip.bgBlur, enabled } })}
+          />
+          {clip.bgBlur.enabled && (
+            <div className="two-col">
+              <Field label="ぼかし強さ">
+                <Slider
+                  value={clip.bgBlur.strength}
+                  min={0.01}
+                  max={0.15}
+                  step={0.005}
+                  onChange={(strength) => patch({ bgBlur: { ...clip.bgBlur, strength } }, 'blurStrength')}
+                  format={(v) => `${Math.round(v * 100)}`}
+                  onReset={() => patch({ bgBlur: { ...clip.bgBlur, strength: DEFAULT_BG_BLUR.strength } })}
+                />
+              </Field>
+              <Field label="拡大率">
+                <Slider
+                  value={clip.bgBlur.zoom}
+                  min={1}
+                  max={2}
+                  step={0.05}
+                  onChange={(zoom) => patch({ bgBlur: { ...clip.bgBlur, zoom } }, 'blurZoom')}
+                  format={(v) => `${v.toFixed(2)}×`}
+                  onReset={() => patch({ bgBlur: { ...clip.bgBlur, zoom: DEFAULT_BG_BLUR.zoom } })}
+                />
+              </Field>
+            </div>
+          )}
+
+          <hr />
+          <ThreeBandSection clip={clip} />
+
+          <hr />
+          <CropSection clip={clip} />
+
+          {clip.kind === 'video' && (
+            <>
+              <hr />
+              <AnalysisSection clip={clip} />
+            </>
+          )}
+
+          <hr />
+          <TransitionControls clip={clip} />
+        </>
+      )}
         </>
       )}
     </>
@@ -1116,6 +1222,7 @@ function EffectTimingRow({
 function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; cursorRef: CursorRef }) {
   const patch = useClipPatch(clip);
   const { addTemplate } = useApp();
+  const easy = useEasy();
   const set = (changes: Partial<TextProps>, key?: string) => patch({ text: { ...text, ...changes } }, key);
   // 絵文字タブから挿入するとき、テキストエリアで最後に触れていた位置に入れられるよう覚えておく。
   const trackCursor = (e: SyntheticEvent<HTMLTextAreaElement>) => {
@@ -1148,6 +1255,43 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
         </div>
       </Field>
 
+      <div className="two-col">
+        <Field label="サイズ">
+          <Slider value={text.fontSize} min={20} max={220} step={1} onChange={(fontSize) => set({ fontSize }, 'size')} format={(v) => `${v.toFixed(0)}`} />
+        </Field>
+        <Field label="文字色">
+          <ColorInput value={text.color} onChange={(color) => set({ color }, 'color')} />
+        </Field>
+      </div>
+      <Field label="揃え">
+        <Segmented<TextAlign>
+          value={text.align}
+          options={[
+            { value: 'left', label: '左' },
+            { value: 'center', label: '中央' },
+            { value: 'right', label: '右' },
+          ]}
+          onChange={(align) => set({ align })}
+        />
+      </Field>
+
+      <Field label="位置">
+      <div className="chip-row">
+        <button type="button" className="chip" onClick={() => patch({ x: 0, y: -0.32 })}>
+          上
+        </button>
+        <button type="button" className="chip" onClick={() => patch({ x: 0, y: 0 })}>
+          中央
+        </button>
+        <button type="button" className="chip" onClick={() => patch({ x: 0, y: 0.28 })}>
+          下（字幕位置）
+        </button>
+      </div>
+
+      </Field>
+      {easy ? (
+        <details className="more-settings">
+          <summary>くわしい設定（フォント・フチ・影・動きなど）</summary>
       <Field label="フォント">
         <select value={text.fontFamily} onChange={(e) => set({ fontFamily: e.target.value })}>
           {FONT_OPTIONS.map((font) => (
@@ -1159,14 +1303,8 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
       </Field>
 
       <div className="two-col">
-        <Field label="サイズ">
-          <Slider value={text.fontSize} min={20} max={220} step={1} onChange={(fontSize) => set({ fontSize }, 'size')} format={(v) => `${v.toFixed(0)}`} />
-        </Field>
         <Field label="太さ">
           <Slider value={text.weight} min={100} max={900} step={100} onChange={(weight) => set({ weight }, 'weight')} format={(v) => `${v}`} />
-        </Field>
-        <Field label="文字色">
-          <ColorInput value={text.color} onChange={(color) => set({ color }, 'color')} />
         </Field>
         <Field label="フチ色">
           <ColorInput value={text.strokeColor} onChange={(strokeColor) => set({ strokeColor }, 'strokeColor')} />
@@ -1207,18 +1345,6 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
           <Slider value={text.bgOpacity} min={0} max={1} onChange={(bgOpacity) => set({ bgOpacity }, 'bgo')} format={(v) => `${Math.round(v * 100)}%`} />
         </Field>
       </div>
-
-      <Field label="揃え">
-        <Segmented<TextAlign>
-          value={text.align}
-          options={[
-            { value: 'left', label: '左' },
-            { value: 'center', label: '中央' },
-            { value: 'right', label: '右' },
-          ]}
-          onChange={(align) => set({ align })}
-        />
-      </Field>
 
       <Field label="入場アニメーション">
         <div className="chip-row wrap">
@@ -1268,18 +1394,12 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
       <hr />
       <CardFrameSection text={text} set={set} />
 
-      <div className="chip-row">
-        <button type="button" className="chip" onClick={() => patch({ x: 0, y: -0.32 })}>
-          上
-        </button>
-        <button type="button" className="chip" onClick={() => patch({ x: 0, y: 0 })}>
-          中央
-        </button>
-        <button type="button" className="chip" onClick={() => patch({ x: 0, y: 0.28 })}>
-          下（字幕位置）
-        </button>
-      </div>
 
+          <hr />
+          <SpeakerSection text={text} set={set} />
+
+          <hr />
+          <CardFrameSection text={text} set={set} />
       <button
         type="button"
         className="wide ghost"
@@ -1290,6 +1410,128 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
       >
         このスタイルをテンプレートに保存
       </button>
+        </details>
+      ) : (
+        <>
+      <Field label="フォント">
+        <select value={text.fontFamily} onChange={(e) => set({ fontFamily: e.target.value })}>
+          {FONT_OPTIONS.map((font) => (
+            <option key={font.value} value={font.value}>
+              {font.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+
+          <div className="two-col">
+        <Field label="太さ">
+          <Slider value={text.weight} min={100} max={900} step={100} onChange={(weight) => set({ weight }, 'weight')} format={(v) => `${v}`} />
+        </Field>
+        <Field label="フチ色">
+          <ColorInput value={text.strokeColor} onChange={(strokeColor) => set({ strokeColor }, 'strokeColor')} />
+        </Field>
+        <Field label="フチの太さ">
+          <Slider value={text.strokeWidth} min={0} max={20} step={0.5} onChange={(strokeWidth) => set({ strokeWidth }, 'sw')} format={(v) => v.toFixed(1)} />
+        </Field>
+        <Field label="外フチ色">
+          <ColorInput value={text.strokeColor2 ?? '#000000'} onChange={(strokeColor2) => set({ strokeColor2 }, 'strokeColor2')} />
+        </Field>
+        <Field label="外フチの太さ" hint="フチのさらに外側">
+          <Slider
+            value={text.strokeWidth2 ?? 0}
+            min={0}
+            max={20}
+            step={0.5}
+            onChange={(strokeWidth2) => set({ strokeWidth2 }, 'sw2')}
+            format={(v) => v.toFixed(1)}
+          />
+        </Field>
+        <Field label="影">
+          <Slider value={text.shadow} min={0} max={40} step={1} onChange={(shadow) => set({ shadow }, 'shadow')} format={(v) => v.toFixed(0)} />
+        </Field>
+        <Field label="影を下へ" hint="縁と影の中心をずらす">
+          <Slider
+            value={text.shadowY ?? text.shadow * 0.25}
+            min={0}
+            max={24}
+            step={1}
+            onChange={(shadowY) => set({ shadowY }, 'shadowY')}
+            format={(v) => v.toFixed(0)}
+          />
+        </Field>
+        <Field label="背景色">
+          <ColorInput value={text.bgColor} onChange={(bgColor) => set({ bgColor }, 'bgColor')} />
+        </Field>
+        <Field label="背景の濃さ">
+          <Slider value={text.bgOpacity} min={0} max={1} onChange={(bgOpacity) => set({ bgOpacity }, 'bgo')} format={(v) => `${Math.round(v * 100)}%`} />
+        </Field>
+          </div>
+      <Field label="入場アニメーション">
+        <div className="chip-row wrap">
+          {(Object.keys(TEXT_ANIMATION_LABELS) as TextAnimation[]).map((animation) => (
+            <button
+              key={animation}
+              type="button"
+              className={text.animation === animation ? 'chip active' : 'chip'}
+              onClick={() => set({ animation })}
+            >
+              {TEXT_ANIMATION_LABELS[animation]}
+            </button>
+          ))}
+        </div>
+      </Field>
+      <Field label="アニメーションの長さ" hint="秒">
+        <Slider
+          value={text.animationDuration}
+          min={0.1}
+          max={1.5}
+          step={0.05}
+          onChange={(animationDuration) => set({ animationDuration }, 'animDur')}
+          format={(v) => `${v.toFixed(2)}s`}
+        />
+      </Field>
+      <Field label="折り返し幅">
+        <Slider value={text.maxWidth} min={0.2} max={1} onChange={(maxWidth) => set({ maxWidth }, 'mw')} format={(v) => `${Math.round(v * 100)}%`} />
+      </Field>
+      <Field label="幅の合わせ方" hint="縮める側は、改行した所でだけ行が変わる">
+        <Segmented<TextFit>
+          value={text.fit ?? 'wrap'}
+          options={(Object.keys(TEXT_FIT_LABELS) as TextFit[]).map((fit) => ({ value: fit, label: TEXT_FIT_LABELS[fit] }))}
+          onChange={(fit) => set({ fit })}
+        />
+      </Field>
+      <Field label="種類" hint="字幕なしで書き出すと「字幕」だけが消える">
+        <Segmented<TextRole>
+          value={text.role ?? 'caption'}
+          options={(Object.keys(TEXT_ROLE_LABELS) as TextRole[]).map((role) => ({ value: role, label: TEXT_ROLE_LABELS[role] }))}
+          onChange={(role) => set({ role })}
+        />
+      </Field>
+
+      <hr />
+      <SpeakerSection text={text} set={set} />
+
+      <hr />
+      <CardFrameSection text={text} set={set} />
+
+
+          <hr />
+          <SpeakerSection text={text} set={set} />
+
+          <hr />
+          <CardFrameSection text={text} set={set} />
+      <button
+        type="button"
+        className="wide ghost"
+        onClick={() => {
+          const name = window.prompt('テンプレート名', previewText(text.content).split('\n')[0] || 'テロップ');
+          if (name) addTemplate({ kind: 'text', name, text });
+        }}
+      >
+        このスタイルをテンプレートに保存
+      </button>
+        </>
+      )}
     </>
   );
 }

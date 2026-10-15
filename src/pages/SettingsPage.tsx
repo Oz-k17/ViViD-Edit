@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { Diagnostics } from '../components/Diagnostics';
 import { LayoutToggle } from '../components/LayoutToggle';
+import { MoreSettings, UiModeToggle } from '../components/UiModeToggle';
 import { Brand, SiteNav } from '../components/SiteNav';
 import { Field, Panel, Segmented, Toggle } from '../components/ui';
 import { ASPECT_PRESETS } from '../model/types';
@@ -111,6 +112,7 @@ export default function SettingsPage() {
         <Brand />
         <SiteNav />
         <div className="topbar-actions">
+          <UiModeToggle />
           <LayoutToggle />
         </div>
       </header>
@@ -157,6 +159,7 @@ export default function SettingsPage() {
           </p>
         </Panel>
 
+        <MoreSettings summary="編集画面のレイアウト">
         <Panel title="編集画面のレイアウト">
           <p className="muted small">
             素材・インスペクタ・タイムラインは、見出しを掴んで左右のレールや下段へ移せます。
@@ -187,6 +190,7 @@ export default function SettingsPage() {
           </button>
         </Panel>
 
+        </MoreSettings>
         <Panel title="プロジェクトの受け渡し">
           <p className="muted small">
             編集内容をファイル 1 個にして、他の人に渡せます。
@@ -216,6 +220,7 @@ export default function SettingsPage() {
           {handoff && <p className={handoff.kind === 'warn' ? 'warn small' : 'muted small'}>{handoff.text}</p>}
         </Panel>
 
+        <MoreSettings summary="くわしい設定（使う人・素材の置き場所・書き出しの既定値・診断）">
         <Panel title="使う人">
           <p className="muted small">
             一台の端末を複数人で使うときに切り替えます。設定・下書き・取り込んだ素材は
@@ -408,6 +413,7 @@ export default function SettingsPage() {
           </p>
           <Diagnostics />
         </Panel>
+        </MoreSettings>
       </main>
     </div>
   );

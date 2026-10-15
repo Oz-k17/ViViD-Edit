@@ -3,6 +3,7 @@ import { Inspector } from '../components/editor/Inspector';
 import { ExportDialog } from '../components/editor/ExportDialog';
 import { MediaPanel, importFiles, seedSoundEffects } from '../components/editor/MediaPanel';
 import { ScriptPanel } from '../components/editor/ScriptPanel';
+import { GettingStarted } from '../components/editor/GettingStarted';
 import { MobileEditor } from '../components/editor/MobileEditor';
 import { MultiTimeline } from '../components/editor/MultiTimeline';
 import { useTimelineActions } from '../components/editor/timelineActions';
@@ -78,6 +79,7 @@ function Workspace({
         )}
         <section className="stage">
           <PreviewStage />
+          {settings.uiMode === 'easy' && <GettingStarted />}
         </section>
         {hasRight && (
           <DockSplitter
@@ -191,7 +193,7 @@ export default function EditorPage() {
       playPause: () => player.toggle(),
       split: () => apply((seq) => splitAt(seq, player.time, selection)),
       addText,
-      delete: () => apply((seq) => removeClips(seq, selection, false)),
+      delete: () => apply((seq) => removeClips(seq, selection, settings.uiMode === 'easy')),
       rippleDelete: () => apply((seq) => removeClips(seq, selection, true)),
       undo: () => dispatch({ type: 'undo' }),
       redo: () => dispatch({ type: 'redo' }),
@@ -247,7 +249,7 @@ export default function EditorPage() {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [settings.shortcuts, selection, sequence, apply, dispatch, timeline, setEditMode, insertMode, setInsertMode]);
+  }, [settings.shortcuts, settings.uiMode, selection, sequence, apply, dispatch, timeline, setEditMode, insertMode, setInsertMode]);
 
   const onDrop = async (event: React.DragEvent) => {
     event.preventDefault();

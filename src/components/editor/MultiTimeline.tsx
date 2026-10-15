@@ -94,6 +94,11 @@ interface Props {
 export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }: Props) {
   const { sequence, apply, selection, setSelection, editMode, setEditMode, insertMode, setInsertMode, markIn, markOut } = useEditor();
   const { settings, updateSettings } = useApp();
+  const easy = settings.uiMode === 'easy';
+  // 「かんたん」では編集モードの切り替えを隠す。前に選んだモードが残って、見えないまま効かないよう通常へ戻す。
+  useEffect(() => {
+    if (easy && editMode !== 'normal') setEditMode('normal');
+  }, [easy, editMode, setEditMode]);
   const actions = useTimelineActions();
   const scrollRef = useRef<HTMLDivElement>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
@@ -194,30 +199,36 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
   return (
     <div className={`tl${compact ? ' compact' : ''} mode-${editMode}`}>
       <div className="tl-toolbar">
-        <button type="button" onClick={() => apply((seq) => removeClips(seq, selection, false))} disabled={!selection.length}>
+        <button type="button" onClick={() => apply((seq) => removeClips(seq, selection, easy))} disabled={!selection.length} title={easy ? '削除（後ろのクリップを前へ詰めます）' : undefined}>
           削除
         </button>
-        <button
-          type="button"
-          onClick={() => apply((seq) => removeClips(seq, selection, true))}
-          disabled={!selection.length}
-          title="後続のクリップを詰めて削除（Shift+Delete）"
-        >
-          <Icon name="ripple-delete" />リップル削除
-        </button>
+        {!easy && (
+          <button
+            type="button"
+            onClick={() => apply((seq) => removeClips(seq, selection, true))}
+            disabled={!selection.length}
+            title="後続のクリップを詰めて削除（Shift+Delete）"
+          >
+            <Icon name="ripple-delete" />リップル削除
+          </button>
+        )}
         <span className="tl-count">{selection.length > 0 ? `${selection.length} 個選択中` : ''}</span>
         <span className="spacer" />
-        <button
-          type="button"
-          className={settings.snap ? 'active' : ''}
-          onClick={() => updateSettings({ snap: !settings.snap })}
-          title="クリップの端に吸着"
-        >
-          <Icon name="magnet" />スナップ
-        </button>
-        <button type="button" className={follow ? 'active' : ''} onClick={() => setFollow((f) => !f)} title="再生中だけ、再生ヘッドに合わせてスクロール">
-          <Icon name="link" />追従
-        </button>
+        {!easy && (
+          <>
+            <button
+              type="button"
+              className={settings.snap ? 'active' : ''}
+              onClick={() => updateSettings({ snap: !settings.snap })}
+              title="クリップの端に吸着"
+            >
+              <Icon name="magnet" />スナップ
+            </button>
+            <button type="button" className={follow ? 'active' : ''} onClick={() => setFollow((f) => !f)} title="再生中だけ、再生ヘッドに合わせてスクロール">
+              <Icon name="link" />追従
+            </button>
+          </>
+        )}
         <div className="zoom">
           <button type="button" onClick={() => setPps((p) => Math.max(MIN_PPS, p / 1.4))} title="縮小">
             <Icon name="minus" size={15} label="縮小" />
@@ -228,6 +239,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
         </div>
       </div>
 
+      {!easy && (
       <div className="tl-tools" role="toolbar" aria-label="編集ツール">
         <div className="tl-modes" role="radiogroup" aria-label="編集モード">
           {EDIT_MODES.map((m) => (
@@ -288,6 +300,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           <Icon name="step-forward" size={14} label="次の編集点へ" />
         </button>
       </div>
+      )}
 
       <div className="tl-body">
         <div className="tl-heads">

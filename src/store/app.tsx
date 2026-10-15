@@ -275,8 +275,15 @@ export function showPanel(layout: PanelLayout, id: PanelId): Partial<PanelLayout
 /** プレビューを描く解像度（長辺の px）。書き出しの画質には影響しない。 */
 export type PreviewQuality = 360 | 480 | 720 | 1080;
 
+/**
+ * 画面の複雑さ。`easy` は、よく使う操作だけを大きく出す（初めての人向け）。
+ * `full` はすべての機能を出す。機能が消えるわけではなく、「くわしい設定」の中に畳まれるだけ。
+ */
+export type UiMode = 'easy' | 'full';
+
 export interface Settings {
   lang: Lang;
+  uiMode: UiMode;
   layout: LayoutMode;
   previewQuality: PreviewQuality;
   /** 軽量版（プロキシ）がある素材は、プレビューと再生にそちらを使う。 */
@@ -298,11 +305,12 @@ export interface Settings {
 
 /** 初回だけ画面幅で当たりをつける。以後はユーザーが選んだものを記憶する。 */
 function guessLayout(): LayoutMode {
-  return typeof window !== 'undefined' && window.innerWidth < 820 ? 'mobile' : 'desktop';
+  return typeof window !== 'undefined' && window.innerWidth < 900 ? 'mobile' : 'desktop';
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   lang: 'ja',
+  uiMode: 'easy',
   layout: 'desktop',
   previewQuality: 720,
   useProxies: true,
@@ -340,6 +348,24 @@ const TEMPLATES_KEY = scopedKey('vivid.templates');
 // 旧名で保存されていた分を引き継ぐ（アプリ名変更にともなう一度きりの処理）。
 migrateStorageKey('tateyoko.settings', SETTINGS_KEY);
 migrateStorageKey('tateyoko.templates', TEMPLATES_KEY);
+
+function hadSavedSettings(key: string): boolean {
+  try {
+    return localStorage.getItem(key) !== null;
+  } catch {
+    return false;
+  }
+}
+
+function savedHasUiMode(key: string): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    const mode = raw ? (JSON.parse(raw) as { uiMode?: unknown }).uiMode : undefined;
+    return mode === 'easy' || mode === 'full';
+  } catch {
+    return false;
+  }
+}
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -404,6 +430,9 @@ function legacySharedBase(): string | undefined {
 export function AppProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<Settings>(() => {
     const loaded = load(SETTINGS_KEY, { ...DEFAULT_SETTINGS, layout: guessLayout() });
+    // 以前から使っている人（設定が保存済みで uiMode が無い）の画面は、今までどおり全機能のままにする。
+    // 勝手に機能が畳まれると、探し物になるので。初めての人だけ「かんたん」から始める。
+    if (hadSavedSettings(SETTINGS_KEY) && !savedHasUiMode(SETTINGS_KEY)) loaded.uiMode = 'full';
     // 保存済みの設定には、あとから増えたショートカットが無い。既定で埋めてから重ねる。
     return { ...loaded, shortcuts: { ...DEFAULT_SHORTCUTS, ...loaded.shortcuts }, panels: sanitizePanels(loaded.panels) };
   });
@@ -427,6 +456,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLang(settings.lang);
     // 管理ページ側の CSS もここを見て切り替える
     document.documentElement.dataset.layout = settings.layout;
+    document.documentElement.dataset.ui = settings.uiMode;
     save(SETTINGS_KEY, settings);
   }, [settings]);
 

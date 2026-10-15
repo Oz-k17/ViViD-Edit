@@ -21,12 +21,22 @@ import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
 import { Field, Segmented, Toggle } from '../ui';
 import { Icon } from '../Icon';
+import { useEasy } from '../UiModeToggle';
 
 const QUALITIES = [
   { value: 1080, label: '1080p' },
   { value: 720, label: '720p' },
   { value: 480, label: '480p' },
 ];
+
+/** 「かんたん」での言い方。数字だけ見せても、どれを選べばよいか分からない人向け。 */
+const EASY_QUALITY_LABELS: Record<number, string> = { 1080: 'きれい', 720: 'ふつう', 480: '軽い' };
+const EASY_ASPECT_LABELS: Record<string, string> = {
+  '9:16': '縦長（TikTok・Shorts・Reels）',
+  '1:1': '正方形',
+  '4:5': '縦（Instagram 投稿）',
+  '16:9': '横長（YouTube）',
+};
 
 const BITRATE_FLOOR = 2;
 
@@ -85,6 +95,7 @@ function saveErrorMessage(code: SaveErrorCode, blobSize: number): string {
 export function ExportDialog({ onClose }: { onClose: () => void }) {
   const { project, sequence } = useEditor();
   const { settings, updateSettings } = useApp();
+  const easy = useEasy();
   const [aspect, setAspect] = useState<AspectKey>(settings.exportAspect ?? sequence.aspect);
   const [quality, setQuality] = useState(settings.exportQuality);
   // カメラロールは WebM を受け付けないので、iOS アプリ版では MP4 を既定にする。
@@ -195,7 +206,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           </p>
         )}
 
-        <Field label="アスペクト比">
+        <Field label={easy ? 'どこに投稿しますか？' : 'アスペクト比'}>
           <div className="chip-row wrap">
             {ASPECT_PRESETS.map((preset) => (
               <button
@@ -205,7 +216,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                 disabled={running}
                 onClick={() => setAspect(preset.key)}
               >
-                {preset.label}
+                {easy ? (EASY_ASPECT_LABELS[preset.key] ?? preset.label) : preset.label}
               </button>
             ))}
           </div>
@@ -214,11 +225,14 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         <Field label="画質">
           <Segmented
             value={String(quality)}
-            options={QUALITIES.map((q) => ({ value: String(q.value), label: q.label }))}
+            options={QUALITIES.map((q) => ({ value: String(q.value), label: easy ? `${EASY_QUALITY_LABELS[q.value]}（${q.label}）` : q.label }))}
             onChange={(value) => !running && setQuality(Number(value))}
           />
         </Field>
 
+        {easy ? (
+          <details className="more-settings">
+            <summary>くわしい設定（形式・フレームレート・音量・ビットレート）</summary>
         <Field label="形式">
           <Segmented
             value={format}
@@ -236,15 +250,6 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             value={String(fps)}
             options={FPS_OPTIONS.map((value) => ({ value: String(value), label: `${value}` }))}
             onChange={(value) => !running && setFps(Number(value))}
-          />
-        </Field>
-
-        <Field label="テロップ" hint={captions > 0 ? `字幕は ${captions} 本` : '字幕はまだ無い'}>
-          <Toggle
-            checked={withoutCaption}
-            disabled={running}
-            onChange={setWithoutCaption}
-            label="字幕を入れずに書き出す"
           />
         </Field>
 
@@ -270,10 +275,73 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           <input type="range" min={2} max={20} step={1} value={bitrate} disabled={running} onChange={(e) => setBitrate(Number(e.target.value))} />
         </Field>
 
-        <p className="muted">
+          </details>
+        ) : (
+          <>
+        <Field label="形式">
+          <Segmented
+            value={format}
+            options={[
+              { value: 'auto', label: 'おまかせ' },
+              { value: 'mp4', label: 'MP4' },
+              { value: 'webm', label: 'WebM' },
+            ]}
+            onChange={(value) => !running && setFormat(value as typeof format)}
+          />
+        </Field>
+
+        <Field label="フレームレート">
+          <Segmented
+            value={String(fps)}
+            options={FPS_OPTIONS.map((value) => ({ value: String(value), label: `${value}` }))}
+            onChange={(value) => !running && setFps(Number(value))}
+          />
+        </Field>
+
+        <Field label="音量（試験的）" hint={frameAccurate ? '-14 LUFS・ピーク -1 dBTP' : 'この環境では使えません'}>
+          <Toggle
+            checked={finishAudio && frameAccurate}
+            disabled={running || !frameAccurate}
+            onChange={setFinishAudio}
+            label="音量を整えて書き出す"
+          />
+        </Field>
+
+        <Field label="エンコード" hint={frameAccurate ? 'WebM のとき、動きの激しい映像で速くなることがあります（画質は同じ）' : 'この環境では使えません'}>
+          <Toggle
+            checked={fast && frameAccurate}
+            disabled={running || !frameAccurate}
+            onChange={setFast}
+            label="高速エンコード（WebM 向け）"
+          />
+        </Field>
+
+        <Field label="ビットレート" hint={`${bitrate} Mbps`}>
+          <input type="range" min={2} max={20} step={1} value={bitrate} disabled={running} onChange={(e) => setBitrate(Number(e.target.value))} />
+        </Field>
+
+          </>
+        )}
+        {(!easy || captions > 0) && (
+        <Field label="テロップ" hint={captions > 0 ? `字幕は ${captions} 本` : '字幕はまだ無い'}>
+          <Toggle
+            checked={withoutCaption}
+            disabled={running}
+            onChange={setWithoutCaption}
+            label="字幕を入れずに書き出す"
+          />
+        </Field>
+        )}
+        {easy && (
+          <p className="muted">
+            {Math.floor(duration / 60) > 0 ? `${Math.floor(duration / 60)} 分 ` : ''}
+            {Math.round(duration % 60)} 秒の動画 ・ 約 {formatBytes(estimatedBytes)}
+          </p>
+        )}
+        {!easy && <p className="muted">
           {size.width} × {size.height} ・ {fps}fps ・ {mime?.ext.toUpperCase() ?? '—'} ・ 尺 {duration.toFixed(1)} 秒 ・ 予想サイズ 約{' '}
           {formatBytes(estimatedBytes)}
-        </p>
+        </p>}
 
         {native && format !== 'mp4' && !running && (
           <p className="muted small">
@@ -342,7 +410,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             </button>
             {/* どのコーデックで書き出したかは、再生できない・音が出ないときの手がかりになる。 */}
             <br />
-            <span className="muted small">{codecSummary(result.mimeType)}</span>
+            {!easy && <span className="muted small">{codecSummary(result.mimeType)}</span>}
           </p>
         )}
         {result?.note && <p className="muted small">{result.note}</p>}

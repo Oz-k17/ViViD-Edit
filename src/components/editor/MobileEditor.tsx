@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { player } from '../../engine/player';
 import { removeClips, splitAt } from '../../model/ops';
+import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
 import { Inspector } from './Inspector';
 import { MediaPanel } from './MediaPanel';
 import { MultiTimeline } from './MultiTimeline';
 import { PreviewStage } from './PreviewStage';
 import { Icon } from '../Icon';
+import { GettingStarted } from './GettingStarted';
 
 type Sheet = 'media' | 'edit' | 'timeline';
 
@@ -33,6 +35,7 @@ export function MobileEditor({
   onAddText: () => void;
 }) {
   const { apply, selection } = useEditor();
+  const easy = useApp().settings.uiMode === 'easy';
   const [sheet, setSheet] = useState<Sheet>('timeline');
   const [height, setHeight] = useState(() => Math.round(window.innerHeight * 0.36));
   const collapsedHeight = 42;
@@ -73,6 +76,7 @@ export function MobileEditor({
     <div className="mobile">
       <div className="mobile-stage">
         <PreviewStage />
+        {easy && <GettingStarted />}
       </div>
 
       <div className="mobile-actions">
@@ -86,17 +90,19 @@ export function MobileEditor({
           type="button"
           className="danger"
           disabled={selection.length === 0}
-          onClick={() => apply((seq) => removeClips(seq, selection, false))}
+          onClick={() => apply((seq) => removeClips(seq, selection, easy))}
         >
           <Icon name="trash" />削除
         </button>
-        <button
-          type="button"
-          disabled={selection.length === 0}
-          onClick={() => apply((seq) => removeClips(seq, selection, true))}
-        >
-          <Icon name="ripple-delete" />詰めて削除
-        </button>
+        {!easy && (
+          <button
+            type="button"
+            disabled={selection.length === 0}
+            onClick={() => apply((seq) => removeClips(seq, selection, true))}
+          >
+            <Icon name="ripple-delete" />詰めて削除
+          </button>
+        )}
       </div>
 
       <div className="mobile-sheet" style={{ height }}>
