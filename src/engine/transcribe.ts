@@ -6,7 +6,7 @@
  * 置いていなければ、その旨を返して素通りさせる。
  *
  * `file://` から開いた場合（iOS 版）は Worker も fetch も通らないので、
- * ここは必ず「使えません」を返す。取り込み（SRT / VTT / JSON）は今までどおり使える。
+ * ここは必ず「使えません」を返す。
  */
 
 import { cuesFromSegments, cuesFromWords, dropHallucinations, type CleanResult, type Cue, type ResultChunk } from '../model/transcript';

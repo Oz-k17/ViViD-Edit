@@ -12,7 +12,6 @@ import {
   cuesByPart,
   groupTranscribeTargets,
   mergeClipCues,
-  parseTranscript,
   tidyCues,
   type ConcatPart,
 } from '../../model/transcript';
@@ -61,7 +60,7 @@ type CursorRef = MutableRefObject<{ clipId: string; pos: number } | null>;
 /**
  * インスペクタ。上は選んでいるものによって変わり、下の「字幕」は**常に出る**。
  *
- * 字幕の取り込みと文字起こしは、どれか 1 つのクリップに対する操作ではないので、
+ * 文字起こしは、どれか 1 つのクリップに対する操作ではないので、
  * 最初はシーケンスの欄（＝何も選んでいないとき）に置いていた。
  * ところが素材を置いた直後はそのクリップが選ばれるので、**まず目に入らない**。
  * 常に同じ場所へ出し、選び直しても消えないようにしてある
@@ -225,25 +224,22 @@ function CaptionPanel() {
 }
 
 /**
- * 書き起こし（SRT / VTT / Whisper の JSON）を読んで、テロップを一気に並べる。
+ * 音から起こした字幕を、テロップとして一気に並べる。
  *
- * 文字起こしそのものはこの道具の外で作る前提。時刻付きの文さえあれば、
- * 置き場所を手で決めずに済む。長い行は読める文字数へ割り、短すぎる行は
- * 次の行にぶつからない範囲で伸ばす（`model/transcript.ts`）。
+ * 長い行は読める文字数へ割り、短すぎる行は次の行にぶつからない範囲で伸ばす（`model/transcript.ts`）。
+ * （以前は SRT / VTT / JSON のファイルを選んで取り込むこともできたが、使わないので外した。）
  */
 function TranscriptSection() {
   const { apply } = useEditor();
   const [preset, setPreset] = useState('tv');
   const [maxChars, setMaxChars] = useState(24);
-  const [offset, setOffset] = useState(0);
   const [extendShort, setExtendShort] = useState(true);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
 
-  /** 整えて置き、やったことをそのまま知らせる。取り込みでも文字起こしでも同じ道を通る。 */
-  const place = (cues: Parameters<typeof tidyCues>[0], label: string, shift = 0, extra = '') => {
-    const tidy = tidyCues(cues, { maxChars, offset: shift, extendShort });
+  /** 整えて置き、やったことをそのまま知らせる。 */
+  const place = (cues: Parameters<typeof tidyCues>[0], label: string, extra = '') => {
+    const tidy = tidyCues(cues, { maxChars, extendShort });
     const style = TEXT_PRESETS.find((p) => p.key === preset)?.text;
     apply((seq) =>
       buildCaptionClips(seq, tidy.cues, SPEAKERS, {
@@ -259,20 +255,17 @@ function TranscriptSection() {
     setNote(parts.join('。') + '。' + extra);
   };
 
-  const load = async (file: File) => {
-    const source = await file.text();
-    const parsed = parseTranscript(source);
-    if (parsed.length === 0) {
-      setNote('読めませんでした。SRT・VTT・Whisper の JSON のどれかを選んでください。');
-      return;
-    }
-    place(parsed, '字幕', offset);
-  };
-
   return (
     <>
-      <p className="muted small">書き起こしから字幕を置く</p>
-      <MoreSettings summary="くわしい設定（見た目・文字数・書き起こしファイルの取り込み）">
+      <WhisperSection
+        place={(cues, extra) => place(cues, '文字起こし', extra)}
+        busy={busy}
+        setBusy={setBusy}
+        setNote={setNote}
+        maxChars={maxChars}
+      />
+      {note && <p className="muted small">{note}</p>}
+      <MoreSettings summary="くわしい設定（字幕の見た目・1 枚の文字数）">
       <div className="two-col">
         <Field label="体裁">
           <select value={preset} onChange={(e) => setPreset(e.target.value)}>
@@ -287,37 +280,12 @@ function TranscriptSection() {
           <Slider value={maxChars} min={8} max={60} step={1} onChange={setMaxChars} format={(v) => v.toFixed(0)} />
         </Field>
       </div>
-      <Field label="先頭のずれ" hint="秒。素材の途中から起こしたとき">
-        <Slider value={offset} min={-60} max={600} step={0.5} onChange={setOffset} format={(v) => v.toFixed(1)} />
-      </Field>
       <Toggle
         label="短い行を読める長さまで伸ばす"
         checked={extendShort}
         onChange={setExtendShort}
       />
-      <input
-        ref={fileRef}
-        type="file"
-        accept=".srt,.vtt,.json,.txt,text/plain,application/json"
-        style={{ display: 'none' }}
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          e.target.value = '';
-          if (file) void load(file);
-        }}
-      />
-      <button type="button" className="wide" onClick={() => fileRef.current?.click()}>
-        書き起こしを選ぶ（SRT / VTT / JSON）
-      </button>
       </MoreSettings>
-      <WhisperSection
-        place={(cues, extra) => place(cues, '文字起こし', 0, extra)}
-        busy={busy}
-        setBusy={setBusy}
-        setNote={setNote}
-        maxChars={maxChars}
-      />
-      {note && <p className="muted small">{note}</p>}
     </>
   );
 }
@@ -371,7 +339,7 @@ function WhisperSection({
     return (
       <p className="muted small">
         音からの文字起こしは、この開き方では使えません（{support.reason}）。
-        書き起こしファイルの取り込みは使えます。
+        NAS（Docker 版）から開くと使えます。
       </p>
     );
   }
