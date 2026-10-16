@@ -1219,6 +1219,22 @@ function EffectTimingRow({
   );
 }
 
+/**
+ * テロップの入場の動きを、その場で一度だけ見せる。頭へ戻して再生し、動き終わったら止める。
+ * 選び直すたびに文字がどう入ってくるかを、再生ボタンを探さずに確かめられる。
+ */
+let entrancePause: ReturnType<typeof setTimeout> | undefined;
+function previewEntrance(clip: Clip, animationSeconds: number) {
+  clearTimeout(entrancePause);
+  player.seek(clip.start);
+  if (!player.playing) player.play();
+  const until = clip.start + Math.min(clip.duration, animationSeconds + 0.6);
+  entrancePause = setTimeout(() => {
+    // 途中で別の所へ飛んだり止めたりしたなら、こちらからは触らない。
+    if (player.playing && player.time >= clip.start && player.time <= until + 0.5) player.pause();
+  }, (until - clip.start) * 1000);
+}
+
 function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; cursorRef: CursorRef }) {
   const patch = useClipPatch(clip);
   const { addTemplate } = useApp();
@@ -1353,11 +1369,22 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
               key={animation}
               type="button"
               className={text.animation === animation ? 'chip active' : 'chip'}
-              onClick={() => set({ animation })}
+              onClick={() => {
+                set({ animation });
+                previewEntrance(clip, text.animationDuration);
+              }}
             >
               {TEXT_ANIMATION_LABELS[animation]}
             </button>
           ))}
+          <button
+            type="button"
+            className="chip ghost"
+            title="このテロップの頭から、入ってくる動きを再生します"
+            onClick={() => previewEntrance(clip, text.animationDuration)}
+          >
+            <Icon name="play" />動きを確認
+          </button>
         </div>
       </Field>
       <Field label="アニメーションの長さ" hint="秒">

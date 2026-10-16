@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { useDockGrip } from './editor/PanelDock';
 import { Icon } from './Icon';
 
@@ -53,9 +53,20 @@ interface SegmentedProps<T extends string> {
   onChange: (value: T) => void;
 }
 
+/**
+ * 選んだ側の下に敷く「つまみ」の位置。CSS の ::before がこの 2 つの値で横へ滑る
+ * （iOS のセグメントと同じく、塗りが動いて選び直したことが目で追える）。
+ * 選んでいるものが無いときは何も返さず、つまみも出さない。
+ */
+export function thumbStyle(index: number, count: number): CSSProperties | undefined {
+  if (index < 0 || count <= 0) return undefined;
+  return { '--thumb-i': index, '--thumb-n': count } as CSSProperties;
+}
+
 export function Segmented<T extends string>({ value, options, onChange }: SegmentedProps<T>) {
+  const index = options.findIndex((option) => option.value === value);
   return (
-    <div className="segmented" role="group">
+    <div className="segmented" role="group" style={thumbStyle(index, options.length)}>
       {options.map((option) => (
         <button
           key={option.value}
@@ -125,8 +136,9 @@ export function Tabs<T extends string>({
   options: { value: T; label: string }[];
   onChange: (value: T) => void;
 }) {
+  const index = options.findIndex((option) => option.value === value);
   return (
-    <div className="tabs" role="tablist">
+    <div className="tabs" role="tablist" style={thumbStyle(index, options.length)}>
       {options.map((option) => (
         <button
           key={option.value}

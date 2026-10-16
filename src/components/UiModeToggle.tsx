@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { useApp, type UiMode } from '../store/app';
+import { thumbStyle } from './ui';
 
 const OPTIONS: { value: UiMode; label: string; hint: string }[] = [
   { value: 'easy', label: 'かんたん', hint: 'よく使う操作だけを表示します' },
@@ -9,8 +10,9 @@ const OPTIONS: { value: UiMode; label: string; hint: string }[] = [
 /** 画面の複雑さの切り替え。どちらにしても、機能が消えるわけではない（くわしくへ戻せば全部出る）。 */
 export function UiModeToggle() {
   const { settings, updateSettings } = useApp();
+  const index = OPTIONS.findIndex((o) => o.value === settings.uiMode);
   return (
-    <div className="ui-mode" role="radiogroup" aria-label="表示の詳しさ">
+    <div className="ui-mode" role="radiogroup" aria-label="表示の詳しさ" style={thumbStyle(index, OPTIONS.length)}>
       {OPTIONS.map((o) => (
         <button
           key={o.value}

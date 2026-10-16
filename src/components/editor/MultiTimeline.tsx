@@ -61,6 +61,33 @@ export function displayTracks(sequence: Sequence): Track[] {
   return [...byKind('text').reverse(), ...byKind('video').reverse(), ...byKind('audio')];
 }
 
+/**
+ * 新しく現れたクリップ（分割で生まれた側・置いたばかりのもの）を覚えておき、
+ * 出てきた瞬間だけ軽く弾ませる。開いた時点で既にあったクリップは動かさない。
+ * タイムラインはスマホのシート切り替えで作り直されるので、部品の外に持つ。
+ */
+const FRESH_MS = 450;
+const bornAt = new Map<string, number>();
+let knownClipIds: Set<string> | null = null;
+
+function noteClips(clips: Clip[]) {
+  if (!knownClipIds) {
+    knownClipIds = new Set(clips.map((clip) => clip.id));
+    return;
+  }
+  const now = performance.now();
+  for (const clip of clips) {
+    if (knownClipIds.has(clip.id)) continue;
+    knownClipIds.add(clip.id);
+    bornAt.set(clip.id, now);
+  }
+}
+
+function isFresh(id: string): boolean {
+  const born = bornAt.get(id);
+  return born !== undefined && performance.now() - born < FRESH_MS;
+}
+
 function beginDrag(
   event: React.PointerEvent,
   onMove: (dx: number, dy: number, native: PointerEvent) => void,
@@ -74,8 +101,11 @@ function beginDrag(
   if (active instanceof HTMLElement && active !== document.body) active.blur();
   const startX = event.clientX;
   const startY = event.clientY;
+  // ドラッグ中はクリップの位置の動き（詰める時のアニメーション）を止める。指から遅れて付いてくると掴みにくい。
+  document.documentElement.classList.add('tl-dragging');
   const move = (e: PointerEvent) => onMove(e.clientX - startX, e.clientY - startY, e);
   const up = () => {
+    document.documentElement.classList.remove('tl-dragging');
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     onEnd?.();
@@ -94,6 +124,7 @@ interface Props {
 export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }: Props) {
   const { sequence, apply, selection, setSelection, editMode, setEditMode, insertMode, setInsertMode, markIn, markOut } = useEditor();
   const { settings, updateSettings } = useApp();
+  noteClips(sequence.clips);
   const easy = settings.uiMode === 'easy';
   // 「かんたん」では編集モードの切り替えを隠す。前に選んだモードが残って、見えないまま効かないよう通常へ戻す。
   useEffect(() => {
@@ -568,7 +599,7 @@ function ClipBlock({
 
   return (
     <div
-      className={`tl-clip kind-${clip.kind}${selected ? ' selected' : ''}`}
+      className={`tl-clip kind-${clip.kind}${selected ? ' selected' : ''}${isFresh(clip.id) ? ' fresh' : ''}`}
       style={{
         left: clip.start * pps,
         width,
