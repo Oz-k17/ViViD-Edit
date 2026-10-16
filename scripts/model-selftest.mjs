@@ -1145,6 +1145,18 @@ eq('空文字', wrap('', 10), ['']);
   eq('正しい保存値は残す', L.sanitizeLabels({ color: 'green', note: ' ok ' }), { color: 'green', note: 'ok' });
 }
 
+// ---- 版の印の比べ方 ----
+{
+  const V = await import('../src/model/version.ts');
+  eq('印から日時を取り出す', V.stampTime('2026-10-16 17:26（日本時間）'), '2026-10-16 17:26');
+  eq('読めない印は null', V.stampTime('不明'), null);
+  check('新しい版を見分ける', V.isNewer('2026-10-17 09:00（日本時間）', '2026-10-16 17:26（日本時間）'));
+  check('同じ版は新しくない', !V.isNewer('2026-10-16 17:26（日本時間）', '2026-10-16 17:26（日本時間）'));
+  check('古い版は新しくない', !V.isNewer('2026-10-15 23:59（日本時間）', '2026-10-16 00:00（日本時間）'));
+  check('どちらかが読めなければ出さない', !V.isNewer('2026-10-17 09:00', '') && !V.isNewer(null, '2026-10-16 17:26'));
+  check('年をまたいでも正しく比べる', V.isNewer('2027-01-01 00:00', '2026-12-31 23:59'));
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

@@ -1,4 +1,5 @@
 import { Routes } from './router';
+import { UpdateBanner } from './components/UpdateBanner';
 import EditorPage from './pages/EditorPage';
 import MediaLibraryPage from './pages/MediaLibraryPage';
 import SettingsPage from './pages/SettingsPage';
@@ -11,6 +12,7 @@ export default function App() {
   return (
     <AppProvider>
       <EditorProvider>
+        <UpdateBanner />
         {/* 静的ホスティングでも深いリンクが壊れないよう、ハッシュで切り替える（router.tsx） */}
         <Routes
           routes={{

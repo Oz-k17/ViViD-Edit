@@ -8,30 +8,28 @@ Premiere Pro 風のマルチトラックタイムラインを持ちながら、T
 
 ## ダウンロード
 
-### ⬇ [**ViViD-Edit-main.zip をダウンロード**](https://github.com/Oz-k17/ViViD-Edit/archive/refs/heads/main.zip)
+使う端末のボタンを押すだけです。**いつ押しても、その時点の最新版**が落ちてきます。
 
-<!-- version -->いまの版: **2026-10-16 17:57（日本時間）** に組み立てたもの<!-- /version -->
+| 端末 | ダウンロード | 落としたあと |
+| --- | --- | --- |
+| **iPad** | ⬇ [**iPad 用**](https://github.com/Oz-k17/ViViD-Edit/releases/download/latest/ViViD-Edit-iPad.zip) | 「ファイル」で ZIP をタップ → 出てきた `ViVidEdit.swiftpm` をタップ → Swift Playgrounds で ▶ |
+| **パソコン** | ⬇ [**パソコン用**](https://github.com/Oz-k17/ViViD-Edit/releases/download/latest/ViViD-Edit-PC.zip) | ZIP を展開 → `ViViD-Edit` フォルダの `index.html` をブラウザで開く |
+| iPhone | （ZIP では動きません） | 下の「iPhone について」 |
 
-ビルド済みのものが入っているので、展開すればそのまま使えます。
-**最新かどうかは、開いたアプリの「設定 → このアプリについて」の「組み立て」の日時が、上の日時と同じかで確かめられます。**
-iPhone / iPad の Safari でもこのリンクから「ファイル」アプリに保存でき、
-保存した ZIP をタップすると同じ場所に展開されます。
+<!-- version -->いまの版: **2026-10-16 19:21（日本時間）** に組み立てたもの<!-- /version -->
+
+- **新しい版が出ると、アプリが知らせます。** ダウンロードして使っている版（パソコンのファイル・iPad アプリ）は、開いたときにネットにつながっていれば、
+  新しい版があるかを調べて、画面の下に「新しい版があります」とダウンロードのボタンを出します（6 時間に 1 回まで。つながらなければ何もしません）
+- 最新かどうかは、アプリの「設定 → このアプリについて」の「組み立て」の日時が、上の「いまの版」と同じかで確かめられます
+- ソースも含めた全部入りは [ViViD-Edit-main.zip](https://github.com/Oz-k17/ViViD-Edit/archive/refs/heads/main.zip)（開発する人向け。展開後は `docs/index.html` か `ios/ViVidEdit.swiftpm`）
 
 **古いものが開いてしまうとき**（ダウンロードし直したのに直っていない）:
 
-- **前に展開したフォルダが残っていませんか。** 同じ場所でもう一度展開すると、新しいほうは `ViViD-Edit-main 2` のような**別の名前**になり、
-  古いフォルダを開き続けてしまいます。古い `ViViD-Edit-main` フォルダと ZIP を消してから、ダウンロード・展開し直してください
+- **前に展開したフォルダが残っていませんか。** 同じ場所でもう一度展開すると、新しいほうは `ViViD-Edit 2` や `ViVidEdit 2.swiftpm` のような**別の名前**になり、
+  古いほうを開き続けてしまいます。古いフォルダと ZIP を消してから、ダウンロード・展開し直してください
 - **iPad の Swift Playgrounds は、前に開いたアプリの一覧を覚えています。** 一覧にある古い「ViViD Edit」を開くと古いままです。
-  一覧から古いものを削除し、新しく展開したフォルダの `ios/ViVidEdit.swiftpm` をタップして開き直してください
-- **ブラウザが古いダウンロードを使い回していないか。** 保存先に `main (1).zip` のような名前で増えていたら、新しいほうを展開してください
-
-展開したあとにすることは端末で違います。
-
-| 端末 | すること |
-| --- | --- |
-| パソコン | `docs/index.html` をブラウザで開く |
-| iPad | `ios/ViVidEdit.swiftpm` をタップ → Swift Playgrounds が開くので ▶ で実行 |
-| iPhone | **ZIP からは動かせません**（下記参照）。GitHub Pages の URL を使ってください |
+  一覧から古いものを削除し、新しく展開した `ViVidEdit.swiftpm` をタップして開き直してください
+- **ブラウザが古いダウンロードを使い回していないか。** 保存先に `ViViD-Edit-iPad (1).zip` のような名前で増えていたら、新しいほうを展開してください
 
 **iPhone について。** Swift Playgrounds は iPad と Mac 向けで iPhone 版が無いため、`.swiftpm` を
 その場で開くことはできません。また iPhone の Safari は「ファイル」アプリの中にある HTML を開いても

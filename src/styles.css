@@ -3376,4 +3376,40 @@ html.tl-dragging .tl-clip {
   0% { opacity: 0; transform: translateY(12px); }
   12%, 80% { opacity: 1; transform: none; }
   100% { opacity: 0; transform: translateY(-6px); }
+/* ---------- 新しい版のお知らせ ---------- */
+
+.update-banner {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  width: min(640px, calc(100% - 32px));
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: var(--bg-raised);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+}
+
+.update-banner span {
+  flex: 1 1 260px;
+}
+
+.update-banner a.button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  text-decoration: none;
+  font-weight: 600;
 }

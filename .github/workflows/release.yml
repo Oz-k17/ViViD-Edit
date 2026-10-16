@@ -1,0 +1,60 @@
+# main に新しい版が入るたびに、端末ごとの小さな ZIP を作って「latest」リリースに置き直す。
+#
+# README のダウンロードボタンは、いつも同じ URL を指す:
+#   https://github.com/Oz-k17/ViViD-Edit/releases/download/latest/ViViD-Edit-iPad.zip
+#   https://github.com/Oz-k17/ViViD-Edit/releases/download/latest/ViViD-Edit-PC.zip
+# 中身はリポジトリに入っている組み立て済みのもの（docs/ と ios/ViVidEdit.swiftpm）なので、ここでは組み立てない。
+name: 最新版の ZIP を作る
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'ios/ViVidEdit.swiftpm/**'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-latest
+  cancel-in-progress: true
+
+jobs:
+  zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ZIP を作る
+        run: |
+          set -eu
+          stamp=$(python3 -c "import json;print(json.load(open('docs/version.json'))['stamp'])")
+          echo "STAMP=$stamp" >> "$GITHUB_ENV"
+          mkdir -p out
+          # パソコン用: 展開すると「ViViD-Edit」フォルダの中に index.html がある
+          mkdir -p pkg/ViViD-Edit && cp -R docs/. pkg/ViViD-Edit/
+          (cd pkg && zip -qr ../out/ViViD-Edit-PC.zip ViViD-Edit)
+          # iPad 用: 展開すると ViVidEdit.swiftpm がそのまま出てくる（タップすれば Swift Playgrounds で開く）
+          (cd ios && zip -qr ../out/ViViD-Edit-iPad.zip ViVidEdit.swiftpm -x '*/.build/*' '*/.swiftpm/*')
+          ls -la out
+
+      - name: latest リリースへ置き直す
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          notes="組み立て: ${STAMP}（commit ${GITHUB_SHA::7}）
+
+          - iPad: ViViD-Edit-iPad.zip を「ファイル」に保存 → タップして展開 → ViVidEdit.swiftpm をタップ
+          - パソコン: ViViD-Edit-PC.zip を展開 → ViViD-Edit フォルダの index.html を開く"
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest out/*.zip --clobber
+            gh release edit latest --title "最新版（${STAMP}）" --notes "$notes" --latest
+          else
+            gh release create latest out/*.zip --title "最新版（${STAMP}）" --notes "$notes" --latest
+          fi
+          # タグも、いまの commit へ動かす（リリースの「どの版か」が分かるように）
+          git tag -f latest && git push -f origin latest
