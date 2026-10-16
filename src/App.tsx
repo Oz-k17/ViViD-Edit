@@ -5,6 +5,7 @@ import SettingsPage from './pages/SettingsPage';
 import TemplatesPage from './pages/TemplatesPage';
 import { AppProvider } from './store/app';
 import { EditorProvider } from './store/editor';
+import { ToastHost } from './components/Toast';
 
 export default function App() {
   return (
@@ -20,6 +21,7 @@ export default function App() {
           }}
           fallback={() => <EditorPage />}
         />
+        <ToastHost />
       </EditorProvider>
     </AppProvider>
   );

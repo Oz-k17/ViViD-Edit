@@ -91,6 +91,13 @@
   --font-ui: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Yu Gothic',
     'Noto Sans JP', system-ui, 'Segoe UI', sans-serif;
   --font-mono: ui-monospace, 'SFMono-Regular', 'DM Mono', Menlo, monospace;
+  /* ===== 動き =====
+     操作への返事は 0.15〜0.35 秒に収める。長いと「待たされる」に変わる。 */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-press: cubic-bezier(0.3, 0.7, 0.4, 1);
+  --ease-spring: cubic-bezier(0.3, 1.4, 0.5, 1);
+  --dur-fast: 0.18s;
+  --dur-mid: 0.3s;
   color-scheme: dark;
 }
 
@@ -129,6 +136,8 @@ body {
   *::after {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
+    /* 繰り返しの動き（光る・脈打つ）は、短くしても点滅になるだけなので 1 回で止める。 */
+    animation-iteration-count: 1 !important;
   }
 }
 
@@ -145,7 +154,8 @@ button {
   min-height: 36px;
   font-size: var(--ios-subhead);
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease,
+    transform 0.14s var(--ease-press);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -158,8 +168,10 @@ button:hover:not(:disabled) {
   background: var(--ios-fill-2);
 }
 
-button:active:not(:disabled) {
-  opacity: 0.6;
+/* 押した手応えは、薄くするより小さく沈ませる（iOS の押し込み）。 */
+button:active:not(:disabled):not(.bin-twisty) {
+  opacity: 0.82;
+  transform: scale(0.96);
 }
 
 button:disabled {
@@ -3143,4 +3155,225 @@ html[data-ui='easy'] .chip {
 .app.mobile-layout .ui-mode button {
   padding: 6px 10px;
   font-size: 12px;
+}
+
+/* ---------- 操作の動き ----------
+   押した・選んだ・変わった、を目で追えるようにする。どれも 0.15〜0.45 秒で終わり、
+   「視差効果を減らす」の端末では冒頭の指定でほぼ止まる。 */
+
+/* セグメント・タブ・かんたん/くわしく: 選んだ側の塗り（つまみ）が横へ滑る。
+   位置は thumbStyle()（ui.tsx）が --thumb-i / --thumb-n で渡す。 */
+.segmented,
+.tabs,
+.mobile-tabs,
+.ui-mode {
+  --thumb-pad: 2px;
+  --thumb-gap: 2px;
+  position: relative;
+  isolation: isolate;
+}
+
+.ui-mode {
+  --thumb-pad: 0px;
+  --thumb-gap: 0px;
+  /* つまみの幅を揃えるため、2 つのボタンを同じ幅にする */
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+}
+
+.segmented[style*='--thumb-i']::before,
+.tabs[style*='--thumb-i']::before,
+.mobile-tabs[style*='--thumb-i']::before,
+.ui-mode[style*='--thumb-i']::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  top: var(--thumb-pad);
+  bottom: var(--thumb-pad);
+  width: calc((100% - 2 * var(--thumb-pad) - (var(--thumb-n) - 1) * var(--thumb-gap)) / var(--thumb-n));
+  left: calc(
+    var(--thumb-pad) +
+      var(--thumb-i) * ((100% - 2 * var(--thumb-pad) - (var(--thumb-n) - 1) * var(--thumb-gap)) / var(--thumb-n) + var(--thumb-gap))
+  );
+  border-radius: 7px;
+  background: var(--ios-fill-1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: left var(--dur-mid) var(--ease-out);
+}
+
+.ui-mode[style*='--thumb-i']::before {
+  border-radius: 0;
+  background: var(--accent-soft);
+  box-shadow: none;
+}
+
+/* つまみがある所では、ボタン自身は塗らない（つまみが下から見える） */
+.segmented[style*='--thumb-i'] button.active,
+.tabs[style*='--thumb-i'] button.active,
+.mobile-tabs[style*='--thumb-i'] button.active,
+.ui-mode[style*='--thumb-i'] button.active {
+  background: transparent;
+  box-shadow: none;
+}
+
+/* スマホのシート: 素材 / 編集 / タイムラインを切り替えると、中身が下から入る */
+.mobile-sheet-body {
+  animation: rise-in var(--dur-mid) var(--ease-out);
+}
+
+/* タイムライン: 詰める・ずらす時はクリップが滑って動く。ドラッグ中は指に遅れないよう止める */
+.tl-clip {
+  transition: left 0.26s var(--ease-out), width 0.26s var(--ease-out), border-color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease;
+}
+
+html.tl-dragging .tl-clip {
+  transition: none;
+}
+
+/* 分割で生まれた側・置いたばかりのクリップは、出てきた時に一度だけ弾む */
+.tl-clip.fresh {
+  animation: clip-born 0.42s var(--ease-spring);
+}
+
+/* 選び直したチップ（スタイル・動き）は軽く弾む */
+.chip.active {
+  animation: pick 0.3s var(--ease-spring);
+}
+
+/* ダイアログは背景から薄く出て、本体が少し浮き上がる */
+.modal-backdrop {
+  animation: fade-in var(--dur-fast) ease;
+}
+
+.modal {
+  animation: rise-in var(--dur-mid) var(--ease-out);
+}
+
+/* 書き出しの進み具合: 伸びている間は光が流れて、止まっていないことが分かる */
+.progress.running span {
+  position: relative;
+  overflow: hidden;
+  background: var(--accent);
+}
+
+.progress.running span::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  animation: shine 1.1s linear infinite;
+}
+
+/* 保存できたら、緑の丸にチェックが描かれる */
+.done-note {
+  animation: rise-in var(--dur-mid) var(--ease-out);
+}
+
+.done-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 6px;
+  vertical-align: -5px;
+  border-radius: 50%;
+  background: var(--ios-green);
+  color: #000;
+  animation: pop-in 0.45s var(--ease-spring) both;
+}
+
+.done-badge path {
+  stroke-dasharray: 30;
+  stroke-dashoffset: 30;
+  animation: draw 0.4s 0.22s ease-out forwards;
+}
+
+/* はじめかた: 手順が順に下から現れ、最初のボタンがゆっくり光って「ここから」と示す */
+.getting-started {
+  animation: rise-in 0.35s var(--ease-out);
+}
+
+.getting-started li {
+  animation: rise-in 0.45s var(--ease-out) both;
+}
+
+.getting-started li:nth-child(1) { animation-delay: 0.08s; }
+.getting-started li:nth-child(2) { animation-delay: 0.15s; }
+.getting-started li:nth-child(3) { animation-delay: 0.22s; }
+.getting-started li:nth-child(4) { animation-delay: 0.29s; }
+
+.getting-started .big:not(:disabled) {
+  animation: glow 2.4s 1s ease-in-out infinite;
+}
+
+/* 短い知らせ（Toast.tsx）。画面の下、スマホのシートより手前に出る */
+.toast-host {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 200;
+}
+
+.toast {
+  max-width: calc(100vw - 32px);
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: rgba(44, 44, 46, 0.96);
+  color: var(--text);
+  font-size: var(--ios-subhead);
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  animation: toast 1.8s ease both;
+}
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes pick {
+  0% { transform: scale(0.92); }
+  60% { transform: scale(1.05); }
+  100% { transform: none; }
+}
+
+@keyframes pop-in {
+  from { transform: scale(0); }
+  to { transform: scale(1); }
+}
+
+@keyframes clip-born {
+  0% { transform: scaleY(0.6); filter: brightness(1.8); }
+  100% { transform: none; filter: none; }
+}
+
+@keyframes shine {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+
+@keyframes draw {
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(10, 132, 255, 0); }
+  50% { box-shadow: 0 0 0 6px rgba(10, 132, 255, 0.28); }
+}
+
+@keyframes toast {
+  0% { opacity: 0; transform: translateY(12px); }
+  12%, 80% { opacity: 1; transform: none; }
+  100% { opacity: 0; transform: translateY(-6px); }
 }

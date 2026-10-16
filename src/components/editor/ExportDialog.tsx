@@ -359,7 +359,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
         {running ? (
           <>
-            <div className="progress">
+            <div className="progress running">
               <span style={{ width: `${Math.round((progress ?? 0) * 100)}%` }} />
             </div>
             <p className="muted">
@@ -403,7 +403,12 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           </p>
         )}
         {saved && result && (
-          <p className="success-note">
+          <p className="success-note done-note">
+            <span className="done-badge" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m5 12 5 5 9-10" />
+              </svg>
+            </span>
             {result.filename}（{formatBytes(result.blob.size)}）を保存しました。
             <button type="button" className="link" onClick={() => void save(result)}>
               もう一度ダウンロード

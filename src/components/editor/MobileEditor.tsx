@@ -9,6 +9,8 @@ import { MultiTimeline } from './MultiTimeline';
 import { PreviewStage } from './PreviewStage';
 import { Icon } from '../Icon';
 import { GettingStarted } from './GettingStarted';
+import { toast } from '../Toast';
+import { thumbStyle } from '../ui';
 
 type Sheet = 'media' | 'edit' | 'timeline';
 
@@ -34,7 +36,7 @@ export function MobileEditor({
   onPickTransition: (clipId: string) => void;
   onAddText: () => void;
 }) {
-  const { apply, selection } = useEditor();
+  const { apply, selection, sequence } = useEditor();
   const easy = useApp().settings.uiMode === 'easy';
   const [sheet, setSheet] = useState<Sheet>('timeline');
   const [height, setHeight] = useState(() => Math.round(window.innerHeight * 0.36));
@@ -72,6 +74,20 @@ export function MobileEditor({
     }
   };
 
+  // 押しても見た目の変化が小さい操作なので、効いたかどうかを短い知らせで返す。
+  const split = () => {
+    if (splitAt(sequence, player.time, selection) === sequence) {
+      toast('ここでは分割できません（再生ヘッドをクリップの途中へ）');
+      return;
+    }
+    apply((seq) => splitAt(seq, player.time, selection));
+    toast('再生ヘッドの位置で分割しました');
+  };
+  const remove = (ripple: boolean) => {
+    apply((seq) => removeClips(seq, selection, ripple));
+    toast(ripple ? '削除して、後ろを詰めました' : '削除しました');
+  };
+
   return (
     <div className="mobile">
       <div className="mobile-stage">
@@ -83,14 +99,14 @@ export function MobileEditor({
         <button type="button" onClick={onAddText}>
           <Icon name="plus" />テロップ
         </button>
-        <button type="button" onClick={() => apply((seq) => splitAt(seq, player.time, selection))}>
+        <button type="button" onClick={split}>
           <Icon name="scissors" />分割
         </button>
         <button
           type="button"
           className="danger"
           disabled={selection.length === 0}
-          onClick={() => apply((seq) => removeClips(seq, selection, easy))}
+          onClick={() => remove(easy)}
         >
           <Icon name="trash" />削除
         </button>
@@ -98,7 +114,7 @@ export function MobileEditor({
           <button
             type="button"
             disabled={selection.length === 0}
-            onClick={() => apply((seq) => removeClips(seq, selection, true))}
+            onClick={() => remove(true)}
           >
             <Icon name="ripple-delete" />詰めて削除
           </button>
@@ -117,7 +133,14 @@ export function MobileEditor({
         >
           <span />
         </div>
-        <div className="mobile-tabs" role="tablist">
+        <div
+          className="mobile-tabs"
+          role="tablist"
+          style={thumbStyle(
+            SHEETS.findIndex((option) => option.value === sheet),
+            SHEETS.length,
+          )}
+        >
           {SHEETS.map((option) => (
             <button
               key={option.value}
@@ -131,7 +154,8 @@ export function MobileEditor({
             </button>
           ))}
         </div>
-        <div className="mobile-sheet-body" hidden={collapsed}>
+        {/* key で切り替えのたびに作り直し、中身が下からふわっと入る動きを毎回見せる */}
+        <div key={sheet} className="mobile-sheet-body" hidden={collapsed}>
           {sheet === 'media' && <MediaPanel />}
           {sheet === 'edit' && <Inspector />}
           {sheet === 'timeline' && (
