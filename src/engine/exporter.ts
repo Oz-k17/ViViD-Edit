@@ -252,6 +252,8 @@ export class Exporter {
       await finished;
       mediaRegistry.useProxies = usedProxies;
       this.active = false;
+      canvas.width = 0;
+      canvas.height = 0;
       this.canvas = null;
       this.ctx = null;
       this.sequence = null;

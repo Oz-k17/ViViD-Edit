@@ -299,6 +299,11 @@ function snapshot(source: HTMLVideoElement | HTMLImageElement, width: number, he
     return canvas.toDataURL('image/jpeg', 0.7);
   } catch {
     return '';
+  } finally {
+    // 使い終わったキャンバスは、領域ごと返す。WebKit は、持ち主が消えても領域をすぐには手放さず、
+    // たまると「Total canvas memory use exceeds the maximum limit」で新しい絵が描けなくなる。
+    canvas.width = 0;
+    canvas.height = 0;
   }
 }
 

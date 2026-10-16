@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { isFrameAccurate, isNativeHost } from '../engine/exporter';
+import { memoryWarningCount } from '../engine/memory';
 import { mediaRegistry } from '../engine/media';
 
 /** この端末で、何が使えて何が使えないか。症状を伝えるとき、そのままコピーして送れるようにする。 */
@@ -54,6 +55,9 @@ async function collect(): Promise<string[]> {
     `素材: ${assets.length} 本（取り込み ${Math.round(total / 1024 / 1024)}MB / 最長 ${Math.round(longest / 60)} 分 / NAS の軽量版 ${assets.filter((a) => a.proxy).length} 本）`,
   );
 
+  lines.push(
+    `メモリ警告を受けた回数: ${memoryWarningCount()}（受けるたびに、いま要らない動画の読み解きを手放しています）`,
+  );
   try {
     const count = localStorage.getItem('vivid-edit.recoveries');
     const at = localStorage.getItem('vivid-edit.recoveries.at');

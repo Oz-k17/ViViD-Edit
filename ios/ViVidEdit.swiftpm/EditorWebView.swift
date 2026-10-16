@@ -71,9 +71,30 @@ struct EditorWebView: UIViewRepresentable {
             return true
         }
 
+        /// OS からのメモリ警告を受けるための登録。
+        private var memoryObserver: NSObjectProtocol?
+
         init(saver: VideoSaver) {
             self.saver = saver
             super.init()
+            // メモリ警告は、表示プロセスが終了させられる前触れのことが多い。
+            // Web 側へ知らせて、いま要らない動画の読み解きを手放してもらう（src/engine/memory.ts）。
+            memoryObserver = NotificationCenter.default.addObserver(
+                forName: UIApplication.didReceiveMemoryWarningNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.webView?.evaluateJavaScript(
+                    "window.dispatchEvent(new Event('vivid-memory-warning'))",
+                    completionHandler: nil
+                )
+            }
+        }
+
+        deinit {
+            if let observer = memoryObserver {
+                NotificationCenter.default.removeObserver(observer)
+            }
         }
 
         // MARK: - 表示プロセスの立て直し

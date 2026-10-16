@@ -955,6 +955,9 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
   } finally {
     cleanup.forEach((fn) => fn());
     mixer?.dispose();
+    // 書き出し用のキャンバスの領域を返す（iOS の WebKit は、たまると新しいキャンバスを作れなくなる）。
+    canvas.width = 0;
+    canvas.height = 0;
   }
 
   const mimeType = await output.getMimeType();

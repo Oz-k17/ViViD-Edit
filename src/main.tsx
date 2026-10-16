@@ -5,11 +5,14 @@ import './styles.css';
 import { mediaRegistry } from './engine/media';
 import { player } from './engine/player';
 import * as thumbstrip from './engine/thumbstrip';
+import { installMemoryGuards } from './engine/memory';
 
 // 開発サーバーのときだけ、動作テストからアプリと同じ実体を見られるようにする（配布物には入らない）。
 if (import.meta.env.DEV) {
   (window as unknown as Record<string, unknown>).__vivid = { player, mediaRegistry, thumbstrip };
 }
+
+installMemoryGuards();
 
 /**
  * iPad アプリ版（WKWebView）は、メモリが足りなくなると OS に表示プロセスを終了させられ、

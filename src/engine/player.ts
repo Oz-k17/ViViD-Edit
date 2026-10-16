@@ -63,6 +63,8 @@ const PREROLL = 1.2;
  */
 const KEEP_AHEAD = PREROLL * 2;
 const KEEP_BEHIND = 3;
+/** メモリ警告のあと、持つ範囲を絞っておく時間（ミリ秒）。 */
+const SQUEEZE_MS = 20_000;
 /**
  * 再生開始時にデコードの立ち上がりを待つ上限（ミリ秒）。
  * play() を呼んだ瞬間から壁時計を進めてしまうと、<video> の再生開始（バッファ待ち含む）は
@@ -374,10 +376,49 @@ export class Player {
     }
   }
 
+  /**
+   * メモリが足りなくなってきたときに、いま要らないものを手放す。
+   * iOS は、動画をハードウェアで読み解くので、**止めた動画も読み解きの枠を 1 つ使い続ける**。
+   * 前後の余白（KEEP_AHEAD / KEEP_BEHIND）のぶんまで持つ通常の運用から、
+   * 「いま映っている・鳴っているクリップだけ」まで絞る。足りなくなればまた作られる。
+   * 返すのは、手放した動画要素の数。
+   */
+  trimMemory(): number {
+    const sequence = this.sequence;
+    if (!sequence) return 0;
+    // 手放しても、次の同期ですぐ作り直されては意味がない。しばらくは持つ範囲を絞る。
+    this.squeezeUntil = performance.now() + SQUEEZE_MS;
+    const needed = new Set(this.activeClips().map((a) => a.clip.id));
+    let released = 0;
+    for (const key of mediaRegistry.activeKeys()) {
+      if (needed.has(key)) continue;
+      mediaRegistry.releaseElement(key);
+      this.drift.delete(key);
+      this.duckUntil.delete(key);
+      this.seekSince.delete(key);
+      released += 1;
+    }
+    // 直前の絵の控えも、いま映っていないクリップのぶんは捨てる（キャンバスの領域ごと）。
+    for (const [key, canvas] of [...this.lastFrames]) {
+      if (needed.has(key)) continue;
+      canvas.width = 0;
+      canvas.height = 0;
+      this.lastFrames.delete(key);
+    }
+    return released;
+  }
+
   /** この時刻のまわりで、クリップの動画要素を持っておくべきか。 */
   private wanted(clip: Clip, time: number): boolean {
-    return clip.start - time <= KEEP_AHEAD && time - (clip.start + clip.duration) <= KEEP_BEHIND;
+    // メモリが足りないあいだは、持っておく範囲を絞る（次のクリップの頭出しに間に合う分だけ）。
+    const squeezed = performance.now() < this.squeezeUntil;
+    const ahead = squeezed ? PREROLL : KEEP_AHEAD;
+    const behind = squeezed ? 0 : KEEP_BEHIND;
+    return clip.start - time <= ahead && time - (clip.start + clip.duration) <= behind;
   }
+
+  /** この時刻まで、持っておく範囲を絞る（`trimMemory` が立てる。通常の運用へは自然に戻る）。 */
+  private squeezeUntil = 0;
 
   /** その時刻に鳴っている / 映っているクリップ（トランジション中の前カットを含む）。 */
   activeClips(time = this.time): ActiveClip[] {
