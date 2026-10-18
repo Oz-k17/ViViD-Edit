@@ -1831,9 +1831,6 @@ hr {
   border: 1px solid #3a4149;
   border-left: 3px solid var(--track-video);
   background-color: #23272c;
-  background-size: auto 100%;
-  background-repeat: repeat-x;
-  background-position: left center;
   box-shadow: inset 0 0 0 100vmax rgba(19, 20, 23, 0.28);
   overflow: hidden;
   cursor: grab;
@@ -1841,15 +1838,31 @@ hr {
   touch-action: none;
 }
 
-/* サムネイルは彩度と明度を落としてから敷く。原色のままだと画面がうるさく、文字も読みにくい。 */
+/*
+ * サムネイルは彩度と明度を落としてから敷く。原色のままだと画面がうるさく、文字も読みにくい。
+ *
+ * 以前は ::before の backdrop-filter で、後ろ（サムネイル＋28% の暗幕）の色を落としていた。
+ * backdrop-filter はクリップ 1 つごとに背後を読み直すので、数百クリップあると拡大縮小のたびに固まる。
+ * いまはサムネイル自体を ::before に敷き、普通の filter で落とす。暗幕（28%）は明るさに掛け込んである:
+ * grayscale と brightness は線形なので、brightness(0.5) × (1 − 0.28) = 0.36 で同じ色になる。
+ */
 .tl-clip.kind-video::before,
 .tl-clip.kind-image::before {
   content: '';
   position: absolute;
   inset: 0;
-  backdrop-filter: grayscale(0.7) brightness(0.5) contrast(0.95);
-  -webkit-backdrop-filter: grayscale(0.7) brightness(0.5) contrast(0.95);
+  background-image: var(--thumb, none);
+  background-size: auto 100%;
+  background-repeat: repeat-x;
+  background-position: left center;
+  filter: grayscale(0.7) brightness(0.36) contrast(0.95);
   pointer-events: none;
+}
+
+/* 選んでいるときの暗幕は 20%（.tl-clip.selected）。0.5 × 0.8 = 0.4 */
+.tl-clip.kind-video.selected::before,
+.tl-clip.kind-image.selected::before {
+  filter: grayscale(0.7) brightness(0.4) contrast(0.95);
 }
 
 .tl-clip.kind-text {
@@ -3228,7 +3241,8 @@ html[data-ui='easy'] .chip {
     box-shadow var(--dur-fast) ease;
 }
 
-html.tl-dragging .tl-clip {
+html.tl-dragging .tl-clip,
+html.tl-zooming .tl-clip {
   transition: none;
 }
 

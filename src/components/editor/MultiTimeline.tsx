@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { formatTime, mediaRegistry } from '../../engine/media';
 import { player } from '../../engine/player';
 import { sourceLengthOf } from '../../engine/sourceLength';
@@ -166,6 +166,26 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
 
   const tracks = useMemo(() => displayTracks(sequence), [sequence]);
   const duration = Math.max(sequenceDuration(sequence), 12);
+  // 拡大縮小のあいだは、クリップの「滑る」動き（詰める・ずらすときの演出）を止める。
+  // 全クリップの位置と幅が一度に変わるので、動かすと数百個を毎コマ並べ直すことになり、固まる。
+  // 描く直前（useLayoutEffect）に印を付け、2 コマ後に外す。編集で詰めたときの動きはそのまま。
+  const lastPps = useRef(pps);
+  useLayoutEffect(() => {
+    if (lastPps.current === pps) return;
+    lastPps.current = pps;
+    const root = document.documentElement;
+    root.classList.add('tl-zooming');
+    let second = 0;
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(() => root.classList.remove('tl-zooming'));
+    });
+    return () => {
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+      root.classList.remove('tl-zooming');
+    };
+  }, [pps]);
+
   const innerWidth = duration * pps + 200;
 
   const timeFromClientX = (clientX: number) => {
@@ -603,7 +623,8 @@ function ClipBlock({
       style={{
         left: clip.start * pps,
         width,
-        backgroundImage: asset?.thumbnail ? `url(${asset.thumbnail})` : undefined,
+        // サムネイルは ::before で敷く（styles.css）。そこで色を落とすので、ここでは場所だけ渡す。
+        ['--thumb' as string]: asset?.thumbnail ? `url(${asset.thumbnail})` : undefined,
       }}
       onPointerDown={startMove}
       title={`${label} — ${clip.duration.toFixed(2)}秒`}

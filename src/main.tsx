@@ -6,10 +6,13 @@ import { mediaRegistry } from './engine/media';
 import { player } from './engine/player';
 import * as thumbstrip from './engine/thumbstrip';
 import { installMemoryGuards } from './engine/memory';
+import * as factory from './model/factory';
+import { withWebmDuration } from './engine/webm';
 
-// 開発サーバーのときだけ、動作テストからアプリと同じ実体を見られるようにする（配布物には入らない）。
-if (import.meta.env.DEV) {
-  (window as unknown as Record<string, unknown>).__vivid = { player, mediaRegistry, thumbstrip };
+// 開発サーバーのときと、速さを測る組み立て（perf/bench.mjs が VITE_BENCH=1 で組む）のときだけ、
+// 動作テストからアプリと同じ実体を見られるようにする（ふつうの配布物には入らない）。
+if (import.meta.env.DEV || import.meta.env.VITE_BENCH === '1') {
+  (window as unknown as Record<string, unknown>).__vivid = { player, mediaRegistry, thumbstrip, factory, withWebmDuration };
 }
 
 installMemoryGuards();

@@ -14,3 +14,7 @@ whisper-dist
 docs/whisper/ort/
 docs/whisper/models/
 docs/whisper/transformers.min.js
+
+# 速さを測るための組み立て（perf/bench.mjs）
+perf/.dist/
+perf/.dist-prof/

@@ -154,10 +154,13 @@ function toWav(buffer: AudioBuffer): Blob {
   text(36, 'data');
   view.setUint32(40, frames * channels * 2, true);
 
+  // 各チャンネルの波形は先に 1 度だけ取り出す。標本ごとに getChannelData を呼ぶと、
+  // そのたびに配列を取り直すことになり、初回起動の効果音づくりだけで数秒かかっていた。
+  const data = Array.from({ length: channels }, (_, channel) => buffer.getChannelData(channel));
   let offset = 44;
   for (let frame = 0; frame < frames; frame += 1) {
     for (let channel = 0; channel < channels; channel += 1) {
-      const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[frame]));
+      const sample = Math.max(-1, Math.min(1, data[channel][frame]));
       view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
       offset += 2;
     }
