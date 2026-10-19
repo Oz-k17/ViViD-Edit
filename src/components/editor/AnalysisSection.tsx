@@ -11,6 +11,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { frameToImage, exportName, decodeFramesAt } from '../../analysis/cover-export';
+import { decodeFramesAtViaElement } from '../../analysis/decode-element';
 import { AnalysisError, detectScenes, pickCovers, planClipReframe, type CoverCandidate } from '../../engine/analyze';
 import { saveBlob } from '../../engine/exporter';
 import { formatTime, mediaRegistry } from '../../engine/media';
@@ -101,8 +102,11 @@ export function AnalysisSection({ clip }: { clip: Clip }) {
     if (!clip.mediaId) return;
     try {
       const blob = await assetBlob(clip.mediaId);
-      if (!blob) throw new Error('素材を読み出せませんでした');
-      const [frame] = await decodeFramesAt(blob, [pick.time]);
+      const url = asset?.url;
+      if (!blob && !url) throw new Error('素材を読み出せませんでした');
+      // WebCodecs で読めない端末（iPad のアプリ版など）・長くて読み出せない素材は、<video> で読む予備の道へ。
+      const viaElement = () => decodeFramesAtViaElement(url || (blob as Blob), [pick.time]);
+      const [frame] = blob ? await decodeFramesAt(blob, [pick.time]).catch(viaElement) : await viaElement();
       if (!frame) throw new Error('そのコマを取り出せませんでした');
       await saveBlob(await frameToImage(frame, { format: 'png' }), exportName(asset?.name ?? 'cover', pick.time));
     } catch (error) {

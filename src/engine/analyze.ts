@@ -9,7 +9,8 @@
  * 使う所が読まれない（`decode.ts` の `from` / `to`）。
  */
 
-import { decodeVideoFrames, ANALYSIS_FPS, type DecodedClip } from '../analysis/decode';
+import { decodeVideoFrames as decodeWithCodecs, ANALYSIS_FPS, type DecodedClip, type DecodeOptions } from '../analysis/decode';
+import { decodeVideoFramesViaElement } from '../analysis/decode-element';
 import { summarizeFrames } from '../analysis/frames';
 import { planSceneCut, type ScenePlan } from '../analysis/scene';
 import { pickThumbnails, type ThumbPick } from '../analysis/pick';
@@ -27,20 +28,46 @@ import { segmentCenters, type CenterSegment } from '../analysis/segments';
 import { reframeWindow, usedSourceRange, type ReframeWindow } from '../model/analysisEdits';
 import type { Clip, Sequence } from '../model/types';
 import { assetBlob } from './offline-export';
+import { mediaRegistry } from './media';
 
 export class AnalysisError extends Error {}
 
 interface Source {
-  blob: Blob;
+  /** 素材の中身。長い動画で読み出せなかったときは null（そのときは `url` から読む）。 */
+  blob: Blob | null;
+  /** 再生に使っている URL（予備の道は、これを <video> で読む）。 */
+  url: string;
   range: { from: number; to: number };
 }
 
 /** クリップの素材を取り出し、使っている範囲を添える。映像でなければ理由を言って止める。 */
 async function sourceOf(clip: Clip): Promise<Source> {
   if (clip.kind !== 'video' || !clip.mediaId) throw new AnalysisError('映像のクリップを選んでください。');
+  const asset = mediaRegistry.get(clip.mediaId);
   const blob = await assetBlob(clip.mediaId);
-  if (!blob) throw new AnalysisError('素材を読み出せませんでした。');
-  return { blob, range: usedSourceRange(clip) };
+  if (!blob && !asset?.url) throw new AnalysisError('素材を読み出せませんでした。');
+  return { blob, url: asset?.url ?? '', range: usedSourceRange(clip) };
+}
+
+/**
+ * 解析するコマを取り出す。まず WebCodecs（速い）で読み、読めなければ `<video>` で読む（遅いが、再生できる動画なら読める）。
+ * iPad のアプリ版では WebCodecs で読めない動画があるので、その場合の予備。
+ * 予備の道は URL のまま読む（素材をまるごと読み出さないので、長い動画でも端末のメモリを食わない）。
+ * どちらでも読めなければ、両方の理由を並べて知らせる。
+ */
+async function decodeVideoFrames({ blob, url }: Source, options: Partial<DecodeOptions>): Promise<DecodedClip> {
+  try {
+    if (!blob) throw new Error('素材をまるごと読み出せませんでした');
+    return await decodeWithCodecs(blob, options);
+  } catch (first) {
+    try {
+      return await decodeVideoFramesViaElement(url || (blob as Blob), options);
+    } catch (second) {
+      const a = first instanceof Error ? first.message : String(first);
+      const b = second instanceof Error ? second.message : String(second);
+      throw new Error(`${a}（予備の読み方でも読めませんでした: ${b}）`);
+    }
+  }
 }
 
 export interface Progress {
@@ -61,8 +88,9 @@ export interface SceneResult {
 
 /** カットの切り替わりを探す。 */
 export async function detectScenes(clip: Clip, onProgress?: Progress): Promise<SceneResult> {
-  const { blob, range } = await sourceOf(clip);
-  const decoded = await decodeVideoFrames(blob, { fps: ANALYSIS_FPS, ...range, onProgress: readProgress(onProgress) });
+  const source = await sourceOf(clip);
+  const { range } = source;
+  const decoded = await decodeVideoFrames(source, { fps: ANALYSIS_FPS, ...range, onProgress: readProgress(onProgress) });
   const stats = summarizeFrames(decoded.frames, decoded.times);
   const plan = planSceneCut(stats);
   onProgress?.(1);
@@ -81,8 +109,9 @@ export interface CoverResult {
 
 /** 表紙に使えそうなコマを選ぶ。 */
 export async function pickCovers(clip: Clip, count = 3, onProgress?: Progress): Promise<CoverResult> {
-  const { blob, range } = await sourceOf(clip);
-  const decoded = await decodeVideoFrames(blob, { fps: ANALYSIS_FPS, ...range, onProgress: readProgress(onProgress) });
+  const source = await sourceOf(clip);
+  const { range } = source;
+  const decoded = await decodeVideoFrames(source, { fps: ANALYSIS_FPS, ...range, onProgress: readProgress(onProgress) });
   const thumbs = summarizeThumbs(decoded.frames, decoded.times);
   const stats = summarizeFrames(decoded.frames, decoded.times);
   const picks = pickThumbnails(thumbs, stats, { count });
@@ -114,9 +143,10 @@ export async function planClipReframe(
   const window = reframeWindow(media, sequence.width / sequence.height);
   if (!window) return null;
 
-  const { blob, range } = await sourceOf(clip);
+  const source = await sourceOf(clip);
+  const { range } = source;
   // 速さは 30fps（ラボで「間引くと枠が振れる」と測ってある）。
-  const decoded = await decodeVideoFrames(blob, {
+  const decoded = await decodeVideoFrames(source, {
     fps: REFRAME_ANALYSIS_FPS,
     ...range,
     onProgress: readProgress(onProgress),

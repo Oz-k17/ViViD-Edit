@@ -661,7 +661,7 @@ function PropsTab({ clip }: { clip: Clip }) {
 
       {easy ? (
         <details className="more-settings">
-          <summary>くわしい設定（透明度・回転・切り抜きなど）</summary>
+          <summary>くわしい設定（自動カット・透明度・回転・切り抜きなど）</summary>
       <Field label="濃さ（下げると透ける）">
         <Slider
           value={clip.opacity}
