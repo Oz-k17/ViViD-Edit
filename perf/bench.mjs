@@ -175,6 +175,23 @@ async function round(browser, videoBytes) {
     }
   });
 
+  // 分割（再生ヘッドの位置で）× 5 回。何も選んでいない状態で行う（選んでいると、そのクリップしか切らない）
+  const splitTimes = [];
+  for (let i = 0; i < 5; i++) {
+    await page.evaluate((x) => window.__vivid.player.seek(x), 10.5 + i * 7);
+    await settle(page);
+    const ms = await page.evaluate(async () => {
+      const button = [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === '分割');
+      const t = performance.now();
+      button.click();
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      return performance.now() - t;
+    });
+    splitTimes.push(ms);
+  }
+
+  const afterSplit = await page.evaluate(() => document.querySelectorAll('.tl-clip').length);
+
   // クリップを選ぶ（5 か所で測って中央値）
   const selectMs = await page.evaluate(async () => {
     const times = [];
@@ -191,21 +208,6 @@ async function round(browser, videoBytes) {
     times.sort((a, b) => a - b);
     return times[2];
   });
-
-  // 分割（再生ヘッドの位置で）× 5 回
-  const splitTimes = [];
-  for (let i = 0; i < 5; i++) {
-    await page.evaluate((x) => window.__vivid.player.seek(x), 10.5 + i * 7);
-    await settle(page);
-    const ms = await page.evaluate(async () => {
-      const button = [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === '分割');
-      const t = performance.now();
-      button.click();
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      return performance.now() - t;
-    });
-    splitTimes.push(ms);
-  }
 
   // 拡大縮小 × 6
   const zoom = await longSince(async () => {
@@ -255,8 +257,10 @@ async function round(browser, videoBytes) {
   });
 
   const heap = await page.evaluate(() => (performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1024 / 1024) : null));
+  // 測った前提がそろっているか（クリップが全部読めたか）。ここが違えば、ほかの数字は比べられない。
+  const clipCount = await page.evaluate(() => document.querySelectorAll('.tl-clip').length);
   await ctx.close();
-  return { openMs, selectMs, splitMs: median(splitTimes), zoomLong: zoom.total, seekMs, playP50: play.p50, playP95: play.p95, playOver50: play.over50, heapMB: heap, errors: errors.length };
+  return { openMs, selectMs, splitMs: median(splitTimes), zoomLong: zoom.total, seekMs, playP50: play.p50, playP95: play.p95, playOver50: play.over50, heapMB: heap, clipCount: afterSplit, errors: errors.length };
 }
 
 try {
@@ -283,6 +287,7 @@ try {
     playP95: '再生中のコマ間隔 p95 ms',
     playOver50: '再生 3 秒で 50ms 超のコマ',
     heapMB: 'JS ヒープ MB',
+    clipCount: '分割後のクリップ数（前提の確認。405 になるはず）',
     errors: 'エラー数',
   };
   for (const k of keys) console.log(`${labels[k] ?? k}: ${result[k]}`);

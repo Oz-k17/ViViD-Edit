@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import { formatTime, mediaRegistry } from '../../engine/media';
 import { player } from '../../engine/player';
 import { sourceLengthOf } from '../../engine/sourceLength';
@@ -486,10 +486,14 @@ function Lane({
   onEmptyPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPickTransition: (clipId: string) => void;
 }) {
-  const { sequence, apply, insertMode } = useEditor();
+  const { sequence, apply, insertMode, selection, setSelection, toggleSelection, isSelected, editMode } = useEditor();
   const { settings } = useApp();
   const [dropping, setDropping] = useState(false);
   const clips = clipsOnTrack(sequence, track.id);
+  // クリップの操作（ドラッグ・トリム）が使う「いまの状態」。描くたびに入れ替えるが、入れ物は同じなので
+  // クリップ側は描き直しのきっかけにならない（押した瞬間に、ここから最新を読む）。
+  const live = useRef<ClipLive>(null as unknown as ClipLive);
+  live.current = { sequence, apply, selection, setSelection, toggleSelection, editMode, snap: settings.snap, onPickTransition };
 
   const accepts = (kind: string) =>
     (track.kind === 'audio' && kind === 'audio') || (track.kind === 'video' && (kind === 'video' || kind === 'image'));
@@ -532,38 +536,79 @@ function Lane({
       onDrop={onDrop}
     >
       {clips.length === 0 && <span className="tl-lane-empty">{track.kind === 'text' ? 'テロップ' : '素材をドラッグ'}</span>}
-      {clips.map((clip) => (
-        <ClipBlock key={clip.id} clip={clip} track={track} pps={pps} compact={compact} onPickTransition={onPickTransition} />
-      ))}
+      {clips.map((clip) => {
+        const asset = mediaRegistry.get(clip.mediaId);
+        return (
+          <ClipBlock
+            key={clip.id}
+            clip={clip}
+            track={track}
+            pps={pps}
+            compact={compact}
+            selected={isSelected(clip.id)}
+            hasPrevious={track.kind === 'video' && previousAdjacent(sequence, clip) !== null}
+            fresh={isFresh(clip.id)}
+            thumbnail={asset?.thumbnail}
+            assetName={asset?.name}
+            live={live}
+          />
+        );
+      })}
     </div>
   );
 }
 
-function ClipBlock({
+/** クリップの操作が押した瞬間に読む、エディタの「いまの状態」。 */
+interface ClipLive {
+  sequence: Sequence;
+  apply: ReturnType<typeof useEditor>['apply'];
+  selection: string[];
+  setSelection: (ids: string[]) => void;
+  toggleSelection: ReturnType<typeof useEditor>['toggleSelection'];
+  editMode: EditMode;
+  snap: boolean;
+  onPickTransition: (clipId: string) => void;
+}
+
+/**
+ * 1 つのクリップ。
+ *
+ * エディタ全体の状態は**見ない**（見ると、どれか 1 つを選んだだけで全クリップが描き直しになる。
+ * 400 クリップで 1 回 100ms を超えていた）。描くのに要るものは引数で受け、
+ * ドラッグなどの操作は、押した瞬間に `live` から最新の状態を読む。
+ * 引数が変わったクリップだけが描き直される（memo）。
+ */
+const ClipBlock = memo(function ClipBlock({
   clip,
   track,
   pps,
   compact,
-  onPickTransition,
+  selected,
+  hasPrevious,
+  fresh,
+  thumbnail,
+  assetName,
+  live,
 }: {
   clip: Clip;
   track: Track;
   pps: number;
   compact: boolean;
-  onPickTransition: (clipId: string) => void;
+  selected: boolean;
+  hasPrevious: boolean;
+  fresh: boolean;
+  thumbnail: string | undefined;
+  assetName: string | undefined;
+  live: MutableRefObject<ClipLive>;
 }) {
-  const { sequence, apply, selection, setSelection, toggleSelection, isSelected, editMode } = useEditor();
-  const { settings } = useApp();
-  const asset = mediaRegistry.get(clip.mediaId);
-  const selected = isSelected(clip.id);
   const width = Math.max(14, clip.duration * pps);
-  const hasPrevious = track.kind === 'video' && previousAdjacent(sequence, clip) !== null;
 
   const label =
-    clip.kind === 'text' ? `T ${previewText(clip.text?.content ?? '').split('\n')[0] || '（空）'}` : (asset?.name ?? '素材');
+    clip.kind === 'text' ? `T ${previewText(clip.text?.content ?? '').split('\n')[0] || '（空）'}` : (assetName ?? '素材');
 
   const startMove = (event: React.PointerEvent) => {
     if (track.locked) return;
+    const { sequence, apply, selection, setSelection, toggleSelection, editMode, snap } = live.current;
     // スリップ / スライドは、動かすのではなく中身・前後を変えるドラッグ。選択はそのクリップだけにする。
     const bodyMode = effectiveMode(editMode, event, 'body');
     if (bodyMode === 'slip' || bodyMode === 'slide') {
@@ -588,7 +633,7 @@ function ClipBlock({
       event,
       (dx, dy) => {
         let deltaTime = dx / pps;
-        if (settings.snap) {
+        if (snap) {
           deltaTime = snapTime(clip.start + deltaTime, candidates, SNAP_PX / pps) - clip.start;
         }
         // 画面では上ほど番号が大きいので、下方向のドラッグは -1 段
@@ -605,6 +650,7 @@ function ClipBlock({
 
   const startTrim = (event: React.PointerEvent, side: 'left' | 'right') => {
     if (track.locked) return;
+    const { sequence, apply, setSelection, editMode, snap } = live.current;
     setSelection([clip.id]);
     const original = sequence;
     const mode = effectiveMode(editMode, event, 'edge');
@@ -612,19 +658,19 @@ function ClipBlock({
     beginDrag(event, (dx) => {
       const edge = side === 'left' ? clip.start : clipEnd(clip);
       let delta = dx / pps;
-      if (settings.snap) delta = snapTime(edge + delta, candidates, SNAP_PX / pps) - edge;
+      if (snap) delta = snapTime(edge + delta, candidates, SNAP_PX / pps) - edge;
       apply(() => trimByMode(original, clip.id, side, delta, mode, sourceLengthOf), `trim:${mode}:${clip.id}:${side}`);
     });
   };
 
   return (
     <div
-      className={`tl-clip kind-${clip.kind}${selected ? ' selected' : ''}${isFresh(clip.id) ? ' fresh' : ''}`}
+      className={`tl-clip kind-${clip.kind}${selected ? ' selected' : ''}${fresh ? ' fresh' : ''}`}
       style={{
         left: clip.start * pps,
         width,
         // サムネイルは ::before で敷く（styles.css）。そこで色を落とすので、ここでは場所だけ渡す。
-        ['--thumb' as string]: asset?.thumbnail ? `url(${asset.thumbnail})` : undefined,
+        ['--thumb' as string]: thumbnail ? `url(${thumbnail})` : undefined,
       }}
       onPointerDown={startMove}
       title={`${label} — ${clip.duration.toFixed(2)}秒`}
@@ -638,7 +684,7 @@ function ClipBlock({
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
-            onPickTransition(clip.id);
+            live.current.onPickTransition(clip.id);
           }}
         >
           <Icon name={TRANSITION_ICON[clip.transitionIn.type]} size={12} />
@@ -653,7 +699,7 @@ function ClipBlock({
       <span className="tl-handle right" onPointerDown={(e) => startTrim(e, 'right')} />
     </div>
   );
-}
+});
 
 /** 追従スクロールの確認間隔（ミリ秒）。毎フレームやると同期レイアウトを起こす。 */
 const FOLLOW_CHECK_MS = 250;
