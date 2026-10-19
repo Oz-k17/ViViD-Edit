@@ -503,6 +503,9 @@ function mediaStage(): HTMLElement | null {
 
 // ---------- レジストリ ----------
 
+/** まとめて取り込むあいだ、画面へ知らせる間隔（ミリ秒）。 */
+const HOLD_NOTIFY_MS = 250;
+
 class MediaRegistry {
   private assets = new Map<string, MediaAsset>();
   private listeners = new Set<() => void>();
@@ -521,7 +524,42 @@ class MediaRegistry {
   private emit() {
     // 追加したばかりの素材が 1 ページ目に出るよう、新しい順に並べる。
     this.cache = [...this.assets.values()].sort((a, b) => b.createdAt - a.createdAt);
+    const wait = HOLD_NOTIFY_MS - (performance.now() - this.lastNotify);
+    if (this.holding > 0 && wait > 0) {
+      // 次の 1 本が遅くても（長い動画の下調べなど）、待たせすぎないよう時間が来たら出す。
+      if (!this.pendingNotify) this.notifyTimer = window.setTimeout(() => this.notify(), wait);
+      this.pendingNotify = true;
+      return;
+    }
+    this.notify();
+  }
+
+  private notifyTimer: number | undefined;
+
+  private notify() {
+    window.clearTimeout(this.notifyTimer);
+    this.pendingNotify = false;
+    this.lastNotify = performance.now();
     this.listeners.forEach((fn) => fn());
+  }
+
+  private holding = 0;
+  private pendingNotify = false;
+  private lastNotify = 0;
+
+  /**
+   * まとめて取り込むあいだ、画面への知らせを間引く（最後には必ず知らせる）。
+   * 1 本足すたびに知らせると、素材パネル・ビン・色の絞り込みが毎回描き直され、
+   * 何百本もの取り込みでは、その描き直しが時間の大半を占める。中身（`all()` / `get()`）は常に最新。
+   */
+  async batch<T>(work: () => Promise<T>): Promise<T> {
+    this.holding += 1;
+    try {
+      return await work();
+    } finally {
+      this.holding -= 1;
+      if (this.holding === 0 && this.pendingNotify) this.notify();
+    }
   }
 
   get(id: string | null): MediaAsset | undefined {

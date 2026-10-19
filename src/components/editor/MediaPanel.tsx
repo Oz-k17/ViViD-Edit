@@ -30,14 +30,20 @@ export function useMediaAssets(): MediaAsset[] {
 }
 
 export async function importFiles(files: FileList | File[], folder = UNSORTED): Promise<string[]> {
+  const list = Array.from(files);
   const errors: string[] = [];
-  for (const file of Array.from(files)) {
-    try {
-      await mediaRegistry.add(file, folder);
-    } catch (error) {
-      errors.push(`${file.name}: ${error instanceof Error ? error.message : '読み込み失敗'}`);
+  const work = async () => {
+    for (const file of list) {
+      try {
+        await mediaRegistry.add(file, folder);
+      } catch (error) {
+        errors.push(`${file.name}: ${error instanceof Error ? error.message : '読み込み失敗'}`);
+      }
     }
-  }
+  };
+  // 何本もまとめて取り込むときは、画面の描き直しを間引く（1 本だけなら、すぐに出す）。
+  if (list.length > 1) await mediaRegistry.batch(work);
+  else await work();
   return errors;
 }
 
