@@ -148,6 +148,35 @@ async function dbDelete(id: string): Promise<void> {
   });
 }
 
+/**
+ * 指定した素材のレコードだけを読んで書き直す（1 回の書き込み用トランザクションで）。
+ *
+ * 以前は、1 つ直すたびに**全部のレコード**を読み直していた（`dbAll`）。素材が 200 本あると 1 回 40〜60ms を
+ * 主スレッドで使い、名前を打つたびに画面が引っかかっていた。必要な分だけ鍵で読む。
+ * 同じストアへの書き込み用トランザクションは作った順に走るので、続けて直しても順番が入れ替わらない。
+ * `edit` が null を返したレコードは書かない。
+ */
+async function dbModify(ids: Iterable<string>, edit: (record: StoredAsset) => StoredAsset | null): Promise<void> {
+  const db = await openDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    const store = tx.objectStore(STORE);
+    for (const id of ids) {
+      const request = store.get(id);
+      request.onsuccess = () => {
+        const record = request.result as StoredAsset | undefined;
+        if (!record) return;
+        const next = edit(record);
+        if (next) store.put(next);
+      };
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+    tx.onabort = () => resolve();
+  });
+}
+
 async function dbAll(): Promise<StoredAsset[]> {
   const db = await openDb();
   if (!db) return [];
@@ -663,14 +692,11 @@ class MediaRegistry {
     }
     if (changed.size === 0) return;
     this.emit();
-    void (async () => {
-      for (const record of await dbAll()) {
-        if (!changed.has(record.id)) continue;
-        const next = { ...record };
-        for (const key of keys) (next as Record<string, unknown>)[key] = patch[key];
-        void dbPut(next);
-      }
-    })();
+    void dbModify(changed, (record) => {
+      const next = { ...record };
+      for (const key of keys) (next as Record<string, unknown>)[key] = patch[key];
+      return next;
+    });
   }
 
   update(id: string, patch: Partial<Pick<MediaAsset, 'name' | 'folder'>>) {
@@ -679,10 +705,7 @@ class MediaRegistry {
     const next = { ...asset, ...patch };
     this.assets.set(id, next);
     this.emit();
-    void (async () => {
-      const stored = (await dbAll()).find((r) => r.id === id);
-      if (stored) void dbPut({ ...stored, ...patch });
-    })();
+    void dbModify([id], (record) => ({ ...record, ...patch }));
   }
 
   /** 複数の素材のフォルダを 1 度に付け替える（再描画と保存を 1 回にまとめる）。 */
@@ -696,12 +719,10 @@ class MediaRegistry {
     }
     if (moved.size === 0) return;
     this.emit();
-    void (async () => {
-      for (const record of await dbAll()) {
-        const folder = moved.get(record.id);
-        if (folder !== undefined) void dbPut({ ...record, folder });
-      }
-    })();
+    void dbModify(moved.keys(), (record) => {
+      const folder = moved.get(record.id);
+      return folder === undefined ? null : { ...record, folder };
+    });
   }
 
   /**
@@ -771,12 +792,10 @@ class MediaRegistry {
 
   /** 保存してある、以前の軽量版の情報（と実体）を落とす。 */
   private async dropLegacyProxies(ids: string[]) {
-    const drop = new Set(ids);
-    for (const record of await dbAll()) {
-      if (!drop.has(record.id)) continue;
+    await dbModify(ids, (record) => {
       const { proxy: _p, proxyBlob: _b, ...plain } = record;
-      await dbPut(plain);
-    }
+      return plain;
+    });
   }
 
   /** いま再生に使う URL（プロキシがあって、使う設定ならプロキシ）。 */
