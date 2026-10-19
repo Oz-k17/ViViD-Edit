@@ -162,10 +162,6 @@ export function AnalysisSection({ clip }: { clip: Clip }) {
           ))}
         </ul>
       )}
-
-      <p className="muted small">
-        数字はすべて合成した試し素材で測ったものです。本物の素材では、結果を見て直してください。
-      </p>
     </>
   );
 }

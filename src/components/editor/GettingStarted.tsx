@@ -70,7 +70,7 @@ export function GettingStarted() {
         </li>
         <li>
           <strong>保存する</strong>
-          <span>右上の「書き出し」を押すと、投稿できる動画になります。</span>
+          <span>右上の「書き出し」から動画の出力</span>
         </li>
       </ol>
       <input
@@ -88,7 +88,6 @@ export function GettingStarted() {
         {busy ? '読み込み中…' : <><Icon name="plus" />動画を選ぶ</>}
       </button>
       {error && <p className="error-note">{error}</p>}
-      <p className="muted small">ファイルはこの端末の中だけで処理されます。どこにも送られません。</p>
     </div>
   );
 }

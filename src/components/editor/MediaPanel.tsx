@@ -167,7 +167,7 @@ export function MediaPanel() {
           <button
             type="button"
             className="ghost"
-            title="NAS の共有／個人フォルダから、コピーせずに参照する"
+            title="NAS の共有／個人フォルダ"
             onClick={() => setBrowsing(true)}
             disabled={busy}
           >

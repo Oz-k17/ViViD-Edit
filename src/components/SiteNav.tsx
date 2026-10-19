@@ -34,7 +34,6 @@ export function Brand() {
       </svg>
       <div>
         <strong>ViViD Edit</strong>
-        <small>ショート動画エディタ</small>
       </div>
     </div>
   );

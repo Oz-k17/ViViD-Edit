@@ -338,8 +338,7 @@ function WhisperSection({
   if (!support.installed) {
     return (
       <p className="muted small">
-        音からの文字起こしは、この開き方では使えません（{support.reason}）。
-        NAS（Docker 版）から開くと使えます。
+        音からの文字起こしは、アプリ版では使えません（{support.reason}）。NAS（Docker 版）から開くと使えます。
       </p>
     );
   }
@@ -868,7 +867,7 @@ function ThreeBandSection({ clip }: { clip: Clip }) {
 
   return (
     <>
-      <Field label="画面構成" hint="このクリップを 3 本に置き換えます">
+      <Field label="画面構成" hint="このクリップをショート動画のスタイルに置き換えます">
         <div className="chip-row wrap">
           <button type="button" className="chip" onClick={() => build(true)}>
             3分割に組む（見出しつき）

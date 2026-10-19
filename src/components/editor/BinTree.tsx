@@ -190,7 +190,7 @@ export function BinTree({
           type="button"
           className="ghost danger"
           disabled={!canEditSelected}
-          title="選んだビンを削除（中の素材は消えません）"
+          title="選んだビンを削除"
           onClick={() => selected && remove(selected)}
         >
           <Icon name="trash" size={14} label="ビンを削除" />

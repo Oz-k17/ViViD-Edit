@@ -65,7 +65,7 @@ export function UpdateBanner() {
   return (
     <div className="update-banner" role="status">
       <span>
-        新しい版があります（{stampTime(latest)}）。いま開いているのは {stampTime(current)} の版です。
+        新しいバージョンがあります（{stampTime(latest)}）。いま開いているのは {stampTime(current)} の版です。
       </span>
       <a className="button primary" href={ipad ? DOWNLOAD_IPAD : DOWNLOAD_PC} target="_blank" rel="noreferrer">
         {ipad ? 'iPad 用をダウンロード' : 'パソコン用をダウンロード'}

@@ -121,7 +121,7 @@ export function StripStatus({ asset }: { asset: MediaAsset }) {
   const progress = useStripProgress()[asset.id];
   if (progress === undefined) return null;
   return (
-    <span className="proxy-status busy" title="飛ばし見を軽くするための下見の絵を、裏で作っています（作業はそのまま続けられます）">
+    <span className="proxy-status busy">
       下見 {Math.round(progress * 100)}%
     </span>
   );
