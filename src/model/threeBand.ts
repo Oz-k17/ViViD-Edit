@@ -74,6 +74,8 @@ export function buildThreeBand(
   const main = {
     ...band(videoTracks[1].id, bandCrop(coverSource(media, aspect(bands.middle)), bands.middle)),
     muted: clip.muted,
+    // 音声レーンに分けた音とつないであれば、本編がそのつなぎを引き継ぐ（音を失わないように）。
+    ...(clip.linkId ? { linkId: clip.linkId } : {}),
   };
   const face = band(
     videoTracks[2].id,

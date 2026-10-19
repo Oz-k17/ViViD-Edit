@@ -6,6 +6,7 @@ import { FONT_OPTIONS, LOOK_PRESETS, SPEED_PRESETS, TEXT_PRESETS } from '../../p
 import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
 import { buildThreeBand } from '../../model/threeBand';
+import { partnerOf, separateSound, unlinkClips } from '../../model/links';
 import { DEFAULT_EFFECT_TIMING, EFFECT_SHAPES, type EffectTiming } from '../../model/effects';
 import {
   buildCaptionClips,
@@ -554,8 +555,13 @@ function SourceFpsHint() {
 function PropsTab({ clip }: { clip: Clip }) {
   const patch = useClipPatch(clip);
   const easy = useEasy();
+  const { sequence, apply } = useEditor();
   const asset = mediaRegistry.get(clip.mediaId);
   const visual = clip.kind === 'video' || clip.kind === 'image';
+  // 映像と音を分けた動画は、映像の側は鳴らない。音量・ミュートは音の側を直す。
+  const partner = partnerOf(sequence, clip);
+  const soundClip = clip.kind === 'video' && partner ? partner : clip;
+  const soundPatch = useClipPatch(soundClip);
 
   return (
     <>
@@ -583,20 +589,44 @@ function PropsTab({ clip }: { clip: Clip }) {
           <Field label="音量">
             <div className="row">
               <Slider
-                value={clip.volume}
+                value={soundClip.volume}
                 min={0}
                 max={2}
-                onChange={(volume) => patch({ volume }, 'volume')}
+                onChange={(volume) => soundPatch({ volume }, 'volume')}
                 format={(v) => `${Math.round(v * 100)}%`}
-                onReset={() => patch({ volume: 1 })}
+                onReset={() => soundPatch({ volume: 1 })}
               />
-              <button type="button" className={clip.muted ? 'toggle active' : 'toggle'} onClick={() => patch({ muted: !clip.muted })}>
-                {clip.muted ? <MuteIcon /> : <SoundIcon />}
+              <button
+                type="button"
+                className={soundClip.muted ? 'toggle active' : 'toggle'}
+                onClick={() => soundPatch({ muted: !soundClip.muted })}
+              >
+                {soundClip.muted ? <MuteIcon /> : <SoundIcon />}
               </button>
             </div>
           </Field>
-          {clip.kind === 'audio' && (
+          {clip.kind === 'audio' && !clip.linkId && (
             <Toggle label="素材を繰り返して尺を埋める" checked={clip.loop} onChange={(loop) => patch({ loop })} />
+          )}
+          {clip.linkId && partner ? (
+            <div className="link-row">
+              <span className="muted small">
+                <Icon name="link" size={14} /> {clip.kind === 'video' ? '音（音声レーン）' : '映像（映像レーン）'}とつないであります。移動・長さ・分割・削除が一緒に動きます。
+              </span>
+              <button type="button" className="ghost" onClick={() => apply((seq) => unlinkClips(seq, [clip.id]))}>
+                つなぎを外す
+              </button>
+            </div>
+          ) : (
+            // 自分で音を鳴らしている動画だけ（つなぎを外したあとの映像は、音を音声レーンの側が鳴らしている）。
+            clip.kind === 'video' &&
+            clip.mediaId &&
+            !clip.muted &&
+            asset?.hasAudio !== false && (
+              <button type="button" className="wide ghost" onClick={() => apply((seq) => separateSound(seq, clip.id))}>
+                音を音声レーンに分ける
+              </button>
+            )
           )}
         </>
       )}

@@ -192,8 +192,11 @@ export function splitAt(sequence: Sequence, time: number, ids?: string[]): Seque
   return changed ? { ...sequence, clips } : sequence;
 }
 
-/** 削除。ripple = true なら同じトラックの後続を詰める。 */
-export function removeClips(sequence: Sequence, ids: string[], ripple: boolean): Sequence {
+/** 削除。ripple = true なら同じトラックの後続を詰める。つないである映像と音は、一緒に消す。 */
+export function removeClips(sequence: Sequence, picked: string[], ripple: boolean): Sequence {
+  // 相手も消す対象に入れておく（リップルのとき、音声レーンの後続も同じだけ詰めるため）。
+  const links = new Set(sequence.clips.filter((c) => picked.includes(c.id) && c.linkId).map((c) => c.linkId));
+  const ids = links.size === 0 ? picked : sequence.clips.filter((c) => picked.includes(c.id) || (c.linkId && links.has(c.linkId))).map((c) => c.id);
   const targets = sequence.clips.filter((c) => ids.includes(c.id));
   if (targets.length === 0) return sequence;
   let clips = sequence.clips.filter((c) => !ids.includes(c.id));

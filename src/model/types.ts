@@ -231,6 +231,12 @@ export interface Clip {
   /** 直前のクリップとの継ぎ目に置く切り替え効果。 */
   transitionIn: Transition;
   text: TextProps | null;
+  /**
+   * 映像と音のつなぎ。動画を置くと、映像（映像レーン）と音（音声レーン）の 2 本に分かれ、同じ値を持つ。
+   * つないだ 2 本は、移動・長さ・分割・削除がそろって動く（`links.ts`）。映像の側は音を鳴らさない（muted）。
+   * 未定義ならつながっていない（古い保存ファイルもこれ）。
+   */
+  linkId?: string;
 }
 
 export interface Sequence {

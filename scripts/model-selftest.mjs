@@ -175,6 +175,93 @@ eq('空文字', wrap('', 10), ['']);
   check('見出しは字幕なし版でも残る', title.text.role === 'design');
 }
 
+// ---- 映像と音のつなぎ ----
+{
+  const { placeWithSound, reconcileLinks, unlinkClips, partnerOf } = await import('../src/model/links.ts');
+  const { createSequence, clipFromAsset } = await import('../src/model/factory.ts');
+  const { moveClips, trimClip, splitAt, removeClips, removeTrack, placeClip, tracksOf } = await import('../src/model/ops.ts');
+  const { slipClip } = await import('../src/model/editOps.ts');
+
+  const base = createSequence(); // V1 V2 T1 A1 A2
+  const v1 = tracksOf(base, 'video')[0];
+  const a1 = tracksOf(base, 'audio')[0];
+  const a2 = tracksOf(base, 'audio')[1];
+  const yes = () => true;
+  /** 操作をして、アプリと同じく揃え直す。 */
+  const run = (seq, fn) => reconcileLinks(seq, fn(seq));
+  const pairOf = (seq, mediaId) => {
+    const picture = seq.clips.find((c) => c.kind === 'video' && c.mediaId === mediaId);
+    return { picture, sound: picture && partnerOf(seq, picture) };
+  };
+  const synced = (a, b) => ['start', 'duration', 'sourceIn', 'speed'].every((k) => Math.abs(a[k] - b[k]) < 1e-6);
+
+  const first = clipFromAsset({ id: 'm1', kind: 'video', duration: 10 }, v1.id, 0);
+  let seq = placeWithSound(base, [first], false, yes);
+  let { picture, sound } = pairOf(seq, 'm1');
+  check('動画を置くと、音が音声レーンに並ぶ', !!sound && sound.kind === 'audio' && sound.trackId === a1.id);
+  check('映像と音は同じつなぎを持つ', !!picture.linkId && picture.linkId === sound.linkId);
+  check('映像の側は鳴らさない', picture.muted === true && sound.muted === false);
+  check('音のない動画には作らない', !placeWithSound(base, [first], false, () => false).clips.some((c) => c.kind === 'audio'));
+
+  // 既に BGM がある音声レーンには置かない
+  const bgm = { ...clipFromAsset({ id: 'bgm', kind: 'audio', duration: 30 }, a1.id, 0) };
+  const withBgm = placeWithSound(placeClip(base, bgm), [first], false, yes);
+  check('BGM のある A1 を避けて A2 に置く', pairOf(withBgm, 'm1').sound.trackId === a2.id);
+  check('BGM は消えない', withBgm.clips.some((c) => c.id === bgm.id && c.duration === 30));
+
+  // 動かす
+  let moved = run(seq, (s) => moveClips(s, [picture.id], 3, 0));
+  let p2 = pairOf(moved, 'm1');
+  check('映像を動かすと、音も同じだけ動く', p2.sound.start === 3 && synced(p2.picture, p2.sound));
+  // 音の側の端を縮める
+  moved = run(seq, (s) => trimClip(s, sound.id, 'right', -4));
+  p2 = pairOf(moved, 'm1');
+  check('音を縮めると、映像も縮む', Math.abs(p2.picture.duration - 6) < 1e-6 && synced(p2.picture, p2.sound));
+  moved = run(seq, (s) => trimClip(s, picture.id, 'left', 2));
+  p2 = pairOf(moved, 'm1');
+  check('映像の頭を詰めると、音のイン点も同じだけ進む', Math.abs(p2.sound.sourceIn - 2) < 1e-6 && synced(p2.picture, p2.sound));
+  moved = run(seq, (s) => slipClip(s, picture.id, 1.5, 20));
+  p2 = pairOf(moved, 'm1');
+  check('スリップも音が付いてくる', Math.abs(p2.sound.sourceIn - p2.picture.sourceIn) < 1e-6 && p2.picture.sourceIn > 0);
+
+  // 分割
+  const split = run(seq, (s) => splitAt(s, 4, [picture.id]));
+  const pictures = split.clips.filter((c) => c.kind === 'video').sort((a, b) => a.start - b.start);
+  const sounds = split.clips.filter((c) => c.kind === 'audio').sort((a, b) => a.start - b.start);
+  check('映像を割ると、音も同じ所で割れる', pictures.length === 2 && sounds.length === 2 && sounds[1].start === 4);
+  check('割れた同士が 1 組ずつつながる', pictures.every((p, i) => p.linkId === sounds[i].linkId) && pictures[0].linkId !== pictures[1].linkId);
+
+  // 削除（リップル）。後ろにもう 1 組あるとき、音声レーンも詰まる
+  const second = clipFromAsset({ id: 'm2', kind: 'video', duration: 5 }, v1.id, 10);
+  let two = placeWithSound(seq, [second], false, yes);
+  check('続けて置いた動画の音も同じレーンに並ぶ', pairOf(two, 'm2').sound.trackId === a1.id);
+  two = run(two, (s) => removeClips(s, [pairOf(s, 'm1').picture.id], true));
+  check('映像を消すと、音も消える', !two.clips.some((c) => c.mediaId === 'm1'));
+  const after = pairOf(two, 'm2');
+  check('リップル削除で、音声レーンも詰まる', after.picture.start === 0 && after.sound.start === 0, `${after.picture.start} ${after.sound.start}`);
+
+  // 上書きで音が消された（同じ所へ別の音を置いた）ときは、映像は残す
+  const over = { ...clipFromAsset({ id: 'voice', kind: 'audio', duration: 20 }, a1.id, 0) };
+  const covered = run(seq, (s) => placeClip(s, over));
+  const left = covered.clips.find((c) => c.id === picture.id);
+  check('音を上書きされても、映像は残る', !!left && !left.linkId);
+
+  // 音声レーンごと消したら、映像の音を戻す
+  const noTrack = run(seq, (s) => removeTrack(s, a1.id));
+  const back = noTrack.clips.find((c) => c.id === picture.id);
+  check('音声レーンを消すと、映像の音が戻る', !!back && !back.linkId && back.muted === false);
+
+  // つなぎを外すと、別々に動く
+  const free = unlinkClips(seq, [picture.id]);
+  const freeMoved = run(free, (s) => moveClips(s, [picture.id], 2, 0));
+  check('つなぎを外すと、音は付いてこない', freeMoved.clips.find((c) => c.id === sound.id).start === 0);
+  check('つなぎを外しても、音は音声レーンの側で鳴り続ける', free.clips.find((c) => c.id === sound.id).muted === false);
+
+  // つなぎの無いプロジェクトは触らない
+  const plain = placeClip(base, first);
+  check('つなぎが無ければ、揃え直しは何もしない', reconcileLinks(plain, plain) === plain);
+}
+
 // ---- 声の指紋で話者を見分けられるか ----
 {
   const { voicePrint, similarity, pickSpeaker } = await import('../src/engine/voiceprint.ts');

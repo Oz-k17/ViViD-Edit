@@ -17,6 +17,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { EditMode } from '../model/editModes';
+import { reconcileLinks } from '../model/links';
 import { createProject } from '../model/factory';
 import { ASPECT_PRESETS, type AspectKey, type Project, type Sequence } from '../model/types';
 import { migrateStorageKey } from './storage';
@@ -96,7 +97,8 @@ function reducer(state: State, action: Action): State {
       });
     }
     case 'apply': {
-      const sequence = action.fn(state.project.sequence);
+      // つないだ映像と音は、どの操作のあとでも揃え直す（片方だけ動いたら、もう片方も合わせる）。
+      const sequence = reconcileLinks(state.project.sequence, action.fn(state.project.sequence));
       if (sequence === state.project.sequence) return state;
       return commit(state, { ...state.project, sequence }, action.key);
     }

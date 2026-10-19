@@ -1,9 +1,9 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
-import { formatTime, mediaRegistry } from '../../engine/media';
+import { formatTime, assetHasSound, mediaRegistry } from '../../engine/media';
 import { player } from '../../engine/player';
 import { sourceLengthOf } from '../../engine/sourceLength';
 import { EDIT_MODES, dragByMode, trimByMode, type EditMode } from '../../model/editModes';
-import { placeClips } from '../../model/editOps';
+import { placeWithSound } from '../../model/links';
 import {
   adoptSourceFps,
   clipsOnTrack,
@@ -518,7 +518,7 @@ function Lane({
       clips.push(clip);
       at = clipEnd(clip);
     }
-    apply((seq) => placeClips(adoptSourceFps(seq, assets[0].fps), clips, insertMode));
+    apply((seq) => placeWithSound(adoptSourceFps(seq, assets[0].fps), clips, insertMode, assetHasSound));
   };
 
   return (
@@ -691,7 +691,9 @@ const ClipBlock = memo(function ClipBlock({
         </button>
       )}
       <span className="tl-clip-label">
-        {clip.muted && <MuteIcon />}
+        {/* つないだ映像は、音を音声レーンの側で鳴らすので、ミュートの印ではなくつなぎの印を出す。 */}
+        {clip.linkId && <Icon name="link" size={11} />}
+        {clip.muted && !(clip.linkId && clip.kind === 'video') && <MuteIcon />}
         {clip.speed !== 1 && `${clip.speed}× `}
         {label}
       </span>

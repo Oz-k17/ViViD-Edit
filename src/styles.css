@@ -996,6 +996,17 @@ hr {
 }
 
 /* 設定と素材が食い違っているときなど、押せば直せる案内。 */
+.link-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.link-row .icon {
+  vertical-align: -2px;
+}
+
 .hint-note {
   margin: 0;
   padding: 8px 10px;

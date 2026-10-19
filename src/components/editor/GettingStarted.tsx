@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
-import { mediaRegistry } from '../../engine/media';
+import { assetHasSound, mediaRegistry } from '../../engine/media';
 import { clipFromAsset } from '../../model/factory';
-import { placeClips } from '../../model/editOps';
+import { placeWithSound } from '../../model/links';
 import { adoptSourceFps, tracksOf } from '../../model/ops';
 import { clipEnd } from '../../model/types';
 import { useEditor } from '../../store/editor';
@@ -46,7 +46,7 @@ export function GettingStarted() {
           at = clipEnd(clip);
           return clip;
         });
-        next = placeClips(adoptSourceFps(next, group[0].fps), clips, false);
+        next = placeWithSound(adoptSourceFps(next, group[0].fps), clips, false, assetHasSound);
       }
       return next;
     });

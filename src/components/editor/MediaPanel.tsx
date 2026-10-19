@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { formatTime, mediaRegistry, SFX_FOLDER, UNSORTED, type MediaAsset } from '../../engine/media';
+import { formatTime, assetHasSound, mediaRegistry, SFX_FOLDER, UNSORTED, type MediaAsset } from '../../engine/media';
 import { renderPreset, SFX_PRESETS } from '../../engine/sfx';
 import { player } from '../../engine/player';
 import { clipFromAsset } from '../../model/factory';
@@ -8,7 +8,7 @@ import { useEditor } from '../../store/editor';
 import { matchesAssetQuery, matchesLabel, type LabelFilter } from '../../model/labels';
 import { pick, prune, sortAssets, type PickState } from '../../model/assetView';
 import { clipEnd } from '../../model/types';
-import { placeClips } from '../../model/editOps';
+import { placeWithSound } from '../../model/links';
 import { useAssetView } from '../../store/assetView';
 import { BulkBar, SortControl, StripStatus, removeAssets, confirmRemoveAssets } from './AssetControls';
 import { startAssetDrag } from './assetDrag';
@@ -125,7 +125,7 @@ export function MediaPanel() {
           at = clipEnd(clip);
           return clip;
         });
-        next = placeClips(adoptSourceFps(next, group[0].fps), clips, insertMode);
+        next = placeWithSound(adoptSourceFps(next, group[0].fps), clips, insertMode, assetHasSound);
       }
       return next;
     });

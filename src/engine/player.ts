@@ -474,14 +474,17 @@ export class Player {
   private clockMaster(): { clip: Clip; el: HTMLMediaElement } | null {
     const sequence = this.sequence;
     if (!sequence) return null;
-    for (const kind of ['video', 'audio'] as const) {
+    // 映像と音を分けた動画は、映像の側が鳴らないので、音の側を基準にする（鳴っている時計を正にするため。
+    // 鳴っている方を補正すると、速度の微調整がそのまま音程の揺れとして聞こえる）。
+    for (const kind of ['linked-audio', 'video', 'audio'] as const) {
       for (const track of sequence.tracks) {
-        if (track.kind !== kind) continue;
+        if (track.kind !== (kind === 'linked-audio' ? 'audio' : kind)) continue;
         const clip = clipAtTime(sequence, track.id, this.time);
         if (!clip || (clip.kind !== 'video' && clip.kind !== 'audio')) continue;
+        if (kind === 'linked-audio' && (!clip.linkId || clip.muted || track.muted)) continue;
         // ループ指定のクリップは currentTime が巻き戻るので基準にできない。
         if (clip.loop) continue;
-        const el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
+        const el = mediaRegistry.mediaElement(clip.id, clip.mediaId, clip.kind === 'audio' ? 'audio' : 'video');
         // シーク中や停止中でも「基準はこのクリップ」という選択自体は変えない。
         // ここで基準を手放すと、その隙にドリフト補正が基準クリップへ介入してしまい、
         // シーク → 補正 → またシーク…という取り合いになる。
@@ -542,7 +545,7 @@ export class Player {
   private readyToAdvance(): boolean {
     for (const entry of this.activeClips()) {
       if (entry.clip.kind !== 'video' && entry.clip.kind !== 'audio') continue;
-      const el = mediaRegistry.mediaElement(entry.clip.id, entry.clip.mediaId);
+      const el = mediaRegistry.mediaElement(entry.clip.id, entry.clip.mediaId, entry.clip.kind === 'audio' ? 'audio' : 'video');
       // HAVE_FUTURE_DATA 未満は、次のフレームがまだ手元に無く止まって見える状態。
       if (!el || el.readyState < 3) return false;
     }
@@ -632,11 +635,11 @@ export class Player {
         }
         continue;
       }
-      let el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
+      let el = mediaRegistry.mediaElement(clip.id, clip.mediaId, clip.kind === 'audio' ? 'audio' : 'video');
       if (!el) continue;
       if (el instanceof HTMLVideoElement) this.watchFrames(clip.id, el);
       if (this.recoverIfStalled(clip, el)) {
-        el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
+        el = mediaRegistry.mediaElement(clip.id, clip.mediaId, clip.kind === 'audio' ? 'audio' : 'video');
         if (!el) continue;
         if (el instanceof HTMLVideoElement) this.watchFrames(clip.id, el);
       }

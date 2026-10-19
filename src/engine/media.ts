@@ -32,6 +32,11 @@ export interface MediaAsset {
   height: number;
   /** 素材そのもののフレームレート。読み取れなかったら undefined。 */
   fps?: number;
+  /**
+   * 動画に音が入っているか。false のときだけ、置いても音声レーンに音を作らない。
+   * 調べられなかった・古い素材は undefined（あるものとして扱う）。
+   */
+  hasAudio?: boolean;
   thumbnail: string;
   size: number;
   folder: string;
@@ -353,18 +358,25 @@ export function normalizeFps(rate: number): number | undefined {
  * 素材そのもののフレームレートを読む。
  * URL を渡した場合も全部は落とさない（mediabunny が Range で頭だけ読む）。
  */
-async function probeFrameRate(from: Blob | string): Promise<number | undefined> {
+interface ContainerProbe {
+  fps?: number;
+  hasAudio?: boolean;
+}
+
+/** 入れ物（コンテナ）を直接読んで、フレームレートと、音が入っているかを調べる。 */
+async function probeContainer(from: Blob | string): Promise<ContainerProbe> {
   let input: Input | undefined;
   try {
     const source = typeof from === 'string' ? new UrlSource(from) : new BlobSource(from);
     input = new Input({ source, formats: VIDEO_INPUT_FORMATS });
+    const hasAudio = (await input.getPrimaryAudioTrack().catch(() => undefined)) ? true : false;
     const track = await input.getPrimaryVideoTrack();
-    if (!track) return undefined;
+    if (!track) return { hasAudio };
     // 全パケットを数えると長尺で時間がかかるので、頭の方だけで平均を取る。
     const stats = await track.computePacketStats(180);
-    return normalizeFps(stats.averagePacketRate);
+    return { fps: normalizeFps(stats.averagePacketRate), hasAudio };
   } catch {
-    return undefined;
+    return {};
   } finally {
     input?.dispose();
   }
@@ -567,9 +579,9 @@ class MediaRegistry {
 
     let asset: MediaAsset;
     if (kind === 'video') {
-      const [meta, fps] = await Promise.all([
+      const [meta, { fps, hasAudio }] = await Promise.all([
         probeVideo(url),
-        withDeadline<number | undefined>(probeFrameRate(file), () => undefined, 8000),
+        withDeadline<ContainerProbe>(probeContainer(file), () => ({}), 8000),
       ]);
       asset = {
         ...base,
@@ -578,6 +590,7 @@ class MediaRegistry {
         width: meta.width,
         height: meta.height,
         fps,
+        hasAudio,
         thumbnail: meta.thumb,
         warning: meta.warning,
       };
@@ -615,9 +628,9 @@ class MediaRegistry {
 
     let asset: MediaAsset;
     if (kind === 'video') {
-      const [meta, fps] = await Promise.all([
+      const [meta, { fps, hasAudio }] = await Promise.all([
         probeVideo(url),
-        withDeadline<number | undefined>(probeFrameRate(url), () => undefined, 8000),
+        withDeadline<ContainerProbe>(probeContainer(url), () => ({}), 8000),
       ]);
       asset = {
         ...base,
@@ -626,6 +639,7 @@ class MediaRegistry {
         width: meta.width,
         height: meta.height,
         fps,
+        hasAudio,
         thumbnail: meta.thumb,
         warning: meta.warning,
       };
@@ -818,16 +832,20 @@ class MediaRegistry {
   }
 
   /** クリップ専用の再生要素（同じ素材を別のイン点で同時に使えるようキーで分ける）。 */
-  mediaElement(key: string, mediaId: string | null): HTMLVideoElement | HTMLAudioElement | null {
+  mediaElement(key: string, mediaId: string | null, as: 'video' | 'audio' = 'video'): HTMLVideoElement | HTMLAudioElement | null {
     const asset = this.get(mediaId);
     if (!asset || asset.kind === 'image') return null;
-    const url = this.playbackUrl(asset);
+    // 動画の音だけを鳴らすクリップ（音声レーンに分けた音）は、<audio> で鳴らす。
+    // <video> にすると映像まで読み解くことになり、iPad では読み解きの枠を 1 つ余計に使ってしまう。
+    // 軽量版（プロキシ）は映像を軽くするためのものなので、音は元の素材から鳴らす。
+    const soundOnly = as === 'audio' || asset.kind === 'audio';
+    const url = soundOnly ? asset.url : this.playbackUrl(asset);
     const existing = this.elements.get(key);
     // 同じ素材でも、プロキシ ⇄ 元素材を切り替えたら作り直す。
     if (existing && existing.dataset.mediaId === asset.id && existing.dataset.src === url) return existing;
     if (existing) this.releaseElement(key);
 
-    const el = asset.kind === 'video' ? document.createElement('video') : document.createElement('audio');
+    const el = soundOnly ? document.createElement('audio') : document.createElement('video');
     el.dataset.mediaId = asset.id;
     // 作った時点では先読みしない。長い素材をシーン分割などで何十クリップにすると、
     // 全クリップが一斉に同じ素材を読み込み始めてしまう。使う直前に player が 'auto' へ上げる。
@@ -877,6 +895,11 @@ class MediaRegistry {
 }
 
 export const mediaRegistry = new MediaRegistry();
+
+/** 置いた動画に、音声レーンへ分ける音があるか（調べられなかった素材は、あるものとする）。 */
+export function assetHasSound(mediaId: string | null): boolean {
+  return mediaRegistry.get(mediaId)?.hasAudio !== false;
+}
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
