@@ -2649,6 +2649,23 @@ hr {
 /* ---------- 素材の複数選択・並び替え ---------- */
 
 .asset-card.selected,
+/* 画面の外の行は、描かずに高さだけ取っておく（素材が数百あると、1 つ足すたびに全行を描き直して重いため）。
+   auto: 一度描いた行は、その実際の高さを覚えておく。数字は、色・メモの無い行の高さ。 */
+.media-table li {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 70px;
+}
+
+:root[data-layout='mobile'] .media-table li {
+  contain-intrinsic-size: auto 201px;
+}
+
+@media (max-width: 640px) {
+  .media-table li {
+    contain-intrinsic-size: auto 201px;
+  }
+}
+
 .media-table li.selected {
   border-color: var(--accent);
   background: var(--accent-soft);

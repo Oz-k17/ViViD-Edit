@@ -372,14 +372,20 @@ function useSyncAssets() {
 export function useBinOptions(): Array<{ path: string; label: string }> {
   const assets = useSyncAssets();
   const { extra } = useBinState();
-  return useMemo(
+  // 素材が足されたり名前が変わったりしても、ビンの顔ぶれが同じなら同じ配列を返す
+  // （これを引数に取る素材の行が、全部描き直しにならないように）。
+  const paths = useMemo(
     () =>
       allBinPaths(
         assets.map((a) => a.folder || UNSORTED),
         extra,
       )
         .sort((a, b) => a.localeCompare(b, 'ja'))
-        .map((path) => ({ path, label: `${'　'.repeat(splitPath(path).length - 1)}${baseName(path)}` })),
+        .join('\0'),
     [assets, extra],
+  );
+  return useMemo(
+    () => (paths === '' ? [] : paths.split('\0')).map((path) => ({ path, label: `${'　'.repeat(splitPath(path).length - 1)}${baseName(path)}` })),
+    [paths],
   );
 }

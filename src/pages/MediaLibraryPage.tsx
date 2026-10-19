@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import { LayoutToggle } from '../components/LayoutToggle';
 import { Brand, SiteNav } from '../components/SiteNav';
 import { useMediaAssets, importFiles } from '../components/editor/MediaPanel';
@@ -6,6 +6,7 @@ import { formatBytes, formatTime, mediaRegistry, UNSORTED } from '../engine/medi
 import { matchesAssetQuery, matchesLabel, type LabelFilter } from '../model/labels';
 import { pick, prune, sortAssets, type PickState } from '../model/assetView';
 import { BinTree, useBinOptions, type BinSelection } from '../components/editor/BinTree';
+import type { MediaAsset } from '../engine/media';
 import { BulkBar, SortControl } from '../components/editor/AssetControls';
 import { LabelDot, LabelFilterBar, NoteBadge } from '../components/editor/LabelControls';
 import { startAssetDrag } from '../components/editor/assetDrag';
@@ -45,6 +46,12 @@ export default function MediaLibraryPage() {
   }, [orderedIds]);
 
   const allPicked = orderedIds.length > 0 && picked.selected.length === orderedIds.length;
+  const selectedSet = useMemo(() => new Set(picked.selected), [picked.selected]);
+
+  // 行は memo にして、変わった行だけ描き直す（素材を 1 つ足す・名前を 1 文字打つたびに、全行を描き直さないように）。
+  // 行が操作のときに読む「いまの選択と並び」は、行の引数にせず ref で渡す（引数にすると全行が変わったことになる）。
+  const live = useRef<RowLive>({ picked, orderedIds, setPicked });
+  live.current = { picked, orderedIds, setPicked };
 
   const upload = async (files: FileList) => {
     setBusy(true);
@@ -113,58 +120,13 @@ export default function MediaLibraryPage() {
           ) : (
             <ul className="media-table">
               {filtered.map((asset) => (
-                <li
+                <AssetRow
                   key={asset.id}
-                  className={picked.selected.includes(asset.id) ? 'selected' : undefined}
-                  draggable
-                  onDragStart={(e) => {
-                    if (!picked.selected.includes(asset.id)) setPicked({ selected: [asset.id], anchor: asset.id });
-                    startAssetDrag(e, asset.id, picked.selected);
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    className="media-check"
-                    aria-label={`${asset.name} を選ぶ`}
-                    checked={picked.selected.includes(asset.id)}
-                    onChange={() => undefined}
-                    onClick={(e) => setPicked((prev) => pick(prev, orderedIds, asset.id, { toggle: !e.shiftKey, range: e.shiftKey }))}
-                  />
-                  <div className="asset-thumb">
-                    {asset.thumbnail ? <img src={asset.thumbnail} alt="" /> : <span className="asset-icon"><Icon name={asset.kind === 'audio' ? 'music-note' : asset.kind === 'image' ? 'photo' : 'film'} size={20} /></span>}
-                  </div>
-                  <div className="media-meta">
-                    <input
-                      type="text"
-                      value={asset.name}
-                      onChange={(e) => mediaRegistry.update(asset.id, { name: e.target.value })}
-                    />
-                    <span className="muted">
-                      {asset.kind === 'image' ? '画像' : formatTime(asset.duration)} ・ {formatBytes(asset.size)}
-                      {asset.width > 0 && ` ・ ${asset.width}×${asset.height}`}
-                    </span>
-                    {(asset.color || asset.note) && (
-                      <span className="media-labels">
-                        <LabelDot color={asset.color} />
-                        <NoteBadge note={asset.note} />
-                      </span>
-                    )}
-                  </div>
-                  <select
-                    value={asset.folder || UNSORTED}
-                    title="移動先のビン"
-                    onChange={(e) => mediaRegistry.update(asset.id, { folder: e.target.value })}
-                  >
-                    {binOptions.map((option) => (
-                      <option key={option.path} value={option.path}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                  <button type="button" className="danger" onClick={() => mediaRegistry.remove(asset.id)}>
-                    削除
-                  </button>
-                </li>
+                  asset={asset}
+                  selected={selectedSet.has(asset.id)}
+                  binOptions={binOptions}
+                  live={live}
+                />
               ))}
             </ul>
           )}
@@ -179,3 +141,79 @@ export default function MediaLibraryPage() {
     </div>
   );
 }
+
+interface RowLive {
+  picked: PickState;
+  orderedIds: string[];
+  setPicked: Dispatch<SetStateAction<PickState>>;
+}
+
+const AssetRow = memo(function AssetRow({
+  asset,
+  selected,
+  binOptions,
+  live,
+}: {
+  asset: MediaAsset;
+  selected: boolean;
+  binOptions: ReturnType<typeof useBinOptions>;
+  live: MutableRefObject<RowLive>;
+}) {
+  return (
+    <li
+      className={selected ? 'selected' : undefined}
+      draggable
+      onDragStart={(e) => {
+        const { picked, setPicked } = live.current;
+        if (!picked.selected.includes(asset.id)) setPicked({ selected: [asset.id], anchor: asset.id });
+        startAssetDrag(e, asset.id, picked.selected);
+      }}
+    >
+      <input
+        type="checkbox"
+        className="media-check"
+        aria-label={`${asset.name} を選ぶ`}
+        checked={selected}
+        onChange={() => undefined}
+        onClick={(e) => {
+          const { orderedIds, setPicked } = live.current;
+          setPicked((prev) => pick(prev, orderedIds, asset.id, { toggle: !e.shiftKey, range: e.shiftKey }));
+        }}
+      />
+      <div className="asset-thumb">
+        {asset.thumbnail ? <img src={asset.thumbnail} alt="" /> : <span className="asset-icon"><Icon name={asset.kind === 'audio' ? 'music-note' : asset.kind === 'image' ? 'photo' : 'film'} size={20} /></span>}
+      </div>
+      <div className="media-meta">
+        <input
+          type="text"
+          value={asset.name}
+          onChange={(e) => mediaRegistry.update(asset.id, { name: e.target.value })}
+        />
+        <span className="muted">
+          {asset.kind === 'image' ? '画像' : formatTime(asset.duration)} ・ {formatBytes(asset.size)}
+          {asset.width > 0 && ` ・ ${asset.width}×${asset.height}`}
+        </span>
+        {(asset.color || asset.note) && (
+          <span className="media-labels">
+            <LabelDot color={asset.color} />
+            <NoteBadge note={asset.note} />
+          </span>
+        )}
+      </div>
+      <select
+        value={asset.folder || UNSORTED}
+        title="移動先のビン"
+        onChange={(e) => mediaRegistry.update(asset.id, { folder: e.target.value })}
+      >
+        {binOptions.map((option) => (
+          <option key={option.path} value={option.path}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <button type="button" className="danger" onClick={() => mediaRegistry.remove(asset.id)}>
+        削除
+      </button>
+    </li>
+  );
+});
