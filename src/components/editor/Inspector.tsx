@@ -926,6 +926,14 @@ function CropSection({ clip }: { clip: Clip }) {
               ? 'プレビューをなぞると、その範囲だけが残ります。大きさが決まったら、プレビュー下で「場所だけ」に切り替えると、大きさを変えずに切り抜く場所だけずらせます（矢印キーでも動きます）。'
               : '切り抜いた絵は、プレビュー上でドラッグして動かせます。四隅のつまみで大きさも変えられます（比率は保たれます）。'}
           </p>
+          <Toggle
+            label="置き場所を固定して、切り抜く範囲だけ選ぶ"
+            checked={!!clip.crop.keepDest}
+            onChange={(keepDest) => patch({ crop: { ...clip.crop, keepDest } })}
+          />
+          <p className="muted small">
+            3 分割の帯のように、置き場所が決まっているときに使います。範囲を選ぶとき、元の絵の全体が画面に収まって見えます。
+          </p>
           <button type="button" className="wide ghost" onClick={() => setShowNumbers((v) => !v)}>
             {showNumbers ? '数値で調整を閉じる' : '数値で微調整'}
           </button>

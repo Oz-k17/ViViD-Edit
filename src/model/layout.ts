@@ -85,7 +85,10 @@ export function coverSource(
   };
 }
 
-/** 切り出した絵を、その帯いっぱいに置く切り抜き設定。 */
+/**
+ * 切り出した絵を、その帯いっぱいに置く切り抜き設定。
+ * 帯の位置は動かさず、あとから切り抜く範囲だけを選び直せるようにしておく（`keepDest`）。
+ */
 export function bandCrop(source: SourceRect, band: Band): Crop {
   return {
     enabled: true,
@@ -94,5 +97,6 @@ export function bandCrop(source: SourceRect, band: Band): Crop {
     dy: band.dy,
     dw: 1,
     dh: band.dh,
+    keepDest: true,
   };
 }

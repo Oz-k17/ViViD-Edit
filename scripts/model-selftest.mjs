@@ -116,6 +116,7 @@ eq('空文字', wrap('', 10), ['']);
   const crop = bandCrop(mid, b.middle);
   check('帯いっぱいに置く', crop.enabled && crop.dx === 0 && crop.dw === 1);
   check('置き場所は帯のとおり', Math.abs(crop.dy - 366 / 1920) < 1e-9 && Math.abs(crop.dh - 960 / 1920) < 1e-9);
+  check('帯の置き場所は固定にしてある（範囲を選び直しても帯から動かない）', crop.keepDest === true);
 }
 
 // ---- 3 分割の組み上がり ----

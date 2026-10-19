@@ -265,8 +265,10 @@ function drawVisualClip(
       );
     } else {
       // 範囲指定モード中は、どこを切り抜くか見えないと選べないので必ず全体を描く。
-      const mode = dc.cropTarget === clip.id ? clip.fit : clip.bgBlur.enabled ? 'contain' : clip.fit;
-      const rect = fitRect(dc.sequence, clip, size, mode);
+      const rect =
+        dc.cropTarget === clip.id
+          ? cropSourceRect(dc.sequence, clip, size)
+          : fitRect(dc.sequence, clip, size, clip.bgBlur.enabled ? 'contain' : clip.fit);
       ctx.drawImage(frame, rect.x, rect.y, rect.w, rect.h);
     }
   } catch {
@@ -774,9 +776,22 @@ function outline(ctx: CanvasRenderingContext2D, sequence: Sequence, rect: Rect, 
   ctx.restore();
 }
 
-/** 範囲指定モードで、元の絵がまるごと描かれている矩形。 */
+/**
+ * 範囲指定モードで、元の絵がまるごと描かれている矩形。
+ *
+ * ふつうは画面に映っているとおりの置き方（`clip.fit`）。選んだ所がそのまま残る見た目にするため。
+ * 出力の枠を固定するクリップ（3 分割の帯）は、元の絵を**画面に収めて**見せる。
+ * 映っているとおりに置くと、横長の素材の左右が画面の外に出てしまい、端にある顔などを選べない。
+ */
 export function cropSourceRect(sequence: Sequence, clip: Clip, media: { width: number; height: number }): Rect {
+  if (clip.crop.keepDest) return fitRect(sequence, clip, media, 'contain', false);
   return fitRect(sequence, clip, media, clip.fit);
+}
+
+/** 出力の枠を固定するクリップで、選ぶ範囲に使う縦横比（出力の枠と同じ比。違うと絵が伸びる）。 */
+export function keptDestRatio(sequence: Sequence, clip: Clip): number | null {
+  if (!clip.crop.keepDest || clip.crop.dh <= 0) return null;
+  return (clip.crop.dw * sequence.width) / (clip.crop.dh * sequence.height);
 }
 
 /**
@@ -784,6 +799,8 @@ export function cropSourceRect(sequence: Sequence, clip: Clip, media: { width: n
  * 「囲んだところ以外が消える」という見た目になるので、範囲を選んだ結果が予測しやすい。
  */
 export function cropDestForSelection(sequence: Sequence, clip: Clip, source: Rect, crop: Crop): Crop {
+  // 出力の枠を固定するクリップは、切り抜く範囲だけを変える。
+  if (crop.keepDest) return crop;
   return cropDestFromRect(sequence, clip, selectionRect(source, crop), crop);
 }
 
@@ -808,8 +825,16 @@ export function cropDestFromRect(sequence: Sequence, clip: Clip, rect: Rect, cro
  * そこから範囲をなぞるだけで済む。
  */
 export function defaultCrop(sequence: Sequence, clip: Clip, media: { width: number; height: number }): Crop {
-  const source = cropSourceRect(sequence, clip, media);
-  return cropDestForSelection(sequence, clip, source, { ...clip.crop, enabled: true, sx: 0, sy: 0, sw: 1, sh: 1 });
+  // 入れ直したときは、ふつうの切り抜きとして始める（帯の枠を固定したままだと、全体を選んだ絵が帯の形に伸びる）。
+  const fresh = { ...clip, crop: { ...clip.crop, keepDest: false } };
+  return cropDestForSelection(sequence, fresh, cropSourceRect(sequence, fresh, media), {
+    ...fresh.crop,
+    enabled: true,
+    sx: 0,
+    sy: 0,
+    sw: 1,
+    sh: 1,
+  });
 }
 
 /** 範囲指定モードの重ね描き。外側を暗くして、選んでいる範囲と角のつまみを出す。 */

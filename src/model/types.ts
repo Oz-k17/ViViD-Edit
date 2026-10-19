@@ -67,6 +67,11 @@ export interface Crop {
   dy: number;
   dw: number;
   dh: number;
+  /**
+   * 出力側の枠（dx〜dh）を動かさず、切り抜く範囲だけを選ぶ。3 分割の帯のように、置き場所が決まっているクリップで使う。
+   * 範囲指定のときは元の絵を**まるごと画面に収めて**見せ、枠の形は出力の枠と同じ比に固定する（絵が伸びないように）。
+   */
+  keepDest?: boolean;
 }
 
 export interface BgBlur {

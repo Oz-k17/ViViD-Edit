@@ -16,7 +16,7 @@ import {
   type CropHandle,
 } from '../../engine/crop';
 import { mediaRegistry } from '../../engine/media';
-import { cropDestForSelection, cropDestFromRect, cropDestRect, renderFrame, type Rect } from '../../engine/renderer';
+import { cropDestForSelection, cropDestFromRect, cropDestRect, keptDestRatio, renderFrame, type Rect } from '../../engine/renderer';
 import { clipAtTime, clipsOnTrack, splitAt } from '../../model/ops';
 import { clipEnd, type Clip, type Sequence } from '../../model/types';
 import { useApp } from '../../store/app';
@@ -217,6 +217,11 @@ export function PreviewStage() {
     return true;
   };
 
+  // 3 分割の帯のように出力の枠が決まっているクリップは、枠と同じ形でしか選べない（違う形だと絵が伸びる）。
+  const cropClip = cropTarget ? sequence.clips.find((c) => c.id === cropTarget) : undefined;
+  const keptRatio = cropClip ? keptDestRatio(sequence, cropClip) : null;
+  const activeRatio = keptRatio ?? cropRatio;
+
   /** 引き始めたと認めるまでの距離（これ未満は「押しただけ」とみなす）。 */
   const DRAW_THRESHOLD = sequence.width / 90;
 
@@ -294,12 +299,12 @@ export function PreviewStage() {
           if (Math.hypot(point.x - d.anchor.x, point.y - d.anchor.y) < DRAW_THRESHOLD) return;
           d.started = true;
         }
-        rect = drawCropRect(d.anchor, point, source, cropRatio);
+        rect = drawCropRect(d.anchor, point, source, activeRatio);
       }
       else if (d.mode === 'move') rect = moveCropRect(d.origin, point.x - d.grabX, point.y - d.grabY, source);
-      else rect = resizeCropRect(d.origin, d.handle, point, source, cropRatio);
+      else rect = resizeCropRect(d.origin, d.handle, point, source, activeRatio);
       // 比率を固定しているあいだは、吸着させると形が崩れるので大きさを変える操作では吸わせない。
-      if (cropRatio === null || d.mode === 'move') rect = snapCropRect(rect, source, snap);
+      if (activeRatio === null || d.mode === 'move') rect = snapCropRect(rect, source, snap);
       setSelectionRect(drag.id, source, rect);
       return;
     }
@@ -349,7 +354,7 @@ export function PreviewStage() {
     if (drag.kind === 'cropSelect' && !(drag.drag.mode === 'draw' && !drag.drag.started)) {
       const clip = sequence.clips.find((c) => c.id === drag.id);
       if (clip) {
-        const rect = ensureMinimum(selectionRect(drag.source, clip.crop), drag.source, cropRatio);
+        const rect = ensureMinimum(selectionRect(drag.source, clip.crop), drag.source, activeRatio);
         setSelectionRect(drag.id, drag.source, rect);
       }
     }
@@ -426,7 +431,8 @@ export function PreviewStage() {
     const source = boundsRef.current.get(`cropsrc:${cropTarget}`);
     if (!source) return;
     setCropRatio(null);
-    setSelectionRect(cropTarget, source, source);
+    // 枠の形が決まっているときは、その形で取れるいちばん大きい範囲へ。
+    setSelectionRect(cropTarget, source, keptRatio !== null ? largestRectForRatio(source, keptRatio) : source);
   };
 
   /** 比率を選び直したら、いまの枠に収まる最大の大きさで作り直して見せる。 */
@@ -488,21 +494,27 @@ export function PreviewStage() {
       </div>
       {cropTarget && (
         <div className="crop-hud">
-          <div className="crop-hud-row">
-            <span className="crop-hud-label">比率</span>
-            <div className="crop-hud-ratios">
-              {ratioOptions.map((option) => (
-                <button
-                  key={option.label}
-                  type="button"
-                  className={sameRatio(cropRatio, option.value) ? 'chip active' : 'chip'}
-                  onClick={() => chooseRatio(option.value)}
-                >
-                  {option.label}
-                </button>
-              ))}
+          {keptRatio !== null ? (
+            <div className="crop-hud-row">
+              <span>元の絵の全体を出しています。使いたい所を囲んでください（枠の形は帯に合わせてあり、置き場所は変わりません）。</span>
             </div>
-          </div>
+          ) : (
+            <div className="crop-hud-row">
+              <span className="crop-hud-label">比率</span>
+              <div className="crop-hud-ratios">
+                {ratioOptions.map((option) => (
+                  <button
+                    key={option.label}
+                    type="button"
+                    className={sameRatio(cropRatio, option.value) ? 'chip active' : 'chip'}
+                    onClick={() => chooseRatio(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="crop-hud-row">
             <span className="crop-hud-label">手の役割</span>
             <div className="crop-hud-ratios">
@@ -529,9 +541,11 @@ export function PreviewStage() {
                 : 'なぞって範囲を決めます。つまみで大きさ、内側をドラッグで位置。矢印キーでも場所を直せます（Enter で完了）。'}
             </span>
             <div className="crop-hud-actions">
-              <button type="button" onClick={fillFrame}>
-                画角いっぱいに
-              </button>
+              {keptRatio === null && (
+                <button type="button" onClick={fillFrame}>
+                  画角いっぱいに
+                </button>
+              )}
               <button type="button" onClick={resetCrop}>
                 全体に戻す
               </button>
