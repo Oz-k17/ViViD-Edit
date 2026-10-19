@@ -34,11 +34,15 @@ jobs:
           stamp=$(python3 -c "import json;print(json.load(open('docs/version.json'))['stamp'])")
           echo "STAMP=$stamp" >> "$GITHUB_ENV"
           mkdir -p out
-          # パソコン用: 展開すると「ViViD-Edit」フォルダの中に index.html がある
+          # パソコン用: 展開すると「ViViD-Edit」フォルダの中に index.html と 使い方.html（説明書）がある
           mkdir -p pkg/ViViD-Edit && cp -R docs/. pkg/ViViD-Edit/
           (cd pkg && zip -qr ../out/ViViD-Edit-PC.zip ViViD-Edit)
-          # iPad 用: 展開すると ViVidEdit.swiftpm がそのまま出てくる（タップすれば Swift Playgrounds で開く）
-          (cd ios && zip -qr ../out/ViViD-Edit-iPad.zip ViVidEdit.swiftpm -x '*/.build/*' '*/.swiftpm/*')
+          # iPad 用: 展開すると「ViViD-Edit」フォルダの中に ViVidEdit.swiftpm（タップすれば Swift Playgrounds で開く）と
+          # 使い方.html（説明書）がある
+          mkdir -p ipad/ViViD-Edit && cp docs/使い方.html ipad/ViViD-Edit/
+          (cd ios && zip -qr ../ipad/app.zip ViVidEdit.swiftpm -x '*/.build/*' '*/.swiftpm/*')
+          (cd ipad/ViViD-Edit && unzip -q ../app.zip)
+          (cd ipad && zip -qr ../out/ViViD-Edit-iPad.zip ViViD-Edit)
           ls -la out
 
       - name: latest リリースへ置き直す
@@ -48,8 +52,9 @@ jobs:
           set -eu
           notes="組み立て: ${STAMP}（commit ${GITHUB_SHA::7}）
 
-          - iPad: ViViD-Edit-iPad.zip を「ファイル」に保存 → タップして展開 → ViVidEdit.swiftpm をタップ
-          - パソコン: ViViD-Edit-PC.zip を展開 → ViViD-Edit フォルダの index.html を開く"
+          - iPad: ViViD-Edit-iPad.zip を「ファイル」に保存 → タップして展開 → ViViD-Edit フォルダの ViVidEdit.swiftpm をタップ
+          - パソコン: ViViD-Edit-PC.zip を展開 → ViViD-Edit フォルダの index.html を開く
+          - 使い方は、どちらも ViViD-Edit フォルダの「使い方.html」"
           if gh release view latest >/dev/null 2>&1; then
             gh release upload latest out/*.zip --clobber
             gh release edit latest --title "最新版（${STAMP}）" --notes "$notes" --latest

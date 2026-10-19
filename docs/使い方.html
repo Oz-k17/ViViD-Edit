@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ViViD Edit の使い方</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0; --code: #f3f5f7; --link: #0b62d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #15171b; --fg: #e6e8eb; --muted: #9aa3ad; --line: #30353c; --code: #22262c; --link: #6aa8ff; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.75 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 80px; }
+  h1 { font-size: 1.9em; margin: 0.4em 0 0.6em; }
+  h2 { font-size: 1.45em; margin: 2.2em 0 0.6em; padding-bottom: 0.3em; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 1.15em; margin: 1.6em 0 0.4em; }
+  a { color: var(--link); }
+  code { background: var(--code); border-radius: 4px; padding: 0.1em 0.35em; font-size: 0.9em; }
+  pre { background: var(--code); border-radius: 6px; padding: 12px; overflow-x: auto; }
+  pre code { padding: 0; }
+  ul, ol { padding-left: 1.5em; }
+  li { margin: 0.2em 0; }
+  .table { overflow-x: auto; margin: 1em 0; }
+  table { border-collapse: collapse; min-width: 100%; }
+  th, td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--code); }
+  blockquote { margin: 1em 0; padding: 0 1em; color: var(--muted); border-left: 4px solid var(--line); }
+</style>
+</head>
+<body>
+<main>
+<h1 id="vivid-edit">ViViD Edit</h1>
+<p><strong>縦型のショート動画</strong>（TikTok / Instagram Reels / YouTube Shorts）を作るための動画編集アプリです。
+ブラウザの中だけで動き、<strong>動画がどこかへ送られることはありません。</strong></p>
+<p>この README は<strong>操作説明書</strong>です。作りの理屈や開発の手順は <a href="https://github.com/Oz-k17/ViViD-Edit/blob/main/TECHNICAL.md" target="_blank" rel="noopener">TECHNICAL.md</a> にまとめています。</p>
+<h2 id="もくじ">もくじ</h2>
+<ol>
+<li><a href="#ダウンロード">ダウンロード</a></li>
+<li><a href="#開き方">開き方</a></li>
+<li><a href="#はじめの-4-ステップ">はじめの 4 ステップ</a></li>
+<li><a href="#画面の見かた">画面の見かた</a></li>
+<li><a href="#素材を入れる整理する">素材を入れる・整理する</a></li>
+<li><a href="#タイムラインで編集する">タイムラインで編集する</a></li>
+<li><a href="#見た目を整える">見た目を整える</a></li>
+<li><a href="#テロップと字幕">テロップと字幕</a></li>
+<li><a href="#音">音</a></li>
+<li><a href="#台本で直す">台本で直す</a></li>
+<li><a href="#自動解析試験的">自動解析（試験的）</a></li>
+<li><a href="#テンプレート">テンプレート</a></li>
+<li><a href="#書き出す">書き出す</a></li>
+<li><a href="#キーボードショートカット">キーボードショートカット</a></li>
+<li><a href="#nas-に置いて何人かで使う">NAS に置いて何人かで使う</a></li>
+<li><a href="#動作環境">動作環境</a></li>
+<li><a href="#困ったときできないこと">困ったとき・できないこと</a></li>
+</ol>
+<h2 id="ダウンロード">ダウンロード</h2>
+<p>使う端末のボタンを押すだけです。<strong>いつ押しても、その時点の最新版</strong>が落ちてきます。</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>端末</th>
+<th>ダウンロード</th>
+<th>落としたあと</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>iPad</strong></td>
+<td>⬇ <a href="https://github.com/Oz-k17/ViViD-Edit/releases/download/latest/ViViD-Edit-iPad.zip" target="_blank" rel="noopener"><strong>iPad 用</strong></a></td>
+<td>「ファイル」で ZIP をタップ → 出てきた <code>ViViD-Edit</code> フォルダの <code>ViVidEdit.swiftpm</code> をタップ → Swift Playgrounds で ▶</td>
+</tr>
+<tr>
+<td><strong>パソコン</strong></td>
+<td>⬇ <a href="https://github.com/Oz-k17/ViViD-Edit/releases/download/latest/ViViD-Edit-PC.zip" target="_blank" rel="noopener"><strong>パソコン用</strong></a></td>
+<td>ZIP を展開 → <code>ViViD-Edit</code> フォルダの <code>index.html</code> をブラウザで開く</td>
+</tr>
+<tr>
+<td>iPhone</td>
+<td>（ZIP では動きません）</td>
+<td>下の「iPhone で使う」</td>
+</tr>
+</tbody></table></div>
+<!-- version -->いまの版: **2026-10-19 19:57（日本時間）** に組み立てたもの<!-- /version -->
+
+<p><strong>この説明書は、ZIP を展開した <code>ViViD-Edit</code> フォルダの「使い方.html」でも読めます</strong>（パソコン版・iPad 版とも。ネットにつながっていなくても開けます）。</p>
+<ul>
+<li><strong>新しい版が出ると、アプリが知らせます。</strong> 開いたときにネットにつながっていれば、画面の下に
+「新しいバージョンがあります」とダウンロードのボタンが出ます（6 時間に 1 回まで。つながらなければ何もしません）</li>
+<li>最新かどうかは、アプリの「設定 → このアプリについて」の「組み立て」の日時が、上の「いまの版」と同じかで確かめられます</li>
+<li>ソースも含めた全部入りは <a href="https://github.com/Oz-k17/ViViD-Edit/archive/refs/heads/main.zip" target="_blank" rel="noopener">ViViD-Edit-main.zip</a>（開発する人向け）</li>
+</ul>
+<p><strong>古いものが開いてしまうとき</strong>（ダウンロードし直したのに直っていない）:</p>
+<ul>
+<li><strong>前に展開したフォルダが残っていませんか。</strong> 同じ場所でもう一度展開すると、新しいほうは <code>ViViD-Edit 2</code> や <code>ViVidEdit 2.swiftpm</code> のような<strong>別の名前</strong>になり、
+古いほうを開き続けてしまいます。古いフォルダと ZIP を消してから、ダウンロード・展開し直してください</li>
+<li><strong>iPad の Swift Playgrounds は、前に開いたアプリの一覧を覚えています。</strong> 一覧にある古い「ViViD Edit」を開くと古いままです。
+一覧から古いものを削除し、新しく展開した <code>ViVidEdit.swiftpm</code> をタップして開き直してください</li>
+<li><strong>ブラウザが古いダウンロードを使い回していないか。</strong> 保存先に <code>ViViD-Edit-iPad (1).zip</code> のような名前で増えていたら、新しいほうを展開してください</li>
+</ul>
+<h2 id="開き方">開き方</h2>
+<h3 id="パソコン">パソコン</h3>
+<p>ZIP を展開して <strong><code>index.html</code></strong> をブラウザで開くだけです。インストールは要りません。</p>
+<h3 id="ipad">iPad</h3>
+<p>ZIP を展開してできた <code>ViViD-Edit</code> フォルダの中の <code>ViVidEdit.swiftpm</code> を Swift Playgrounds で開いて ▶ を押します。
+ブラウザ版と違い、<strong>書き出した動画をカメラロールへ直接保存できます</strong>。
+くわしくは <a href="https://github.com/Oz-k17/ViViD-Edit/blob/main/ios/ViVidEdit.swiftpm/README.md" target="_blank" rel="noopener"><code>ios/ViVidEdit.swiftpm/README.md</code></a> を見てください。</p>
+<h3 id="iphone-で使う">iPhone で使う</h3>
+<p>iPhone には Swift Playgrounds が無く、Safari は「ファイル」の中の HTML を動かせないため、ZIP では使えません。次のどちらかで使います。</p>
+<ul>
+<li><strong>URL で開く（いちばん手軽）</strong> — GitHub のリポジトリの <strong>Settings → Pages</strong> で、Source を <strong>Deploy from a branch</strong>、
+ブランチを <strong><code>main</code></strong>、フォルダを <strong><code>/docs</code></strong> にして Save します。数分後に
+<code>https://oz-k17.github.io/ViViD-Edit/</code> で開けるようになります（公開したくなければ設定しなくて構いません）</li>
+<li><strong>Mac の Xcode でアプリとして入れる</strong>（カメラロールへ保存できるのはこちらだけ）</li>
+</ul>
+<h2 id="はじめの-4-ステップ">はじめの 4 ステップ</h2>
+<p>初めて開くと、画面に「はじめかた」が出ます。</p>
+<ol>
+<li><strong>動画を選ぶ</strong> — 「動画を選ぶ」ボタンで編集したい動画を選びます（何本でも）。そのままタイムラインに並びます</li>
+<li><strong>いらない所を切る</strong> — 切りたい所で止めて「分割」。いらない部分を選んで「削除」</li>
+<li><strong>文字を入れる</strong> — 「＋ テロップ」を押して、文字を打ちます</li>
+<li><strong>保存する</strong> — 右上の「書き出し」から動画を出力します</li>
+</ol>
+<h2 id="画面の見かた">画面の見かた</h2>
+<h3 id="ページ">ページ</h3>
+<div class="table"><table>
+<thead>
+<tr>
+<th>ページ</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>エディタ（最初の画面）</td>
+<td>パソコン表示: 左＝素材、中央＝プレビュー、右＝設定（インスペクタ）、下＝タイムライン / スマホ表示: 1 列</td>
+</tr>
+<tr>
+<td>素材管理</td>
+<td>素材のビン（フォルダ）の整理・名前変更・削除</td>
+</tr>
+<tr>
+<td>テンプレート</td>
+<td>テロップのスタイル・動画レイアウトの管理</td>
+</tr>
+<tr>
+<td>設定</td>
+<td>書き出しの既定値、プレビュー画質、言語、ショートカットキーの割り当て</td>
+</tr>
+</tbody></table></div>
+<h3 id="かんたん--くわしく">かんたん / くわしく</h3>
+<p>上のバーの <strong>「かんたん」「くわしく」</strong> で、画面に出す機能の量を切り替えます。<strong>機能は消えず、「くわしく」に戻せば全部出ます。</strong></p>
+<div class="table"><table>
+<thead>
+<tr>
+<th></th>
+<th>かんたん（初めての人は、こちらから始まります）</th>
+<th>くわしく</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>最初の画面</td>
+<td>「はじめかた」の案内。<strong>動画を選ぶと、そのままタイムラインに並びます</strong></td>
+<td>案内なし</td>
+</tr>
+<tr>
+<td>タイムライン</td>
+<td>削除・分割・テロップ・拡大縮小だけ。<strong>削除は、後ろを前へ詰めます</strong>（途中を消して穴が残らない）</td>
+<td>編集モード（リップル・ロール・スリップ・スライド）、In/Out、スナップなど全部</td>
+</tr>
+<tr>
+<td>クリップの設定</td>
+<td>速度・音量・大きさ・左右上下の位置・フェード。ほかは「くわしい設定」を押すと開く</td>
+<td>すべて表示</td>
+</tr>
+<tr>
+<td>テロップ</td>
+<td>文字・スタイル・サイズ・文字色・揃え・位置。フォントやフチ、影、動きは「くわしい設定」の中</td>
+<td>すべて表示</td>
+</tr>
+<tr>
+<td>字幕</td>
+<td>「音声から字幕を自動で作る」のボタンだけ。精度や処理する場所は「くわしい設定」の中</td>
+<td>すべて表示</td>
+</tr>
+<tr>
+<td>書き出し</td>
+<td>「どこに投稿しますか？」（縦長・正方形・Instagram・横長）と「きれい / ふつう / 軽い」。形式・フレームレート・音量・ビットレートは「くわしい設定」の中</td>
+<td>すべて表示</td>
+</tr>
+<tr>
+<td>設定ページ</td>
+<td>言語・プロジェクトの保存。使う人・素材の置き場所・診断などは「くわしい設定」の中</td>
+<td>すべて表示</td>
+</tr>
+<tr>
+<td>ボタンの大きさ</td>
+<td>指でも押しやすい大きめ</td>
+<td>通常</td>
+</tr>
+</tbody></table></div>
+<ul>
+<li>以前から使っている人は「くわしく」のままです。初めて開いた人だけ「かんたん」から始まります</li>
+<li>選んだ表示はこのブラウザに覚えます</li>
+</ul>
+<h3 id="パソコン表示--スマホ表示">パソコン表示 / スマホ表示</h3>
+<p>上のバーの小さなボタン（🖥 / 📱）で切り替えます。勝手に切り替わることはありません
+（初めてのときだけ画面の幅で決め、以後は選んだほうを覚えます。幅 900px 未満ならスマホ表示から始まります）。</p>
+<p>スマホ表示では 1 列になり、</p>
+<ul>
+<li>プレビューがいつも画面の上</li>
+<li>分割・削除・テロップ追加は、キーボードなしで押せるボタン列に</li>
+<li>素材 / 編集 / タイムラインは下のシートで切り替え</li>
+<li>シート上部のつまみを上下にドラッグして高さを変更、タップでたたむ（プレビューを大きく見られます）</li>
+<li>上のバーは 2 段になり、「書き出し」が必ず見えます</li>
+</ul>
+<h3 id="パネルの配置を変えるパソコン表示">パネルの配置を変える（パソコン表示）</h3>
+<p>素材・インスペクタ・タイムラインは、<strong>見出しを掴んで左 / 右 / 下のどこへでも移せます</strong>。
+境目をドラッグすると幅や高さを変えられます。配置は保存されます。</p>
+<ul>
+<li><strong>重ねてタブにする</strong> — 他のパネルの見出しのあたりへ落とすと、同じ場所に重なってタブになります</li>
+<li><strong>しまう</strong> — 見出し右端の <code>×</code> で消せます。戻すのは上のバーの「⊞ パネル」から</li>
+<li>元に戻したいときは「設定 &gt; 編集画面のレイアウト」から初期状態に戻せます</li>
+</ul>
+<h2 id="素材を入れる整理する">素材を入れる・整理する</h2>
+<h3 id="入れる">入れる</h3>
+<ul>
+<li>素材パネルの <strong>「追加」</strong> から、動画・画像・音声を選びます。画面へファイルをドラッグ＆ドロップしても入ります</li>
+<li>入れた素材はブラウザの中に保存されるので、<strong>ページを移動しても、読み込み直しても残ります</strong></li>
+<li>素材パネルは一覧で並び、多いときは「さらに表示」で続きを出します</li>
+</ul>
+<h3 id="ビンフォルダで分ける">ビン（フォルダ）で分ける</h3>
+<p>素材は、フォルダ（ビン）を入れ子にして整理できます。エディタの素材パネルと素材管理ページで同じ操作です。</p>
+<ul>
+<li><strong>新しいビン</strong> — 選んでいるビンの中に作ります（何も選んでいなければいちばん上）。名前は Enter で確定、Esc で取り消し</li>
+<li><strong>移す</strong> — 素材もビンも、ドラッグして別のビンへ。ビンを動かすと、中身も一緒に付いていきます</li>
+<li><strong>名前を変更</strong>（F2）— 同じ場所に同じ名前は作れません</li>
+<li><strong>削除</strong> — **素材は消えません。**中身は一つ上のビンへ移ります</li>
+<li><strong>キーボード</strong> — ↑↓ で移動、→ で開く、← で閉じる</li>
+<li><strong>検索</strong> — 名前とビンの名前を探します。空白で区切ると、全部を含むものだけ出ます</li>
+<li>「未分類」「効果音」「絵文字」はアプリが使うので、名前変更・移動・削除はできません（中にビンを作るのは自由）</li>
+</ul>
+<h3 id="まとめて選ぶ並び替える">まとめて選ぶ・並び替える</h3>
+<ul>
+<li><strong>選ぶ</strong>: クリックで 1 つ、<code>Ctrl/⌘</code>+クリックで足し引き、<code>Shift</code>+クリックで範囲、<code>Ctrl/⌘+A</code> で全部、<code>Esc</code> で解除</li>
+<li><strong>まとめて操作</strong>: 選ぶと出る帯から、ビンへ移す・削除（確認あり）・タイムラインへ置く。<code>Delete</code> で削除、<code>Enter</code> でタイムラインへ</li>
+<li><strong>ドラッグ</strong>: 選んだ素材をつかむと、選んだ全部を運びます（タイムラインへは隙間なく並べて置きます）</li>
+<li><strong>並び替え</strong>: 追加順・名前・長さ・サイズ・種類。同じ項目をもう一度押すと逆順。選んだ並びは覚えています</li>
+<li>素材管理ページでは、各行のチェックボックスで選びます。「表示中をすべて選ぶ」もあります</li>
+</ul>
+<h3 id="色タグとメモ">色タグとメモ</h3>
+<p>「採用」「あとで」「ボツ」のような、自分だけの印を付けられます。</p>
+<ul>
+<li><strong>色タグ</strong>: 赤・橙・黄・緑・青・紫・灰の 7 色。素材を選ぶと下のバーに色のボタンが出ます。同じ色をもう一度押すと外れます</li>
+<li><strong>メモ</strong>: 素材を 1 つだけ選ぶと、メモ欄が出ます（500 文字まで）。入力欄を離れると保存されます</li>
+<li><strong>絞り込み</strong>: 一覧の上の色ボタンを押すと、その色の素材だけを出します。「色なし」で未整理のものだけを見られます</li>
+<li><strong>検索</strong>: メモの中身や色の名前（「赤」など）でも探せます</li>
+<li>色とメモは<strong>この端末の中だけ</strong>の情報で、他の人には共有されません</li>
+</ul>
+<h2 id="タイムラインで編集する">タイムラインで編集する</h2>
+<p>映像 2 段（V1 / V2）、テロップ 1 段（T1）、音声 2 段（A1 / A2）に並べて編集します。</p>
+<h3 id="基本の操作">基本の操作</h3>
+<ul>
+<li><strong>並べる</strong> — 素材をタイムラインへドラッグ＆ドロップ（ダブルクリックでも再生位置へ置けます）</li>
+<li><strong>長さを変える</strong> — クリップの左右の端をドラッグ</li>
+<li><strong>動かす</strong> — クリップをドラッグして、時間の方向・段の方向へ（重なった部分は上書きされます）</li>
+<li><strong>分割</strong> — 再生位置で <code>C</code></li>
+<li><strong>削除</strong> — <code>Delete</code>。<code>Shift</code>+<code>Delete</code> で、後ろを前へ詰めて削除</li>
+<li><strong>吸着（スナップ）</strong> — 他のクリップの端・再生位置・0 秒にくっつきます</li>
+<li><strong>拡大 / 縮小</strong>、再生位置のドラッグ</li>
+<li><strong>複数選択</strong> — <code>Shift</code>+クリック、または空いた所をドラッグして囲む</li>
+<li><strong>元に戻す / やり直す</strong> — 60 回以上</li>
+<li>段ごとの表示 / ミュートの切り替え</li>
+</ul>
+<h3 id="場面の切り替えトランジション">場面の切り替え（トランジション）</h3>
+<p>クリップの継ぎ目のアイコンを押すと、<strong>ディゾルブ / フェード / スライド / ワイプ / フラッシュ</strong>を長さ付きで選べます。</p>
+<h3 id="編集ツールくわしく表示">編集ツール（くわしく表示）</h3>
+<p>タイムライン上部の「編集ツール」の行で、ドラッグしたときの動き方を切り替えます（Premiere と同じ考え方です）。</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>モード（キー）</th>
+<th>端をドラッグ</th>
+<th>クリップをドラッグ</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>通常（<code>V</code>）</td>
+<td>長さを変える（空いた所は残る）</td>
+<td>移動</td>
+</tr>
+<tr>
+<td>リップル（<code>B</code>）</td>
+<td>長さを変える＋<strong>後ろのクリップも一緒に動く</strong></td>
+<td>移動</td>
+</tr>
+<tr>
+<td>ロール（<code>N</code>）</td>
+<td><strong>隣のクリップとの境目だけ</strong>が動く（全体の長さは変わらない）</td>
+<td>移動</td>
+</tr>
+<tr>
+<td>スリップ（<code>Y</code>）</td>
+<td>長さを変える</td>
+<td><strong>位置と長さはそのまま、使う場面だけをずらす</strong></td>
+</tr>
+<tr>
+<td>スライド（<code>U</code>）</td>
+<td>長さを変える</td>
+<td><strong>位置を動かし、前後のクリップが伸び縮みして埋める</strong></td>
+</tr>
+</tbody></table></div>
+<ul>
+<li><strong>押している間だけ切り替え</strong>: 端は <code>Alt</code> でリップル・<code>Ctrl/⌘</code> でロール、クリップ本体は <code>Alt</code> でスリップ・<code>Ctrl/⌘</code> でスライド</li>
+<li><strong>挿入配置</strong>（<code>J</code>）: オンの間、素材を置くと上書きせず、後ろへ送って差し込みます</li>
+<li><strong>In / Out</strong>（<code>I</code> / <code>O</code>）を打って、<strong>リフト</strong>（<code>;</code>: 取り除いて隙間を残す）か<strong>抽出</strong>（<code>&#39;</code>: 取り除いて詰める）。In / Out を消すのは <code>Ctrl/⌘+Shift+X</code></li>
+<li><strong>隙間を詰める</strong>（<code>Alt+Delete</code>）、<strong>全部の段をまとめて分割</strong>（<code>Ctrl/⌘+K</code>）</li>
+<li><strong>前後の編集点へ移動</strong>（<code>↑</code> <code>↓</code>）、<strong>少しずつ動かす</strong>（<code>Alt+←</code> <code>Alt+→</code> で 1 コマ、<code>Shift</code> で 5 コマ）</li>
+<li>スマホ表示では、ツールの行が横にスクロールします</li>
+</ul>
+<h3 id="長い動画を飛ばし見する">長い動画を飛ばし見する</h3>
+<p>3 分以上の動画は、開くと裏で「下見の絵」を作ります（作成中は素材カードに「下見 ○%」と出ます）。
+できあがると、再生位置をドラッグしている間はこの絵がすぐ出るので、長い動画でも固まりにくくなります。</p>
+<h2 id="見た目を整える">見た目を整える</h2>
+<ul>
+<li><strong>画角</strong> — 9:16 / 1:1 / 4:5 / 16:9</li>
+<li><strong>フレームレート</strong> — 24 / 25 / 30 / 50 / 60 fps。最初に置いた動画に自動で合わせます。食い違うと「◯◯ fps に合わせる」が出ます</li>
+<li><strong>背景ぼかし</strong> — 横長の素材を縦型に置いたときの上下の余白を、同じ映像のぼかしで埋めます（強さ・拡大率を調整できます）</li>
+<li><strong>クロップ（切り抜き）</strong> — 入れると、プレビューを指やマウスでなぞって切り抜く範囲を決められます<ul>
+<li>8 つのつまみで大きさを、内側のドラッグで位置を変えます</li>
+<li>縦横比を固定できます（フリー / 画角 / 1:1 / 4:5 / 9:16 / 16:9）</li>
+<li>「画角いっぱいに」で、縦横比を保ったまま寄れます</li>
+<li><code>Enter</code> / <code>Esc</code> で完了。数値での微調整もできます</li>
+</ul>
+</li>
+<li><strong>調整</strong> — 不透明度・大きさ・位置・回転・速度（0.25〜3 倍）・前後のフェード</li>
+<li><strong>エフェクト</strong> — 明るさ / コントラスト / 彩度 / モノクロ / セピア / 色相 / ぼかし / 反転を、強さを決めて重ねがけ。色味のプリセットも 6 種</li>
+<li><strong>エフェクトを効かせる時間</strong> — エフェクトごとに <strong>ずっと / 頭だけ / 一瞬 / 入ってくる / 抜けていく</strong> を選べます<ul>
+<li>「頭だけ」で 0.25 秒のズーム、「一瞬」で決めゼリフの所の瞬き、などが作れます</li>
+<li>いつから / どれだけ / 立ち上がり / 抜け は秒で細かく決められます</li>
+</ul>
+</li>
+</ul>
+<h2 id="テロップと字幕">テロップと字幕</h2>
+<h3 id="テロップ">テロップ</h3>
+<ul>
+<li>「＋ テロップ」（<code>T</code>）で追加し、文字を打ちます</li>
+<li><strong>12 種のスタイル</strong>（字幕・見出し・白ヌキ帯・ネオン・タイプ・3層フチ・テレビ風・ざぶとん・立体・見出し（幅いっぱい）・コメントカード・ポップ）</li>
+<li>フォント 7 種、サイズ、太さ、フチ（2 重）、影、背景帯、揃え、折り返し幅</li>
+<li><strong>出てくるときの動き</strong> — ポップ / フェード / 上下左右スライド / ズーム / バウンス / タイプライター / ワイプ / ブレ</li>
+<li>プレビューの上で直接ドラッグして位置を決められます</li>
+<li>タイムラインのクリップなので、出したい場面に合わせて始まりと長さを決められます</li>
+<li><strong>絵文字タブ</strong> — 入れた画像を、文字と同じようにテロップの中に入れられます</li>
+</ul>
+<h3 id="字幕音から自動で文字起こし">字幕（音から自動で文字起こし）</h3>
+<p>タイムラインの音から文字を起こして、<strong>時刻付きのテロップを一気に並べます</strong>。音は外へ送らず、ブラウザの中で処理します。</p>
+<ol>
+<li>起こしたいクリップをタイムラインで選びます（<code>Shift</code>・<code>Ctrl</code> で複数、<code>Ctrl/⌘+A</code> で全部）。何も選ばなければ「どの素材から」で選んだ 1 つを使います</li>
+<li>インスペクタの字幕の欄で「音から文字を起こす」を押します</li>
+<li>各クリップの位置に合わせて字幕が並びます。長い行は読みやすい所で割り、短すぎる行は少し伸ばします</li>
+</ol>
+<ul>
+<li>「くわしい設定」で、見た目・1 枚の文字数・精度（モデル）を変えられます</li>
+</ul>
+<div class="table"><table>
+<thead>
+<tr>
+<th>モデル</th>
+<th>日本語</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>large-v3-turbo</td>
+<td>いちばん良い。ただし重い（GPU のある端末向け）</td>
+</tr>
+<tr>
+<td>small</td>
+<td>ぎりぎり使える</td>
+</tr>
+<tr>
+<td>base</td>
+<td>粗い</td>
+</tr>
+</tbody></table></div>
+<ul>
+<li><strong>NAS（Docker 版）から開いたときに使えます。</strong> iPad アプリ版と、パソコンでファイルから開いたときは使えません（理由が画面に出ます）</li>
+<li>初めて使うときは、文字起こしの部品とモデルをネットから取ってくるので時間がかかります</li>
+</ul>
+<h2 id="音">音</h2>
+<ul>
+<li>クリップごとの音量・ミュート、繰り返し（ループ）、フェードイン / アウト、段ごとのミュート</li>
+<li><strong>効果音 8 種</strong>（ピロリン・通知音・ポン・シュワ・カシャ・タッ・キラキラ・ブー）。素材パネルの「効果音」ビンにあります</li>
+</ul>
+<h2 id="台本で直す">台本で直す</h2>
+<p>左の <strong>「台本」</strong> タブに、プロジェクトの中身が読み物の形で並びます。「どの言葉が、いつ、どの順で出るか」を上から読めます。</p>
+<ul>
+<li><strong>その場で書き換えられます。</strong> タイムラインにもプレビューにもすぐ反映されます</li>
+<li>行を押すと、そのクリップを選んで頭出しします</li>
+<li><strong>読むには短すぎる行に ⚠ が出ます</strong></li>
+<li>いらない行はその場で消せます</li>
+</ul>
+<h2 id="自動解析試験的">自動解析（試験的）</h2>
+<p>映像クリップを選ぶと、インスペクタの下に <strong>「自動解析（試験的）」</strong> が出ます（かんたん表示では「くわしい設定」の中）。
+押したあとは <strong>元に戻す 1 回で戻ります。</strong></p>
+<ul>
+<li><strong>シーンで分割</strong> — 場面の切り替わりを見つけて、場面ごとにクリップを割ります</li>
+<li><strong>被写体を追って切り出す</strong> — 横長の素材から縦型を切り出すとき、枠を被写体に合わせます。枠が動く所でクリップが割れます</li>
+<li><strong>表紙の候補</strong> — 表紙に使えそうなコマを 3 枚選びます。「ここへ移動」と「画像で保存（PNG）」ができます</li>
+</ul>
+<p>iPad では処理が遅めです。長い範囲を解析するときは、進み具合を見て待ってください。</p>
+<h2 id="テンプレート">テンプレート</h2>
+<p>テロップのスタイルと、タイムラインの組み方（動画レイアウト）を保存して、ワンクリックで呼び出せます。</p>
+<h2 id="書き出す">書き出す</h2>
+<p>右上の <strong>「書き出し」</strong> を押し、次を選んで「書き出す」を押します。</p>
+<ul>
+<li><strong>画角</strong>（9:16 / 1:1 / 4:5 / 16:9）と<strong>画質</strong>（1080p / 720p / 480p）。かんたん表示では「どこに投稿しますか？」と「きれい / ふつう / 軽い」</li>
+<li><strong>形式</strong> — MP4 か WebM。カメラロールへ保存するなら MP4 を選んでください</li>
+<li><strong>音量を整えて書き出す（試験的）</strong> — 音量を SNS 向けの大きさ（-14 LUFS）に揃え、割れそうな所だけ抑えます。10 分までの動画で使えます</li>
+</ul>
+<p>書き出し中はタブを開いたままにしてください。かかる時間は素材の重さしだいで、動画の長さより短いことも長いこともあります。</p>
+<p><strong>長い・大きい動画のとき</strong></p>
+<ul>
+<li>保存領域が足りないと見込まれるときは、書き始める前に知らせます</li>
+<li>Safari や iPad アプリ版で長い動画を書き出すと、メモリが足りずに落ちることがあります。いくつかに分けて書き出すのが確実です</li>
+</ul>
+<h2 id="キーボードショートカット">キーボードショートカット</h2>
+<p>既定は下のとおりで、<strong>設定ページですべて割り当てを変えられます</strong>。</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>キー</th>
+<th>動作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Space</code></td>
+<td>再生 / 一時停止</td>
+</tr>
+<tr>
+<td><code>C</code></td>
+<td>再生位置で分割</td>
+</tr>
+<tr>
+<td><code>T</code></td>
+<td>テロップを追加</td>
+</tr>
+<tr>
+<td><code>Delete</code></td>
+<td>削除（<code>Shift</code> と一緒で、後ろを詰めて削除）</td>
+</tr>
+<tr>
+<td><code>←</code> <code>→</code></td>
+<td>1 コマ移動（<code>Shift</code> で 1 秒）</td>
+</tr>
+<tr>
+<td><code>Ctrl</code> / <code>⌘</code> + <code>Z</code></td>
+<td>元に戻す（<code>Shift</code> と一緒でやり直す）</td>
+</tr>
+<tr>
+<td><code>Ctrl</code> / <code>⌘</code> + <code>+</code> <code>-</code></td>
+<td>タイムラインの拡大 / 縮小</td>
+</tr>
+<tr>
+<td><code>Home</code> / <code>End</code></td>
+<td>先頭 / 末尾へ</td>
+</tr>
+<tr>
+<td><code>V</code> <code>B</code> <code>N</code> <code>Y</code> <code>U</code></td>
+<td>編集モード: 通常 / リップル / ロール / スリップ / スライド</td>
+</tr>
+<tr>
+<td><code>J</code></td>
+<td>挿入配置の切り替え</td>
+</tr>
+<tr>
+<td><code>I</code> <code>O</code> <code>;</code> <code>&#39;</code></td>
+<td>In 点 / Out 点 / リフト / 抽出</td>
+</tr>
+<tr>
+<td><code>↑</code> <code>↓</code></td>
+<td>前 / 次の編集点へ</td>
+</tr>
+<tr>
+<td><code>Alt</code>+<code>←</code> <code>→</code></td>
+<td>選んだクリップを 1 コマ動かす（<code>Shift</code> で 5 コマ）</td>
+</tr>
+<tr>
+<td><code>Ctrl</code> / <code>⌘</code> + <code>K</code></td>
+<td>全部の段をまとめて分割</td>
+</tr>
+<tr>
+<td><code>Alt</code>+<code>Delete</code></td>
+<td>再生位置の隙間を詰める</td>
+</tr>
+<tr>
+<td><code>Ctrl</code> / <code>⌘</code> + <code>A</code></td>
+<td>クリップをすべて選ぶ</td>
+</tr>
+</tbody></table></div>
+<h2 id="nas-に置いて何人かで使う">NAS に置いて何人かで使う</h2>
+<p>社内の NAS に置けば、<strong>URL を 1 つ配るだけ</strong>で iPad でも PC でも使えます。更新は NAS のファイルを差し替えるだけです。</p>
+<ul>
+<li><strong>共有素材をそのまま使う</strong> — 素材パネルの「共有」から NAS のフォルダを開いて、コピーせずに追加できます</li>
+<li><strong>プロジェクトを人に渡す</strong> — 「設定 &gt; プロジェクトの受け渡し」からファイル 1 つで書き出せます。同じ共有フォルダが見える人なら、そのまま開けます。自分の端末から入れた素材は運べません（書き出すときに名前を知らせます）</li>
+<li><strong>字幕の文字起こし</strong>が使えます</li>
+<li>長い動画は、NAS が作る軽い複製で、プレビューが軽くなります</li>
+<li><strong>https で配ってください。</strong> http だと書き出しが遅くなり、コマ落ちすることがあります</li>
+<li>同時編集はできません。共有されるのは素材だけで、プロジェクトと設定は各自のブラウザの中です</li>
+</ul>
+<p>置き方（nginx と docker compose、UGREEN NAS での手順、外から使うための Cloudflare Tunnel）は <a href="https://github.com/Oz-k17/ViViD-Edit/blob/main/deploy/nas/README.md" target="_blank" rel="noopener"><code>deploy/nas/README.md</code></a> にあります。</p>
+<h2 id="動作環境">動作環境</h2>
+<p>Chrome / Edge がおすすめです（MP4 で書き出せます）。Safari 17 以降でも動きます。
+Firefox でも編集・書き出しはできますが、出力は WebM になります。</p>
+<h2 id="困ったときできないこと">困ったとき・できないこと</h2>
+<ul>
+<li><strong>プレビューが重い</strong> — 設定の「プレビューの画質」を「軽い」にしてください。それでも重いときは、解像度を落とした素材を使うのが確実です</li>
+<li><strong>iPad アプリが落ちる</strong> — 設定の「この端末の診断」に、メモリ警告の回数が出ます。知らせてもらうときの手がかりになります</li>
+<li><strong>素材・プロジェクト・設定はブラウザの中に保存されます。</strong> ブラウザのデータを消すと失われます</li>
+<li>同じ段の上でクリップを重ねることはできません（重なった部分は上書きされます）</li>
+<li>言語を英語にしても、一部の表示は日本語のままです</li>
+</ul>
+
+</main>
+</body>
+</html>

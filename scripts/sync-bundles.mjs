@@ -15,6 +15,7 @@
 import { cp, mkdir, readFile, rm, readdir, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { buildManualHtml } from './manual-html.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const dist = path.join(root, 'dist');
@@ -87,3 +88,8 @@ try {
 } catch (error) {
   console.log(`README の版は更新しませんでした（${error instanceof Error ? error.message : error}）`);
 }
+
+// 操作説明書（README）を HTML にして docs/ に置く。ZIP（パソコン用・iPad 用）にはここから入れる。
+const manualPath = path.join(root, 'docs', '使い方.html');
+await writeFile(manualPath, buildManualHtml(await readFile(path.join(root, 'README.md'), 'utf8')));
+console.log(`説明書を作りました: ${path.relative(root, manualPath)}`);

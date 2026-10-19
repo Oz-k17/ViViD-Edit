@@ -31,11 +31,13 @@
 
 | 端末 | ダウンロード | 落としたあと |
 | --- | --- | --- |
-| **iPad** | ⬇ [**iPad 用**](https://github.com/Oz-k17/ViViD-Edit/releases/download/latest/ViViD-Edit-iPad.zip) | 「ファイル」で ZIP をタップ → 出てきた `ViVidEdit.swiftpm` をタップ → Swift Playgrounds で ▶ |
+| **iPad** | ⬇ [**iPad 用**](https://github.com/Oz-k17/ViViD-Edit/releases/download/latest/ViViD-Edit-iPad.zip) | 「ファイル」で ZIP をタップ → 出てきた `ViViD-Edit` フォルダの `ViVidEdit.swiftpm` をタップ → Swift Playgrounds で ▶ |
 | **パソコン** | ⬇ [**パソコン用**](https://github.com/Oz-k17/ViViD-Edit/releases/download/latest/ViViD-Edit-PC.zip) | ZIP を展開 → `ViViD-Edit` フォルダの `index.html` をブラウザで開く |
 | iPhone | （ZIP では動きません） | 下の「iPhone で使う」 |
 
-<!-- version -->いまの版: **2026-10-19 19:49（日本時間）** に組み立てたもの<!-- /version -->
+<!-- version -->いまの版: **2026-10-19 19:57（日本時間）** に組み立てたもの<!-- /version -->
+
+**この説明書は、ZIP を展開した `ViViD-Edit` フォルダの「使い方.html」でも読めます**（パソコン版・iPad 版とも。ネットにつながっていなくても開けます）。
 
 - **新しい版が出ると、アプリが知らせます。** 開いたときにネットにつながっていれば、画面の下に
   「新しいバージョンがあります」とダウンロードのボタンが出ます（6 時間に 1 回まで。つながらなければ何もしません）
@@ -58,7 +60,7 @@ ZIP を展開して **`index.html`** をブラウザで開くだけです。イ�
 
 ### iPad
 
-ZIP の中の `ViVidEdit.swiftpm` を Swift Playgrounds で開いて ▶ を押します。
+ZIP を展開してできた `ViViD-Edit` フォルダの中の `ViVidEdit.swiftpm` を Swift Playgrounds で開いて ▶ を押します。
 ブラウザ版と違い、**書き出した動画をカメラロールへ直接保存できます**。
 くわしくは [`ios/ViVidEdit.swiftpm/README.md`](ios/ViVidEdit.swiftpm/README.md) を見てください。
 
