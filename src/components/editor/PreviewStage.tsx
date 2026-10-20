@@ -102,6 +102,9 @@ export function PreviewStage() {
     // 素材の増減）は dirty で知らせる。取りこぼしても困らないよう、一定間隔でも描く。
     let dirty = true;
     let drawnAt = 0;
+    /** 直前の画面を残し始めた時刻（0 なら残していない）と、1 度でも描いたか。 */
+    let heldSince = 0;
+    let drawnOnce = false;
     let last = { time: -1, seq: null as unknown, sel: null as unknown, g: null as unknown, crop: null as unknown, w: 0, h: 0 };
     const markDirty = () => {
       dirty = true;
@@ -112,6 +115,8 @@ export function PreviewStage() {
     document.fonts?.addEventListener?.('loadingdone', markDirty);
     const unsubscribeAssets = mediaRegistry.subscribe(markDirty);
     const IDLE_REDRAW_MS = 400;
+    /** 映すべき絵が届くまで、直前の画面を残しておく最長の時間。過ぎたら、届いていなくても描く。 */
+    const HOLD_PENDING_MS = 3000;
 
     player.start((time) => {
       const canvas = canvasRef.current;
@@ -145,6 +150,18 @@ export function PreviewStage() {
           h !== last.h ||
           now - drawnAt > IDLE_REDRAW_MS;
         if (!changed) return;
+        // 遠くへ飛んだ直後など、映すべき動画の絵がまだ 1 枚も無いときは、直前の画面を残す（黒く塗りつぶさない）。
+        // 編集や画面の大きさが変わったときは待たずに描く。待つのは最長 HOLD_PENDING_MS まで。
+        const onlyTimeMoved = seq === last.seq && sel === last.sel && g === last.g && crop === last.crop && w === last.w && h === last.h;
+        if (onlyTimeMoved && drawnOnce && player.framesPending()) {
+          if (heldSince === 0) heldSince = now;
+          if (now - heldSince < HOLD_PENDING_MS) {
+            dirty = true;
+            return;
+          }
+        }
+        heldSince = 0;
+        drawnOnce = true;
         dirty = false;
         drawnAt = now;
         last = { time, seq, sel, g, crop, w, h };

@@ -620,6 +620,44 @@ export class Player {
     el.addEventListener('loadeddata', capture);
   }
 
+  /**
+   * そのクリップの、いま描ける絵。無ければ null（まだ 1 枚も映せていない）。
+   *
+   * シーク中の動画は描かない。iPad（WebKit）はシーク中の <video> を描くと真っ黒なコマになり、
+   * 時間を飛ばすたびにプレビューが黒くなる。シーク中・読み込み中は、下見の絵か、最後に映せた絵を出す。
+   */
+  private frameOf(clip: Clip): CanvasImageSource | null {
+    const el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
+    const video = el instanceof HTMLVideoElement ? el : null;
+    const seeking = !!video?.seeking;
+    if (hasStrip(clip.mediaId)) {
+      const target = this.targetSourceTime(clip, this.time);
+      // 止まっているあいだは、目的のコマに着くまで（ドラッグ中など）。再生中は、シークのあいだだけ。
+      const settled = !!video && video.readyState >= 2 && !seeking && Math.abs(video.currentTime - target) < 0.25;
+      if (seeking || (!this.playing && !settled)) {
+        const thumb = stripFrameAt(clip.mediaId, target);
+        if (thumb) return thumb;
+      }
+    }
+    if (video && video.readyState >= 2 && !seeking) return video;
+    return this.lastFrames.get(clip.id) ?? null;
+  }
+
+  /**
+   * いま映すべき動画のうち、描ける絵がまだ 1 枚も無いものがあるか（遠くへ飛んだ直後の読み込み中など）。
+   * あるあいだ、プレビューは直前の画面を残す（黒く塗りつぶさない）。
+   */
+  framesPending(): boolean {
+    const sequence = this.sequence;
+    if (!sequence) return false;
+    for (const track of sequence.tracks) {
+      if (track.kind !== 'video' || track.hidden) continue;
+      const clip = clipAtTime(sequence, track.id, this.time);
+      if (clip?.kind === 'video' && clip.mediaId && mediaRegistry.get(clip.mediaId) && !this.frameOf(clip)) return true;
+    }
+    return false;
+  }
+
   /** 止まったシークを見つけたら、要素を作り直す。作り直したら true。 */
   private recoverIfStalled(clip: Clip, el: HTMLMediaElement): boolean {
     if (!el.seeking) {
@@ -772,20 +810,7 @@ export class Player {
           return img?.complete ? img : null;
         }
         if (clip.kind !== 'video') return null;
-        const el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
-        // 動画がまだ目的のコマを出せていない間（ドラッグ中・シーク中）は、下見の絵があればそれを出す。
-        if (!this.playing && hasStrip(clip.mediaId)) {
-          const target = this.targetSourceTime(clip, this.time);
-          const settled =
-            el instanceof HTMLVideoElement && el.readyState >= 2 && !el.seeking && Math.abs(el.currentTime - target) < 0.25;
-          if (!settled) {
-            const thumb = stripFrameAt(clip.mediaId, target);
-            if (thumb) return thumb;
-          }
-        }
-        if (el instanceof HTMLVideoElement && el.readyState >= 2) return el;
-        // シーク中・読み込み中は、最後に映せた絵を出し続ける（真っ黒や固まって見えるのを避ける）。
-        return this.lastFrames.get(clip.id) ?? null;
+        return this.frameOf(clip);
       },
       sizeFor: (clip) => {
         const asset = mediaRegistry.get(clip.mediaId);
