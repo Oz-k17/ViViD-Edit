@@ -1847,6 +1847,9 @@ hr {
   cursor: grab;
   user-select: none;
   touch-action: none;
+  /* 画面の外のクリップは、中身を描かない（数百あると、開く・拡大縮小のたびに全部を描いて重い）。
+     大きさは left / width / top / bottom で決まっていて中身に依らないので、見た目は変わらない。 */
+  content-visibility: auto;
 }
 
 /*

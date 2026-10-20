@@ -35,7 +35,7 @@
 | **パソコン** | ⬇ [**パソコン用**](https://github.com/Oz-k17/ViViD-Edit/releases/download/latest/ViViD-Edit-PC.zip) | ZIP を展開 → `ViViD-Edit` フォルダの `index.html` をブラウザで開く |
 | iPhone | （ZIP では動きません） | 下の「iPhone で使う」 |
 
-<!-- version -->いまの版: **2026-10-20 02:02（日本時間）** に組み立てたもの<!-- /version -->
+<!-- version -->いまの版: **2026-10-20 13:43（日本時間）** に組み立てたもの<!-- /version -->
 
 **この説明書は、ZIP を展開した `ViViD-Edit` フォルダの「使い方.html」でも読めます**（パソコン版・iPad 版とも。ネットにつながっていなくても開けます）。
 

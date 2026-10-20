@@ -128,6 +128,9 @@ async function round(browser, videoBytes) {
   await page.waitForFunction(() => window.__vivid?.mediaRegistry.all().some((a) => a.name === 'bench.webm'), null, { timeout: 20000 });
 
   // 重いプロジェクトを作って、保存した状態から開き直す（起動の重さも測るため）。
+  // アプリは起動の 0.4 秒後に、いまのプロジェクトを控えに書く。その前に仕込むと空のプロジェクトで上書きされ、
+  // 開き直しても何も無い（取り込みが速くなって、この順になることがあった）。書き終わるのを待ってから仕込む。
+  await page.waitForTimeout(600);
   await page.evaluate(async () => {
     const { createSequence, baseClip, textClip } = window.__vivid.factory;
     const asset = window.__vivid.mediaRegistry.all().find((a) => a.name === 'bench.webm');
@@ -147,7 +150,9 @@ async function round(browser, videoBytes) {
 
   const t0 = Date.now();
   await page.reload();
-  await page.waitForFunction(() => document.querySelectorAll('.tl-clip').length > 20, null, { timeout: 30000 });
+  // 既定の待ち方（描画のたびに調べる）は、環境によって開いた直後に止まったまま返らないことがある（10/20 に発生）。
+  // 16ms おきに調べる（1 コマぶん。測る値の細かさは同じ）。
+  await page.waitForFunction(() => document.querySelectorAll('.tl-clip').length > 20, null, { timeout: 30000, polling: 16 });
   await settle(page);
   const openMs = Date.now() - t0;
 
