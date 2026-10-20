@@ -196,6 +196,14 @@ interface ActiveClip {
 
 export class Player {
   private sequence: Sequence | null = null;
+  /**
+   * 映像と音を分けた動画の、再生中の鳴らし方。
+   * 音の側（音声レーン）には再生要素を作らず、映像の要素から鳴らす（音量・ミュート・フェードは音の側の設定）。
+   * 同じファイルを 2 本の要素で同時に鳴らすと、読み込みとシークが倍になり、
+   * 2 本を合わせ続ける補正も要る。iPad ではそれが再生のカクつきになる。書き出しは音の側から作るので変わらない。
+   */
+  private voiceOf = new Map<string, Clip>();
+  private voicedBy = new Set<string>();
   private raf = 0;
   private lastNow = 0;
   private timeListeners = new Set<Listener>();
@@ -294,10 +302,25 @@ export class Player {
     this.duration = sequenceDuration(sequence);
     if (this.time > this.duration) this.time = this.duration;
 
+    // つないだ映像と音（位置・長さ・イン点・速度がそろっているもの）は、映像の要素から鳴らす。
+    this.voiceOf.clear();
+    this.voicedBy.clear();
+    const pictures = new Map<string, Clip>();
+    for (const clip of sequence.clips) if (clip.kind === 'video' && clip.linkId) pictures.set(clip.linkId, clip);
+    for (const clip of sequence.clips) {
+      if (clip.kind !== 'audio' || !clip.linkId || clip.loop) continue;
+      const picture = pictures.get(clip.linkId);
+      if (!picture) continue;
+      const same = (['start', 'duration', 'sourceIn', 'speed'] as const).every((k) => Math.abs(picture[k] - clip[k]) < 0.001);
+      if (!same) continue;
+      this.voiceOf.set(picture.id, clip);
+      this.voicedBy.add(clip.id);
+    }
+
     // 要素はここでは作らない。sync() が、いま必要なクリップの分だけ作る。
     const live = new Set<string>();
     for (const clip of sequence.clips) {
-      if (clip.kind === 'video' || clip.kind === 'audio') live.add(clip.id);
+      if ((clip.kind === 'video' || clip.kind === 'audio') && !this.voicedBy.has(clip.id)) live.add(clip.id);
     }
     for (const key of mediaRegistry.activeKeys()) {
       if (!live.has(key)) {
@@ -474,14 +497,13 @@ export class Player {
   private clockMaster(): { clip: Clip; el: HTMLMediaElement } | null {
     const sequence = this.sequence;
     if (!sequence) return null;
-    // 映像と音を分けた動画は、映像の側が鳴らないので、音の側を基準にする（鳴っている時計を正にするため。
-    // 鳴っている方を補正すると、速度の微調整がそのまま音程の揺れとして聞こえる）。
-    for (const kind of ['linked-audio', 'video', 'audio'] as const) {
+    for (const kind of ['video', 'audio'] as const) {
       for (const track of sequence.tracks) {
-        if (track.kind !== (kind === 'linked-audio' ? 'audio' : kind)) continue;
+        if (track.kind !== kind) continue;
         const clip = clipAtTime(sequence, track.id, this.time);
         if (!clip || (clip.kind !== 'video' && clip.kind !== 'audio')) continue;
-        if (kind === 'linked-audio' && (!clip.linkId || clip.muted || track.muted)) continue;
+        // 映像の要素から鳴らしている音のクリップには、要素が無い（基準は映像の側がなる）。
+        if (this.voicedBy.has(clip.id)) continue;
         // ループ指定のクリップは currentTime が巻き戻るので基準にできない。
         if (clip.loop) continue;
         const el = mediaRegistry.mediaElement(clip.id, clip.mediaId, clip.kind === 'audio' ? 'audio' : 'video');
@@ -545,6 +567,7 @@ export class Player {
   private readyToAdvance(): boolean {
     for (const entry of this.activeClips()) {
       if (entry.clip.kind !== 'video' && entry.clip.kind !== 'audio') continue;
+      if (this.voicedBy.has(entry.clip.id)) continue;
       const el = mediaRegistry.mediaElement(entry.clip.id, entry.clip.mediaId, entry.clip.kind === 'audio' ? 'audio' : 'video');
       // HAVE_FUTURE_DATA 未満は、次のフレームがまだ手元に無く止まって見える状態。
       if (!el || el.readyState < 3) return false;
@@ -624,6 +647,11 @@ export class Player {
 
     for (const clip of sequence.clips) {
       if (clip.kind === 'text' || clip.kind === 'image') continue;
+      // 映像の要素から鳴らしているので、音の側には要素を作らない。
+      if (this.voicedBy.has(clip.id)) {
+        if (mediaRegistry.peekElement(clip.id)) mediaRegistry.releaseElement(clip.id);
+        continue;
+      }
       if (!this.wanted(clip, this.time)) {
         // 遠いクリップの要素は手放す（作り直しは、近づいたときに行う）。
         if (mediaRegistry.peekElement(clip.id)) {
@@ -664,16 +692,21 @@ export class Player {
       const target = this.targetSourceTime(clip, this.time);
       const speed = Math.max(0.0625, Math.min(16, clip.speed || 1));
 
-      const env = fadeEnvelope(this.time - clip.start, clip.duration, clip.fadeIn, clip.fadeOut);
+      // つないだ動画は、音の側（音声レーン）の音量・ミュート・フェード・レーンのミュートで鳴らす。
+      const voice = this.voiceOf.get(clip.id);
+      const sound = voice ?? clip;
+      const soundTrack = voice ? trackById.get(voice.trackId) : track;
+      const env = fadeEnvelope(this.time - sound.start, sound.duration, sound.fadeIn, sound.fadeOut);
       // ミュート判定は本来の mute 設定のみで行う。trailing（前カットの引き延ばし）は
       // 「鳴らし続ける」ための状態であり、ここで一律に silent 扱いにすると
       // トランジション開始の瞬間に前クリップの音量が 0 へスナップし、
       // クリックノイズ（プツッという音切れ）の原因になる。
-      const silent = clip.muted || track?.muted;
+      // つないだ動画の切り替え（ディゾルブなど）で前のカットを引き延ばすときは、音は重ねない（書き出しと同じ）。
+      const silent = voice ? sound.muted || !!soundTrack?.muted || entry.trailing : clip.muted || track?.muted;
       // trailing のときは、トランジションの進捗に応じて音量を滑らかにフェードアウトさせる。
       // 通常のクリップ（trailing=false）は 1 のまま、fadeOut に影響しない。
       const trailingFade = entry.trailing ? Math.max(0, 1 - (entry.transitionProgress ?? 1)) : 1;
-      const baseGain = silent ? 0 : clip.volume * env * trailingFade;
+      const baseGain = silent ? 0 : sound.volume * env * trailingFade;
 
       if (this.playing) {
         const now = performance.now();
