@@ -105,6 +105,8 @@ export function PreviewStage() {
     /** 直前の画面を残し始めた時刻（0 なら残していない）と、1 度でも描いたか。 */
     let heldSince = 0;
     let drawnOnce = false;
+    /** 動画の絵を待ち始めた時刻（0 なら待っていない）。少し続いたら「読み込み中」を出す。 */
+    let waitingSince = 0;
     let last = { time: -1, seq: null as unknown, sel: null as unknown, g: null as unknown, crop: null as unknown, w: 0, h: 0 };
     const markDirty = () => {
       dirty = true;
@@ -117,9 +119,18 @@ export function PreviewStage() {
     const IDLE_REDRAW_MS = 400;
     /** 映すべき絵が届くまで、直前の画面を残しておく最長の時間。過ぎたら、届いていなくても描く。 */
     const HOLD_PENDING_MS = 3000;
+    /** これより長く絵を待っていたら「読み込み中」を出す。 */
+    const WAITING_BADGE_MS = 400;
 
     player.start((time) => {
       const canvas = canvasRef.current;
+      // 遠くへ飛んだあとなど、動画の絵が届くのを待っているあいだは「読み込み中」を出す
+      //（絵が止まって見えても、固まったのではないと分かるように）。一瞬の待ちでは出さない。
+      const waiting = !exporter.active && player.isWaiting();
+      const at = performance.now();
+      if (!waiting) waitingSince = 0;
+      else if (waitingSince === 0) waitingSince = at;
+      canvas?.parentElement?.classList.toggle('waiting', waiting && at - waitingSince > WAITING_BADGE_MS);
       if (canvas && canvas !== ctxOwner) {
         ctx = canvas.getContext('2d', { alpha: false });
         ctxOwner = canvas;

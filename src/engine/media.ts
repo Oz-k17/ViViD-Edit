@@ -131,6 +131,41 @@ interface StoredAsset extends Omit<MediaAsset, 'url' | 'proxyUrl'> {
   proxyBlob?: Blob;
 }
 
+async function dbGet(id: string): Promise<StoredAsset | null> {
+  const db = await openDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    const request = db.transaction(STORE).objectStore(STORE).get(id);
+    request.onsuccess = () => resolve((request.result as StoredAsset | undefined) ?? null);
+    request.onerror = () => resolve(null);
+  });
+}
+
+const MEDIA_LOG_KEY = 'vivid-edit.media-log';
+const MEDIA_LOG_LIMIT = 30;
+
+/**
+ * 再生まわりで起きたこと（読み込みの失敗・止まったシークの作り直しなど）を、この端末に残す。
+ * iPad のように開発者ツールが使えない端末で、症状の手がかりにする（設定の「この端末の診断」に出る）。
+ */
+export function logMediaEvent(text: string) {
+  try {
+    const lines = JSON.parse(localStorage.getItem(MEDIA_LOG_KEY) ?? '[]') as string[];
+    lines.push(`${new Date().toLocaleString('ja-JP')} ${text}`);
+    localStorage.setItem(MEDIA_LOG_KEY, JSON.stringify(lines.slice(-MEDIA_LOG_LIMIT)));
+  } catch {
+    /* 残せなくても再生は続ける */
+  }
+}
+
+export function mediaLog(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(MEDIA_LOG_KEY) ?? '[]') as string[];
+  } catch {
+    return [];
+  }
+}
+
 async function dbPut(record: StoredAsset): Promise<void> {
   const db = await openDb();
   if (!db) return;
@@ -867,6 +902,26 @@ class MediaRegistry {
     this.images.delete(id);
     this.emit();
     void dbDelete(id);
+  }
+
+  /**
+   * 取り込んだ素材の実体を、保存先（IndexedDB）から読み直して、新しい URL を作る。
+   * iPad で長い録画を読んでいると、それまでの URL からの読み込みが失敗し続けることがあるため。
+   * 参照の素材（NAS）は在り処が変わらないので何もしない。読み直せたら true。
+   */
+  async refreshUrl(id: string): Promise<boolean> {
+    const asset = this.assets.get(id);
+    if (!asset || asset.src) return false;
+    const record = await dbGet(id);
+    if (!record?.blob) return false;
+    const url = URL.createObjectURL(record.blob);
+    URL.revokeObjectURL(asset.url);
+    this.assets.set(id, { ...asset, url });
+    for (const [key, el] of [...this.elements]) {
+      if (el.dataset.mediaId === id) this.releaseElement(key);
+    }
+    this.emit();
+    return true;
   }
 
   /** クリップ専用の再生要素（同じ素材を別のイン点で同時に使えるようキーで分ける）。 */

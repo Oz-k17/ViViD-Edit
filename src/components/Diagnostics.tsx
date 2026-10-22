@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { isFrameAccurate, isNativeHost } from '../engine/exporter';
 import { memoryWarningCount } from '../engine/memory';
-import { mediaRegistry } from '../engine/media';
+import { mediaLog, mediaRegistry } from '../engine/media';
 
 /** この端末で、何が使えて何が使えないか。症状を伝えるとき、そのままコピーして送れるようにする。 */
 async function collect(): Promise<string[]> {
@@ -67,6 +67,8 @@ async function collect(): Promise<string[]> {
   } catch {
     /* 数えていない */
   }
+  const log = mediaLog();
+  lines.push(log.length > 0 ? `再生の記録（新しいものが下）:\n${log.map((l) => '  ' + l).join('\n')}` : '再生の記録: なし（読み込みの失敗・止まったシークは起きていません）');
   return lines;
 }
 

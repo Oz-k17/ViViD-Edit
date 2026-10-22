@@ -1,5 +1,5 @@
 import { audioGraph } from './audio';
-import { mediaRegistry } from './media';
+import { logMediaEvent, mediaRegistry } from './media';
 import { hasStrip, stripFrameAt } from './thumbstrip';
 import { fadeEnvelope, type RenderSources } from './renderer';
 import { clipAtTime, previousAdjacent, sequenceDuration } from '../model/ops';
@@ -40,6 +40,8 @@ const SEEK_EPSILON = 0.02;
  * 「シークは 1 本だけ」という方針のままだと、その 1 本を永遠に待って固まってしまう。
  */
 const SEEK_STALL_MS = 6000;
+/** これより遠くへ飛ぶときだけ、まずキーフレームへすばやく飛ぶ（秒）。近いときは正確なシークでも速い。 */
+const FAST_SEEK_MIN = 2;
 /** 最後に映せた絵を持っておく大きさ（長辺, px）。シーク中・読み込み中にこれを出す。 */
 const LAST_FRAME_SIZE = 640;
 /**
@@ -215,6 +217,12 @@ export class Player {
   private drift = new Map<string, DriftController>();
   /** クリップごとに、いま走っているシークをいつ始めたか（止まりの検出用）。 */
   private seekSince = new Map<string, number>();
+  /** すばやいシーク（キーフレームへ）を済ませた目的の時刻。同じ目的なら、次は正確にシークする。 */
+  private fastTargets = new Map<string, number>();
+  /** 素材ごとの、読み込みの失敗の回数と最後の時刻。 */
+  private failures = new Map<string, { count: number; at: number }>();
+  /** 何度も失敗したクリップは、この時刻まで作り直さない（失敗と作り直しを毎コマ繰り返さないように）。 */
+  private retryAt = new Map<string, number>();
   /** クリップごとの、最後に映せた絵（縮小コピー）。 */
   private lastFrames = new Map<string, HTMLCanvasElement>();
   /** 'seeked' で最後の絵を撮る仕掛けを付けた要素。 */
@@ -504,13 +512,15 @@ export class Player {
         if (!clip || (clip.kind !== 'video' && clip.kind !== 'audio')) continue;
         // 映像の要素から鳴らしている音のクリップには、要素が無い（基準は映像の側がなる）。
         if (this.voicedBy.has(clip.id)) continue;
+        // 読み込みに失敗した要素は時計にならない（止まったまま進まない）。
+        if ((this.retryAt.get(clip.id) ?? 0) > performance.now()) continue;
         // ループ指定のクリップは currentTime が巻き戻るので基準にできない。
         if (clip.loop) continue;
         const el = mediaRegistry.mediaElement(clip.id, clip.mediaId, clip.kind === 'audio' ? 'audio' : 'video');
         // シーク中や停止中でも「基準はこのクリップ」という選択自体は変えない。
         // ここで基準を手放すと、その隙にドリフト補正が基準クリップへ介入してしまい、
         // シーク → 補正 → またシーク…という取り合いになる。
-        if (el) return { clip, el };
+        if (el && !el.error) return { clip, el };
       }
     }
     return null;
@@ -568,7 +578,10 @@ export class Player {
     for (const entry of this.activeClips()) {
       if (entry.clip.kind !== 'video' && entry.clip.kind !== 'audio') continue;
       if (this.voicedBy.has(entry.clip.id)) continue;
+      // 読み込みに失敗した・作り直しを待っているクリップは待たない（待つといつまでも始まらない）。
+      if ((this.retryAt.get(entry.clip.id) ?? 0) > performance.now()) continue;
       const el = mediaRegistry.mediaElement(entry.clip.id, entry.clip.mediaId, entry.clip.kind === 'audio' ? 'audio' : 'video');
+      if (el?.error) continue;
       // HAVE_FUTURE_DATA 未満は、次のフレームがまだ手元に無く止まって見える状態。
       if (!el || el.readyState < 3) return false;
     }
@@ -589,7 +602,19 @@ export class Player {
   /** 時刻を書いてシークを始める。始めた時刻を覚えておく（止まりの検出に使う）。 */
   private seekTo(el: HTMLMediaElement, clipId: string, target: number) {
     try {
-      el.currentTime = target;
+      // 止まっているときに遠くへ飛んだら、まず近くのキーフレームへすばやく飛んで絵を出し、
+      // そのあと目的のコマへ合わせ直す（次のフレームの sync が、ずれを見て正確にシークする）。
+      // 正確なシークはキーフレームから目的のコマまで読み解くので、長い録画の iPad では数秒かかり、
+      // そのあいだプレビューの絵が止まって見えていた。fastSeek は Safari（iPad）にある。
+      const fast = (el as HTMLMediaElement & { fastSeek?: (time: number) => void }).fastSeek;
+      const far = Math.abs(el.currentTime - target) > FAST_SEEK_MIN;
+      if (!this.playing && far && typeof fast === 'function' && this.fastTargets.get(clipId) !== target) {
+        this.fastTargets.set(clipId, target);
+        fast.call(el, target);
+      } else {
+        this.fastTargets.delete(clipId);
+        el.currentTime = target;
+      }
       this.seekSince.set(clipId, performance.now());
     } catch {
       /* メタデータ待ち */
@@ -627,6 +652,8 @@ export class Player {
    * 時間を飛ばすたびにプレビューが黒くなる。シーク中・読み込み中は、下見の絵か、最後に映せた絵を出す。
    */
   private frameOf(clip: Clip): CanvasImageSource | null {
+    // 作り直しを待っているあいだは、要素を作らずに最後の絵を出す。
+    if ((this.retryAt.get(clip.id) ?? 0) > performance.now()) return this.lastFrames.get(clip.id) ?? null;
     const el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
     const video = el instanceof HTMLVideoElement ? el : null;
     const seeking = !!video?.seeking;
@@ -641,6 +668,20 @@ export class Player {
     }
     if (video && video.readyState >= 2 && !seeking) return video;
     return this.lastFrames.get(clip.id) ?? null;
+  }
+
+  /** いま映すべき動画が、シーク中・読み込み中か（プレビューに「読み込み中」を出すため）。 */
+  isWaiting(): boolean {
+    const sequence = this.sequence;
+    if (!sequence) return false;
+    for (const track of sequence.tracks) {
+      if (track.kind !== 'video' || track.hidden) continue;
+      const clip = clipAtTime(sequence, track.id, this.time);
+      if (clip?.kind !== 'video' || !mediaRegistry.get(clip.mediaId)) continue;
+      const el = mediaRegistry.peekElement(clip.id);
+      if (!el || el.seeking || el.readyState < 2) return true;
+    }
+    return false;
   }
 
   /**
@@ -658,6 +699,40 @@ export class Player {
     return false;
   }
 
+  /**
+   * 読み込みに失敗した要素を見つけたら、作り直す。作り直したら true。
+   *
+   * 失敗した要素は readyState が 0 のまま戻らず、シーク中にもならないので、止まったシークの見張り
+   * （recoverIfStalled）には掛からない。放っておくと、そのクリップはアプリを開き直すまで真っ黒になる
+   * （iPad で長い録画を遠くへ飛ばしたときに起きた）。
+   * 2 回続けて失敗したら、取り込んだ実体を保存先から読み直す。3 回目からは間をあけて試す。
+   */
+  private recoverIfFailed(clip: Clip, el: HTMLMediaElement): boolean {
+    const error = el.error;
+    if (!error) return false;
+    const now = performance.now();
+    const mediaId = clip.mediaId as string;
+    const before = this.failures.get(mediaId);
+    const count = before && now - before.at < 60_000 ? before.count + 1 : 1;
+    this.failures.set(mediaId, { count, at: now });
+    const name = mediaRegistry.get(mediaId)?.name ?? mediaId;
+    logMediaEvent(
+      `読み込みの失敗: ${name}（code ${error.code}${error.message ? ` ${error.message}` : ''}）素材の ${this.targetSourceTime(clip, this.time).toFixed(1)} 秒・${count} 回目`,
+    );
+    this.drift.delete(clip.id);
+    this.seekSince.delete(clip.id);
+    this.duckUntil.delete(clip.id);
+    mediaRegistry.releaseElement(clip.id);
+    // 取り込んだ素材だけ（NAS の参照は在り処が変わらないので、作り直すだけでよい）。
+    if (count === 2 && !mediaRegistry.get(mediaId)?.src) {
+      void mediaRegistry
+        .refreshUrl(mediaId)
+        .then((done) => logMediaEvent(done ? `保存先から読み直しました: ${name}` : `保存先から読み直せませんでした: ${name}`));
+    }
+    if (count >= 3) this.retryAt.set(clip.id, now + Math.min(10_000, 2_000 * (count - 2)));
+    return true;
+  }
+
   /** 止まったシークを見つけたら、要素を作り直す。作り直したら true。 */
   private recoverIfStalled(clip: Clip, el: HTMLMediaElement): boolean {
     if (!el.seeking) {
@@ -668,6 +743,7 @@ export class Player {
     if (since === undefined || performance.now() - since < SEEK_STALL_MS) return false;
     this.seekSince.delete(clip.id);
     this.drift.delete(clip.id);
+    logMediaEvent(`シークが ${SEEK_STALL_MS / 1000} 秒終わらないので作り直しました: ${mediaRegistry.get(clip.mediaId)?.name ?? clip.mediaId}`);
     mediaRegistry.releaseElement(clip.id);
     // 次の mediaElement() 呼び出しで作り直される。最新の位置へは、次のフレームの sync が飛ぶ。
     return true;
@@ -701,8 +777,11 @@ export class Player {
         }
         continue;
       }
+      // 失敗が続いたクリップは、間をあけてから作り直す。
+      if ((this.retryAt.get(clip.id) ?? 0) > performance.now()) continue;
       let el = mediaRegistry.mediaElement(clip.id, clip.mediaId, clip.kind === 'audio' ? 'audio' : 'video');
       if (!el) continue;
+      if (this.recoverIfFailed(clip, el)) continue;
       if (el instanceof HTMLVideoElement) this.watchFrames(clip.id, el);
       if (this.recoverIfStalled(clip, el)) {
         el = mediaRegistry.mediaElement(clip.id, clip.mediaId, clip.kind === 'audio' ? 'audio' : 'video');
