@@ -122,7 +122,7 @@ interface Props {
 }
 
 export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }: Props) {
-  const { sequence, apply, selection, setSelection, editMode, setEditMode, insertMode, setInsertMode, markIn, markOut } = useEditor();
+  const { sequence, rootSequence, nestPath, exitNest, apply, selection, setSelection, editMode, setEditMode, insertMode, setInsertMode, markIn, markOut } = useEditor();
   const { settings, updateSettings } = useApp();
   noteClips(sequence.clips);
   const easy = settings.uiMode === 'easy';
@@ -248,7 +248,21 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
   };
 
   return (
-    <div className={`tl${compact ? ' compact' : ''} mode-${editMode}`}>
+    <div className={`tl${compact ? ' compact' : ''} mode-${editMode}${nestPath.length > 0 ? ' in-nest' : ''}`}>
+      {nestPath.length > 0 && (
+        <div className="tl-nest-bar">
+          <button type="button" className="primary" onClick={() => exitNest()}>
+            <Icon name="chevron-left" /> 外へ戻る
+          </button>
+          <span className="tl-nest-path">
+            シーケンス
+            {nestNames(rootSequence, nestPath).map((name, i) => (
+              <span key={i}> › {name}</span>
+            ))}
+          </span>
+          <span className="muted small">まとめたクリップの中を編集しています。プレビューは中身だけを映します。</span>
+        </div>
+      )}
       <div className="tl-toolbar">
         <button type="button" onClick={() => apply((seq) => removeClips(seq, selection, easy))} disabled={!selection.length} title={easy ? '削除（後ろのクリップを前へ詰めます）' : undefined}>
           削除
@@ -486,14 +500,14 @@ function Lane({
   onEmptyPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPickTransition: (clipId: string) => void;
 }) {
-  const { sequence, apply, insertMode, selection, setSelection, toggleSelection, isSelected, editMode } = useEditor();
+  const { sequence, apply, insertMode, selection, setSelection, toggleSelection, isSelected, editMode, enterNest } = useEditor();
   const { settings } = useApp();
   const [dropping, setDropping] = useState(false);
   const clips = clipsOnTrack(sequence, track.id);
   // クリップの操作（ドラッグ・トリム）が使う「いまの状態」。描くたびに入れ替えるが、入れ物は同じなので
   // クリップ側は描き直しのきっかけにならない（押した瞬間に、ここから最新を読む）。
   const live = useRef<ClipLive>(null as unknown as ClipLive);
-  live.current = { sequence, apply, selection, setSelection, toggleSelection, editMode, snap: settings.snap, onPickTransition };
+  live.current = { sequence, apply, selection, setSelection, toggleSelection, editMode, snap: settings.snap, onPickTransition, enterNest };
 
   const accepts = (kind: string) =>
     (track.kind === 'audio' && kind === 'audio') || (track.kind === 'video' && (kind === 'video' || kind === 'image'));
@@ -568,6 +582,7 @@ interface ClipLive {
   editMode: EditMode;
   snap: boolean;
   onPickTransition: (clipId: string) => void;
+  enterNest: (clipId: string) => void;
 }
 
 /**
@@ -604,7 +619,11 @@ const ClipBlock = memo(function ClipBlock({
   const width = Math.max(14, clip.duration * pps);
 
   const label =
-    clip.kind === 'text' ? `T ${previewText(clip.text?.content ?? '').split('\n')[0] || '（空）'}` : (assetName ?? '素材');
+    clip.kind === 'text'
+      ? `T ${previewText(clip.text?.content ?? '').split('\n')[0] || '（空）'}`
+      : clip.kind === 'nest'
+        ? `${clip.name || 'まとめたクリップ'}（${clip.nested?.clips.length ?? 0} 本）`
+        : (assetName ?? '素材');
 
   const startMove = (event: React.PointerEvent) => {
     if (track.locked) return;
@@ -673,7 +692,9 @@ const ClipBlock = memo(function ClipBlock({
         ['--thumb' as string]: thumbnail ? `url(${thumbnail})` : undefined,
       }}
       onPointerDown={startMove}
-      title={`${label} — ${clip.duration.toFixed(2)}秒`}
+      // まとめたクリップは、ダブルクリックで中に入って編集する。
+      onDoubleClick={clip.kind === 'nest' ? () => live.current.enterNest(clip.id) : undefined}
+      title={clip.kind === 'nest' ? `${label} — ダブルクリックで中身を編集` : `${label} — ${clip.duration.toFixed(2)}秒`}
     >
       <span className="tl-handle left" onPointerDown={(e) => startTrim(e, 'left')} />
       {hasPrevious && (
@@ -692,6 +713,7 @@ const ClipBlock = memo(function ClipBlock({
       )}
       <span className="tl-clip-label">
         {/* つないだ映像は、音を音声レーンの側で鳴らすので、ミュートの印ではなくつなぎの印を出す。 */}
+        {clip.kind === 'nest' && <Icon name="layers" size={11} />}
         {clip.linkId && <Icon name="link" size={11} />}
         {clip.muted && !(clip.linkId && clip.kind === 'video') && <MuteIcon />}
         {clip.speed !== 1 && `${clip.speed}× `}
@@ -743,4 +765,16 @@ function Playhead({
       <span className="tl-playhead-grip" />
     </div>
   );
+}
+
+/** ネストの道筋の、それぞれの名前（外から順に）。 */
+function nestNames(root: Sequence, path: string[]): string[] {
+  const names: string[] = [];
+  let current: Sequence | undefined = root;
+  for (const id of path) {
+    const nest: Clip | undefined = current?.clips.find((c) => c.id === id);
+    names.push(nest?.name || 'まとめたクリップ');
+    current = nest?.nested;
+  }
+  return names;
 }

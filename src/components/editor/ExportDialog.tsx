@@ -16,6 +16,7 @@ import { formatBytes } from '../../engine/media';
 import { player } from '../../engine/player';
 import { FPS_OPTIONS, sequenceDuration } from '../../model/ops';
 import { captionCount, withoutCaptions } from '../../model/captions';
+import { flattenNests } from '../../model/nest';
 import { ASPECT_PRESETS, type AspectKey } from '../../model/types';
 import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
@@ -93,7 +94,10 @@ function saveErrorMessage(code: SaveErrorCode, blobSize: number): string {
 }
 
 export function ExportDialog({ onClose }: { onClose: () => void }) {
-  const { project, sequence } = useEditor();
+  // 書き出すのは、いちばん外のシーケンス（まとめたクリップの中に入っていても、全体を書き出す）。
+  // まとめたクリップは展開してから渡す（中身はふつうのクリップとして合成される）。
+  const { project, rootSequence } = useEditor();
+  const sequence = useMemo(() => flattenNests(rootSequence), [rootSequence]);
   const { settings, updateSettings } = useApp();
   const easy = useEasy();
   const [aspect, setAspect] = useState<AspectKey>(settings.exportAspect ?? sequence.aspect);

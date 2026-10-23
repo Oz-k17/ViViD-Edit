@@ -18,6 +18,7 @@ import {
 } from 'react';
 import type { EditMode } from '../model/editModes';
 import { reconcileLinks } from '../model/links';
+import { sequenceAt, updateAt } from '../model/nest';
 import { createProject } from '../model/factory';
 import { ASPECT_PRESETS, type AspectKey, type Project, type Sequence } from '../model/types';
 import { migrateStorageKey } from './storage';
@@ -109,7 +110,16 @@ function reducer(state: State, action: Action): State {
 
 interface EditorApi {
   project: Project;
+  /** いま編集しているシーケンス。まとめたクリップの中に入っているときは、その中身。 */
   sequence: Sequence;
+  /** いちばん外のシーケンス（書き出しはこれを使う）。 */
+  rootSequence: Sequence;
+  /** 入っている、まとめたクリップの道筋（外から順に id）。空ならいちばん外。 */
+  nestPath: string[];
+  /** まとめたクリップの中に入る。 */
+  enterNest: (id: string) => void;
+  /** 1 つ外へ出る（`all` ならいちばん外まで）。 */
+  exitNest: (all?: boolean) => void;
   dispatch: Dispatch<Action>;
   /** よく使うので短縮版。 */
   apply: (fn: (sequence: Sequence) => Sequence, key?: string) => void;
@@ -161,6 +171,17 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     lastAt: 0,
   }));
   const [selection, setSelectionState] = useState<string[]>([]);
+  const [nestPathState, setNestPath] = useState<string[]>([]);
+  // たどれなくなった道筋（元に戻すで、まとめたクリップが消えたなど）は、たどれる所まで戻す。
+  let nestPath = nestPathState;
+  let current = sequenceAt(state.project.sequence, nestPath);
+  while (!current && nestPath.length > 0) {
+    nestPath = nestPath.slice(0, -1);
+    current = sequenceAt(state.project.sequence, nestPath);
+  }
+  const sequence = current ?? state.project.sequence;
+  const pathRef = useRef(nestPath);
+  pathRef.current = nestPath;
   const [editMode, setEditMode] = useState<EditMode>('normal');
   const [insertMode, setInsertMode] = useState(false);
   const [marks, setMarksState] = useState<{ markIn: number | null; markOut: number | null }>({ markIn: null, markOut: null });
@@ -183,7 +204,26 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   }, [state.project]);
 
   const apply = useCallback((fn: (sequence: Sequence) => Sequence, key?: string) => {
-    dispatch({ type: 'apply', fn, key });
+    const path = pathRef.current;
+    if (path.length === 0) {
+      dispatch({ type: 'apply', fn, key });
+      return;
+    }
+    // 中に入っているときは、中身だけを書き換える（つないだ映像と音の揃え直しも、中身の中で行う）。
+    dispatch({ type: 'apply', fn: (root) => updateAt(root, path, (inner) => reconcileLinks(inner, fn(inner))), key });
+  }, []);
+
+  const enterNest = useCallback((id: string) => {
+    setNestPath([...pathRef.current, id]);
+    setSelectionState([]);
+    setCropTarget(null);
+  }, []);
+  const exitNest = useCallback((all?: boolean) => {
+    const path = pathRef.current;
+    setNestPath(all ? [] : path.slice(0, -1));
+    // 出た先では、いま出てきたまとめたクリップを選んでおく（どこから出てきたか分かるように）。
+    setSelectionState(path.length > 0 && !all ? [path[path.length - 1]] : []);
+    setCropTarget(null);
   }, []);
 
   const setSelection = useCallback((ids: string[]) => {
@@ -201,7 +241,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
 
   // 消えたクリップが選択に残らないようにする。
   useEffect(() => {
-    const clips = state.project.sequence.clips;
+    const clips = sequence.clips;
     setSelectionState((prev) => {
       const alive = prev.filter((id) => clips.some((c) => c.id === id));
       return alive.length === prev.length ? prev : alive;
@@ -211,12 +251,16 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       const clip = clips.find((c) => c.id === current);
       return clip?.crop.enabled ? current : null;
     });
-  }, [state.project.sequence.clips]);
+  }, [sequence.clips]);
 
   const value = useMemo<EditorApi>(
     () => ({
       project: state.project,
-      sequence: state.project.sequence,
+      sequence,
+      rootSequence: state.project.sequence,
+      nestPath,
+      enterNest,
+      exitNest,
       dispatch,
       apply,
       canUndo: state.past.length > 0,
@@ -237,7 +281,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       markOut: marks.markOut,
       setMarks,
     }),
-    [state, apply, selection, setSelection, toggleSelection, cropTarget, cropRatio, editMode, insertMode, marks, setMarks],
+    [state, sequence, nestPath, enterNest, exitNest, apply, selection, setSelection, toggleSelection, cropTarget, cropRatio, editMode, insertMode, marks, setMarks],
   );
 
   return <EditorContext.Provider value={value}>{children}</EditorContext.Provider>;

@@ -15,6 +15,7 @@ import {
   FoldHorizontal,
   Folder,
   Image,
+  Layers,
   Link2,
   Magnet,
   Minus,
@@ -76,7 +77,7 @@ export type IconName =
   // 再生まわり
   | 'skip-back' | 'step-back' | 'play' | 'pause' | 'step-forward' | 'skip-forward'
   // 編集
-  | 'scissors' | 'trash' | 'undo' | 'redo' | 'ripple-delete' | 'magnet' | 'link'
+  | 'scissors' | 'trash' | 'undo' | 'redo' | 'ripple-delete' | 'magnet' | 'link' | 'layers'
   // 素材
   | 'photo' | 'film' | 'music-note' | 'warning'
   // 画面まわり
@@ -112,6 +113,8 @@ const GLYPH: Record<IconName, LucideIcon> = {
   /** スナップ。磁石は「吸い付く」がそのまま読める。 */
   magnet: Magnet,
   link: Link2,
+  /** まとめたクリップ（ネスト）。重なった板で「中に何本か入っている」を表す。 */
+  layers: Layers,
 
   // ---- 素材 ----
   photo: Image,

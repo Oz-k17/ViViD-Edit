@@ -7,6 +7,8 @@ import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
 import { buildThreeBand } from '../../model/threeBand';
 import { partnerOf, separateSound, unlinkClips } from '../../model/links';
+import { canJoin, joinClips, nestClips, nestedLength, unnestClip } from '../../model/nest';
+import { clipsOnTrack } from '../../model/ops';
 import { DEFAULT_EFFECT_TIMING, EFFECT_SHAPES, type EffectTiming } from '../../model/effects';
 import {
   buildCaptionClips,
@@ -34,6 +36,7 @@ import {
   previewText,
   type AspectKey,
   type Clip,
+  type Sequence,
   type Effect,
   type EffectType,
   type TextAlign,
@@ -77,7 +80,7 @@ export function Inspector() {
 }
 
 function InspectorBody() {
-  const { sequence, selection, apply } = useEditor();
+  const { sequence, selection, setSelection, apply } = useEditor();
   const easy = useEasy();
   const [tab, setTab] = useState<TabKey>('props');
   const cursorRef: CursorRef = useRef(null);
@@ -90,6 +93,29 @@ function InspectorBody() {
     return (
       <Panel title={`${clips.length} 個のクリップ`}>
         <EmptyHint>複数選択中です。まとめて移動・削除できます。</EmptyHint>
+        <button
+          type="button"
+          className="wide"
+          disabled={!clips.some((c) => c.kind === 'video' || c.kind === 'image')}
+          onClick={() => {
+            // apply に渡した処理は次の描画で走るので、まとめたクリップの id は先に決めて渡す。
+            const id = uid('cl');
+            apply((seq) => nestClips(seq, selection, 'まとめたクリップ', id).sequence);
+            setSelection([id]);
+          }}
+          title="選んだクリップを 1 本のクリップにまとめます。ダブルクリックで中に入って編集できます"
+        >
+          <Icon name="layers" /> 1 つにまとめる
+        </button>
+        <button
+          type="button"
+          className="wide"
+          disabled={!joinablePair(sequence, clips)}
+          onClick={() => apply((seq) => joinClips(seq, selection))}
+          title="分割したクリップを 1 本に戻します（同じ素材で、隣り合っていて、切れ目で時間が続いているもの）"
+        >
+          <Icon name="link" /> 繋ぐ（分割を戻す）
+        </button>
         <button type="button" className="wide" onClick={() => apply((seq) => removeClips(seq, selection, easy))}>
           まとめて削除
         </button>
@@ -103,6 +129,7 @@ function InspectorBody() {
   }
 
   const clip = clips[0];
+  if (clip.kind === 'nest') return <NestInspector clip={clip} />;
   const tabs: { value: TabKey; label: string }[] = [
     { value: 'props', label: 'プロパティ' },
     ...(clip.kind === 'text' ? [{ value: 'text' as TabKey, label: 'テキスト' }, { value: 'emoji' as TabKey, label: '絵文字' }] : []),
@@ -882,17 +909,26 @@ function PropsTab({ clip }: { clip: Clip }) {
 function ThreeBandSection({ clip }: { clip: Clip }) {
   const { sequence, apply, setSelection } = useEditor();
   const asset = mediaRegistry.get(clip.mediaId);
+  // 組んだ 3 本（と見出し・音）を、1 本のクリップにまとめておくか。ダブルクリックで中を直せる。
+  const [nest, setNest] = useState(true);
 
   const build = (withTitle: boolean) => {
     const media = { width: asset?.width || sequence.width, height: asset?.height || sequence.height };
     const titleStyle = TEXT_PRESETS.find((preset) => preset.key === 'title')?.text;
-    apply((seq) =>
-      buildThreeBand(seq, clip, media, {
+    // apply に渡した処理は次の描画で走るので、まとめたクリップの id は先に決めて渡す。
+    const nestId = uid('cl');
+    apply((seq) => {
+      const built = buildThreeBand(seq, clip, media, {
         titleStyle: withTitle ? titleStyle : undefined,
         titleText: withTitle ? '見出しを入れる' : undefined,
-      }),
-    );
-    setSelection([]);
+      });
+      if (!nest) return built;
+      const before = new Set(seq.clips.map((c) => c.id));
+      const created = built.clips.filter((c) => !before.has(c.id)).map((c) => c.id);
+      // 本編の帯に音をつないであれば、音も一緒に入る（nestClips が相手を足す）。
+      return nestClips(built, created, '3分割', nestId).sequence;
+    });
+    setSelection(nest ? [nestId] : []);
   };
 
   return (
@@ -907,6 +943,7 @@ function ThreeBandSection({ clip }: { clip: Clip }) {
           </button>
         </div>
       </Field>
+      <Toggle label="組んだあと 1 つにまとめる（ダブルクリックで中を編集）" checked={nest} onChange={setNest} />
       <p className="muted small">
         上＝ぼかした背景と見出し、中＝本編、下＝顔のアップ。
         切り出す場所は中心から取るので、置いたあと各クリップのクロップで合わせてください。
@@ -1846,5 +1883,60 @@ function SpeakerSection({ text, set }: { text: TextProps; set: (changes: Partial
         迷った行として数えたものは目で確かめてください。
       </p>
     </>
+  );
+}
+
+/** 選んだ中に、「繋ぐ」で 1 本に戻せる 2 本があるか。 */
+function joinablePair(sequence: Sequence, clips: Clip[]): boolean {
+  const ids = new Set(clips.map((c) => c.id));
+  for (const track of sequence.tracks) {
+    const run = clipsOnTrack(sequence, track.id).filter((c) => ids.has(c.id));
+    for (let i = 1; i < run.length; i += 1) if (canJoin(run[i - 1], run[i])) return true;
+  }
+  return false;
+}
+
+/** まとめたクリップ。中身を編集する入口と、まとめを解く。 */
+function NestInspector({ clip }: { clip: Clip }) {
+  const { apply, enterNest, setSelection } = useEditor();
+  const easy = useEasy();
+  const patch = useClipPatch(clip);
+  const inner = clip.nested?.clips ?? [];
+  return (
+    <Panel
+      title="まとめたクリップ"
+      action={
+        <div className="panel-actions">
+          <button type="button" onClick={() => player.seek(clip.start)}>
+            頭出し
+          </button>
+          <button type="button" className="danger" onClick={() => apply((seq) => removeClips(seq, [clip.id], easy))}>
+            削除
+          </button>
+        </div>
+      }
+    >
+      <Field label="名前">
+        <input type="text" value={clip.name ?? ''} onChange={(e) => patch({ name: e.target.value }, 'nestName')} />
+      </Field>
+      <p className="muted">
+        {formatTime(clip.start)} → {formatTime(clip.start + clip.duration)}（{clip.duration.toFixed(2)} 秒）・中に {inner.length} 本
+        （中身の長さ {nestedLength(clip).toFixed(2)} 秒）
+      </p>
+      <button type="button" className="wide primary" onClick={() => enterNest(clip.id)}>
+        中身を編集する
+      </button>
+      <p className="muted small">タイムラインでダブルクリックしても中に入れます。外へ戻るのは、タイムラインの上の「外へ戻る」から。</p>
+      <button
+        type="button"
+        className="wide ghost"
+        onClick={() => {
+          apply((seq) => unnestClip(seq, clip.id));
+          setSelection([]);
+        }}
+      >
+        まとめを解く（中身を元のトラックへ戻す）
+      </button>
+    </Panel>
   );
 }

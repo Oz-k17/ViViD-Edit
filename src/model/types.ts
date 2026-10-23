@@ -201,7 +201,11 @@ export interface TextProps {
   speaker?: string | null;
 }
 
-export type ClipKind = 'video' | 'image' | 'audio' | 'text';
+/**
+ * `nest` は、ほかのクリップをまとめて 1 本にしたもの（Premiere のネストと同じ）。中身は `nested` に持ち、
+ * ダブルクリックで中に入って編集する。再生・書き出しの前に `flattenNests`（nest.ts）で展開してから使う。
+ */
+export type ClipKind = 'video' | 'image' | 'audio' | 'text' | 'nest';
 
 export interface Clip {
   id: string;
@@ -237,6 +241,10 @@ export interface Clip {
    * 未定義ならつながっていない（古い保存ファイルもこれ）。
    */
   linkId?: string;
+  /** まとめたクリップ（kind が 'nest'）の中身。中のクリップの時刻は、中身の頭を 0 とした秒。 */
+  nested?: Sequence;
+  /** まとめたクリップの名前（タイムラインに出す）。 */
+  name?: string;
 }
 
 export interface Sequence {

@@ -6,6 +6,8 @@ import { mediaRegistry } from './media';
  * 画像・テロップ・素材が見つからないものは undefined（＝いくらでも伸ばせる）。
  */
 export function sourceLengthOf(clip: Clip): number | undefined {
+  // まとめたクリップは、中身の長さが素材の長さ。
+  if (clip.kind === 'nest') return clip.nested ? clip.nested.clips.reduce((m, c) => Math.max(m, c.start + c.duration), 0) : undefined;
   const asset = mediaRegistry.get(clip.mediaId);
   return asset && asset.kind !== 'image' && asset.duration > 0 ? asset.duration : undefined;
 }

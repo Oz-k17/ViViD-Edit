@@ -18,6 +18,7 @@ import {
 import { mediaRegistry } from '../../engine/media';
 import { cropDestForSelection, cropDestFromRect, cropDestRect, keptDestRatio, renderFrame, type Rect } from '../../engine/renderer';
 import { clipAtTime, clipsOnTrack, splitAt } from '../../model/ops';
+import { flattenNests } from '../../model/nest';
 import { clipEnd, type Clip, type Sequence } from '../../model/types';
 import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
@@ -78,8 +79,10 @@ export function PreviewStage() {
   const [guides, setGuides] = useState(true);
 
   // 描画ループから最新値を読むための箱（RAF ごとに購読し直したくない）
-  const latest = useRef({ sequence, selection, guides, cropTarget });
-  latest.current = { sequence, selection, guides, cropTarget };
+  // 再生と描画は、まとめたクリップを展開した並びで行う（中身はふつうのクリップとして映る）。
+  const flat = useMemo(() => flattenNests(sequence), [sequence]);
+  const latest = useRef({ sequence: flat, selection, guides, cropTarget });
+  latest.current = { sequence: flat, selection, guides, cropTarget };
 
   const size = useMemo(
     () => previewSize(sequence, settings.previewQuality),
@@ -87,8 +90,8 @@ export function PreviewStage() {
   );
 
   useEffect(() => {
-    player.update(sequence);
-  }, [sequence]);
+    player.update(flat);
+  }, [flat]);
 
   useEffect(() => {
     const sources = player.renderSources();

@@ -3473,3 +3473,26 @@ html.tl-zooming .tl-clip {
   text-decoration: none;
   font-weight: 600;
 }
+
+/* ---------- まとめたクリップ（ネスト） ---------- */
+
+.tl-clip.kind-nest {
+  border-left-color: #b98cf0;
+  background-color: #2b2533;
+}
+
+.tl-nest-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  border-radius: var(--radius-xs);
+  background: rgba(185, 140, 240, 0.14);
+  border: 1px solid rgba(185, 140, 240, 0.45);
+}
+
+.tl-nest-path {
+  font-weight: 600;
+}
