@@ -3436,6 +3436,8 @@ html.tl-zooming .tl-clip {
   0% { opacity: 0; transform: translateY(12px); }
   12%, 80% { opacity: 1; transform: none; }
   100% { opacity: 0; transform: translateY(-6px); }
+}
+
 /* ---------- 新しい版のお知らせ ---------- */
 
 .update-banner {
@@ -3495,4 +3497,95 @@ html.tl-zooming .tl-clip {
 
 .tl-nest-path {
   font-weight: 600;
+}
+
+/* 確かめリスト（書き出しの前に、仕上がりの穴を並べる） */
+.check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.check-list.has-warn {
+  border-color: var(--warn, #d9a400);
+}
+.check-list .check-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+.check-title {
+  font-weight: 700;
+}
+.check-summary {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.check-list .check-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.check-list .check-items > li {
+  margin: 0;
+  list-style: none;
+}
+.check-list .check-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 8px;
+  text-align: left;
+  justify-content: flex-start;
+  border-left: 3px solid var(--line);
+  white-space: normal;
+}
+.check-list .check-item.warn {
+  border-left-color: var(--warn, #d9a400);
+}
+.check-time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  font-size: 11px;
+  padding-top: 1px;
+}
+.check-list .check-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+.check-list .check-message {
+  display: block;
+  font-size: 12px;
+}
+.check-list .check-hint {
+  display: block;
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.check-audio {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
 }

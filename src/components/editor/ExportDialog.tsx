@@ -22,6 +22,7 @@ import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
 import { Field, Segmented, Toggle } from '../ui';
 import { Icon } from '../Icon';
+import { CheckList } from './CheckList';
 import { useEasy } from '../UiModeToggle';
 
 const QUALITIES = [
@@ -193,6 +194,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         <h2>書き出し</h2>
 
         {!supported && <p className="error-note">このブラウザは書き出しに対応していません。Chrome / Edge をお試しください。</p>}
+
+        {!running && !result && <CheckList sequence={sequence} onJump={onClose} />}
 
         <Field label={easy ? 'どこに投稿しますか？' : 'アスペクト比'}>
           <div className="chip-row wrap">

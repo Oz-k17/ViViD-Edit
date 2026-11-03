@@ -224,6 +224,97 @@ eq('空文字', wrap('', 10), ['']);
   check('同じ解像度なら型のまま', Math.abs(same.sw - kit.bands.middle.sw) < 1e-9 && Math.abs(same.sh - kit.bands.middle.sh) < 1e-6, JSON.stringify(same));
 }
 
+// ---- 見た目の書き方 ----
+{
+  const { readFileSync } = await import('node:fs');
+  const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  let depth = 0;
+  let broken = false;
+  for (const ch of css) {
+    if (ch === '{') depth++;
+    if (ch === '}' && --depth < 0) broken = true;
+  }
+  // 閉じ忘れると、そこから後ろの見た目がまるごと効かなくなる（ブラウザは黙って読み飛ばす）。
+  check('styles.css の括弧が閉じている', !broken && depth === 0, String(depth));
+}
+
+// ---- 確かめリスト ----
+{
+  const { timelineChecks, audioChecks, visualGaps } = await import('../src/model/checks.ts');
+  const { buildThreeBand } = await import('../src/model/threeBand.ts');
+  const { createSequence, baseClip, textClip } = await import('../src/model/factory.ts');
+
+  const sequence = createSequence(); // 1080x1920 9:16
+  const vt = sequence.tracks.find((t) => t.kind === 'video');
+  const tt = sequence.tracks.find((t) => t.kind === 'text');
+  const video = (start, duration) => ({ ...baseClip('video', vt.id), mediaId: 'm', start, duration });
+  const caption = (start, duration, content, y = 0) => ({ ...textClip(tt.id, start, duration, { content, role: 'caption' }), y });
+  // 測り方の代わり: 幅 600・高さ 120 の塊を、clip.y の所に置く
+  const measure = (c) => ({ x: (0.5 + c.x) * 1080 - 300, y: (0.5 + c.y) * 1920 - 60, w: 600, h: 120 });
+  const kinds = (items) => items.map((i) => i.kind);
+
+  const clean = { ...sequence, clips: [video(0, 10), caption(1, 2, 'こんにちは')] };
+  check('穴の無い作品は何も出ない', timelineChecks(clean, measure).length === 0, JSON.stringify(timelineChecks(clean, measure)));
+
+  const fast = { ...sequence, clips: [video(0, 10), caption(1, 0.8, 'とても長い字幕をほんの一瞬だけ出してしまった')] };
+  const fastItems = timelineChecks(fast, measure);
+  check('速すぎる字幕を見つける', kinds(fastItems).includes('captionFast'));
+  check('飛ぶ先は字幕の頭', fastItems.find((i) => i.kind === 'captionFast').time === 1);
+  check('短い字幕は、短く出しても速すぎない', !kinds(timelineChecks({ ...sequence, clips: [video(0, 5), caption(1, 0.7, 'はい')] }, measure)).includes('captionFast'));
+
+  const gaps = { ...sequence, clips: [video(0.5, 3), video(4, 3)] };
+  check('頭の黒い画面と、間の黒い画面', visualGaps(gaps, 0.04).length === 2);
+  check('黒い画面を知らせる', kinds(timelineChecks(gaps, measure)).filter((k) => k === 'gap').length === 2);
+  const tail = { ...sequence, clips: [video(0, 3), caption(2, 3, '最後まで')] };
+  check('映像が終わったあと文字だけ残るのも黒い画面', kinds(timelineChecks(tail, measure)).includes('gap'));
+
+  const zone = { ...sequence, clips: [video(0, 5), caption(1, 2, '下のほう', 0.45)] };
+  check('サービスのボタンに隠れる所を知らせる', kinds(timelineChecks(zone, measure)).includes('safeZone'));
+  check('横長ではサービスの隠れる所を見ない', !kinds(timelineChecks({ ...zone, aspect: '16:9' }, measure)).includes('safeZone'));
+  const off = { ...sequence, clips: [video(0, 5), { ...caption(1, 2, 'はみ出す'), x: 0.4 }] };
+  check('画面からはみ出した文字', kinds(timelineChecks(off, measure)).includes('offscreen'));
+
+  const stacked = { ...sequence, clips: [video(0, 5), caption(1, 2, 'ひとつめ'), { ...caption(2, 2, 'ふたつめ'), trackId: tt.id + 'x' }] };
+  stacked.tracks = [...sequence.tracks, { ...tt, id: tt.id + 'x' }];
+  check('同じ所に重なった字幕', kinds(timelineChecks(stacked, measure)).includes('captionsStacked'));
+
+  const source = video(0, 5);
+  const built = buildThreeBand({ ...sequence, clips: [source] }, source, { width: 1920, height: 1080 }, {
+    titleStyle: { content: '見出し', role: 'design' },
+    titleText: '見出しを入れる',
+  });
+  const builtItems = timelineChecks(built, measure);
+  check('見出しが仮のままなのを知らせる', kinds(builtItems).includes('titlePlaceholder'));
+  const onFace = { ...built, clips: [...built.clips, caption(1, 2, '顔の上', 0.35)] };
+  check('字幕が顔の帯にかかるのを知らせる', kinds(timelineChecks(onFace, measure)).includes('faceCovered'));
+  const onMain = { ...built, clips: [...built.clips, caption(1, 2, '本編の上', 0)] };
+  check('本編の帯の字幕は顔にかからない', !kinds(timelineChecks(onMain, measure)).includes('faceCovered'));
+
+  const long = { ...sequence, clips: [video(0, 200)] };
+  check('3 分を超える縦長を知らせる', kinds(timelineChecks(long, measure)).includes('tooLong'));
+  check('横長なら長さは知らせない', !kinds(timelineChecks({ ...long, aspect: '16:9' }, measure)).includes('tooLong'));
+  check('空のテロップを知らせる', kinds(timelineChecks({ ...sequence, clips: [video(0, 5), caption(1, 2, '  ')] }, measure)).includes('emptyText'));
+
+  // 音
+  const rate = 8000;
+  const wave = (seconds, fn) => Float32Array.from({ length: seconds * rate }, (_, i) => fn(i / rate));
+  const voice = (t) => 0.3 * Math.sin(2 * Math.PI * 220 * t);
+  const withHole = wave(8, (t) => (t >= 3 && t < 6 ? 0 : voice(t)));
+  const holeItems = audioChecks([withHole], rate);
+  const hole = holeItems.find((i) => i.kind === 'silence');
+  check('長い無音を見つける', !!hole && Math.abs(hole.time - 3) < 0.06, JSON.stringify(holeItems));
+  check('短い間は無音にしない', !audioChecks([wave(8, (t) => (t >= 3 && t < 4 ? 0 : voice(t)))], rate).some((i) => i.kind === 'silence'));
+  check('頭が静かなのを知らせる', audioChecks([wave(6, (t) => (t < 3.5 ? 0.012 * Math.sin(t * 900) : voice(t)))], rate).some((i) => i.kind === 'quietStart'));
+  check('頭から声があれば知らせない', !audioChecks([wave(6, voice)], rate).some((i) => i.kind === 'quietStart'));
+  const clipped = wave(6, (t) => Math.max(-1, Math.min(1, (t > 2 && t < 2.2 ? 3 : 1) * voice(t) * (t > 2 && t < 2.2 ? 2 : 1))));
+  const clipItems = audioChecks([clipped], rate);
+  check('音割れを見つける', clipItems.some((i) => i.kind === 'clipping' && Math.abs(i.time - 2) < 0.05), JSON.stringify(clipItems));
+  check('割れていない音は知らせない', !audioChecks([wave(6, voice)], rate).some((i) => i.kind === 'clipping'));
+  const manyClips = wave(20, (t) => (Math.floor(t * 2) % 3 === 0 && t % 0.5 < 0.01 ? Math.sign(Math.sin(t * 5000)) : voice(t)));
+  const manyItems = audioChecks([manyClips], rate).filter((i) => i.kind === 'clipping');
+  check('音割れが多いときは、まとめて知らせる', manyItems.length <= 6 && manyItems.length >= 2, String(manyItems.length));
+}
+
 // ---- 映像と音のつなぎ ----
 {
   const { placeWithSound, reconcileLinks, unlinkClips, partnerOf } = await import('../src/model/links.ts');
