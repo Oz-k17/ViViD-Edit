@@ -7,6 +7,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { setLang, type Lang } from '../i18n';
 import { uid } from '../model/factory';
 import type { AspectKey, Sequence, TextProps } from '../model/types';
+import type { Kit } from '../model/kit';
 import { migrateStorageKey } from './storage';
 import {
   currentProfile,
@@ -335,7 +336,16 @@ export interface LayoutTemplate {
   createdAt: number;
 }
 
-export type Template = TextTemplate | LayoutTemplate;
+/** 自分の型（いつもの 3 分割の切り抜き位置と見出しの体裁）。model/kit.ts。 */
+export interface KitTemplate {
+  id: string;
+  kind: 'kit';
+  name: string;
+  kit: Kit;
+  createdAt: number;
+}
+
+export type Template = TextTemplate | LayoutTemplate | KitTemplate;
 
 // 使う人ごとに分ける。既定の人は昔のキーのまま（`profile.ts` を見よ）。
 const SETTINGS_KEY = scopedKey('vivid.settings');
@@ -401,7 +411,9 @@ interface AppApi {
   updatePanels: (patch: Partial<PanelLayout>) => void;
   resetPanels: () => void;
   templates: Template[];
-  addTemplate: (template: Omit<TextTemplate, 'id' | 'createdAt'> | Omit<LayoutTemplate, 'id' | 'createdAt'>) => Template;
+  addTemplate: (
+    template: Omit<TextTemplate, 'id' | 'createdAt'> | Omit<LayoutTemplate, 'id' | 'createdAt'> | Omit<KitTemplate, 'id' | 'createdAt'>,
+  ) => Template;
   removeTemplate: (id: string) => void;
   renameTemplate: (id: string, name: string) => void;
 }

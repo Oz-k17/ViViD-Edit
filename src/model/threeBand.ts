@@ -12,6 +12,7 @@
 import { baseClip, textClip, uid } from './factory';
 import { bandCrop, coverSource, goldenBands } from './layout';
 import { addTrack, placeClip, tracksOf } from './ops';
+import { fitSourceToAspect, type KitBands } from './kit';
 import type { Clip, Sequence, TextProps } from './types';
 
 export interface ThreeBandOptions {
@@ -21,6 +22,11 @@ export interface ThreeBandOptions {
   titleStyle?: TextProps;
   /** 見出しの文言。 */
   titleText?: string;
+  /**
+   * 「自分の型」の切り抜き範囲（素材に対する割合）。渡せば、中心から取る代わりにこの位置で切り抜く。
+   * 素材の解像度が型と違っても、帯の形に合わせて直す（kit.ts の fitSourceToAspect）。
+   */
+  sources?: KitBands;
 }
 
 /** 背景として敷く帯のぼかしと暗さ。見出しを読ませるために、はっきり落とす。 */
@@ -66,20 +72,20 @@ export function buildThreeBand(
     effects,
   });
 
-  const backdrop = band(
-    videoTracks[0].id,
-    bandCrop(coverSource(media, aspect(bands.top)), bands.top),
-    backdropEffects(),
-  );
+  const pick = (key: keyof KitBands, band: { h: number }, zoom = 1) =>
+    options.sources
+      ? fitSourceToAspect(options.sources[key], media, aspect(band))
+      : coverSource(media, aspect(band), zoom);
+  const backdrop = band(videoTracks[0].id, bandCrop(pick('top', bands.top), bands.top), backdropEffects());
   const main = {
-    ...band(videoTracks[1].id, bandCrop(coverSource(media, aspect(bands.middle)), bands.middle)),
+    ...band(videoTracks[1].id, bandCrop(pick('middle', bands.middle), bands.middle)),
     muted: clip.muted,
     // 音声レーンに分けた音とつないであれば、本編がそのつなぎを引き継ぐ（音を失わないように）。
     ...(clip.linkId ? { linkId: clip.linkId } : {}),
   };
   const face = band(
     videoTracks[2].id,
-    bandCrop(coverSource(media, aspect(bands.bottom), options.faceZoom ?? 4), bands.bottom),
+    bandCrop(pick('bottom', bands.bottom, options.faceZoom ?? 4), bands.bottom),
   );
 
   next = placeClip(next, backdrop);

@@ -6,6 +6,7 @@ import { FONT_OPTIONS, LOOK_PRESETS, SPEED_PRESETS, TEXT_PRESETS } from '../../p
 import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
 import { buildThreeBand } from '../../model/threeBand';
+import { captureKit } from '../../model/kit';
 import { partnerOf, separateSound, unlinkClips } from '../../model/links';
 import { canJoin, joinClips, nestClips, nestedLength, unnestClip } from '../../model/nest';
 import { clipsOnTrack } from '../../model/ops';
@@ -908,19 +909,29 @@ function PropsTab({ clip }: { clip: Clip }) {
  */
 function ThreeBandSection({ clip }: { clip: Clip }) {
   const { sequence, apply, setSelection } = useEditor();
+  const { templates } = useApp();
   const asset = mediaRegistry.get(clip.mediaId);
   // 組んだ 3 本（と見出し・音）を、1 本のクリップにまとめておくか。ダブルクリックで中を直せる。
   const [nest, setNest] = useState(true);
+  const kits = templates.filter((t) => t.kind === 'kit');
+  // 型があれば、いちばん新しい型で組むのを既定にする（いつも同じ型を使う人が多いので、選び直さずに済むように）。
+  const [kitId, setKitId] = useState<string>(() => kits[kits.length - 1]?.id ?? '');
+  const kitTemplate = kits.find((t) => t.id === kitId);
+  const kit = kitTemplate?.kind === 'kit' ? kitTemplate.kit : null;
+  // いまの画面（まとめの中に入っているときは、その中身）が 3 分割なら、型にできる。
+  const capturable = useMemo(() => captureKit(sequence, sequence.clips), [sequence]);
 
   const build = (withTitle: boolean) => {
     const media = { width: asset?.width || sequence.width, height: asset?.height || sequence.height };
-    const titleStyle = TEXT_PRESETS.find((preset) => preset.key === 'title')?.text;
+    const presetTitle = TEXT_PRESETS.find((preset) => preset.key === 'title')?.text;
+    const titleStyle = kit?.title ? { ...kit.title, content: '見出しを入れる' } : presetTitle;
     // apply に渡した処理は次の描画で走るので、まとめたクリップの id は先に決めて渡す。
     const nestId = uid('cl');
     apply((seq) => {
       const built = buildThreeBand(seq, clip, media, {
         titleStyle: withTitle ? titleStyle : undefined,
         titleText: withTitle ? '見出しを入れる' : undefined,
+        sources: kit?.bands,
       });
       if (!nest) return built;
       const before = new Set(seq.clips.map((c) => c.id));
@@ -943,11 +954,26 @@ function ThreeBandSection({ clip }: { clip: Clip }) {
           </button>
         </div>
       </Field>
+      {kits.length > 0 && (
+        <Field label="自分の型" hint="型を選ぶと、いつもの切り抜き位置・見出しの体裁で組みます">
+          <select value={kitId} onChange={(e) => setKitId(e.target.value)}>
+            <option value="">使わない（中心から切り抜く）</option>
+            {kits.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
       <Toggle label="組んだあと 1 つにまとめる（ダブルクリックで中を編集）" checked={nest} onChange={setNest} />
       <p className="muted small">
         上＝ぼかした背景と見出し、中＝本編、下＝顔のアップ。
-        切り出す場所は中心から取るので、置いたあと各クリップのクロップで合わせてください。
+        {kit
+          ? '型の位置で切り抜きます。'
+          : '切り出す場所は中心から取るので、置いたあと各クリップのクロップで合わせてください。合わせ終えたら「自分の型にする」で、次からはそのまま組めます。'}
       </p>
+      {capturable && <SaveKitButton kit={capturable} />}
     </>
   );
 }
@@ -1896,12 +1922,37 @@ function joinablePair(sequence: Sequence, clips: Clip[]): boolean {
   return false;
 }
 
+/** 組んである 3 分割を「自分の型」として取っておくボタン。名前は既定で付け、テンプレートのページで直せる。 */
+function SaveKitButton({ kit }: { kit: NonNullable<ReturnType<typeof captureKit>> }) {
+  const { templates, addTemplate } = useApp();
+  const [saved, setSaved] = useState<string | null>(null);
+  const save = () => {
+    // window.prompt は iPad のアプリ（WKWebView）で出ないことがあるので、名前は決め打ちで付ける。
+    const name = `自分の型 ${templates.filter((t) => t.kind === 'kit').length + 1}`;
+    addTemplate({ kind: 'kit', name, kit });
+    setSaved(name);
+  };
+  return (
+    <>
+      <button type="button" className="wide" onClick={save}>
+        この 3 分割を自分の型にする
+      </button>
+      <p className="muted small">
+        {saved
+          ? `「${saved}」として保存しました。名前はテンプレートのページで変えられます。`
+          : 'いまの切り抜き位置と見出しの体裁を取っておき、次から「3分割に組む」で同じように組めます。'}
+      </p>
+    </>
+  );
+}
+
 /** まとめたクリップ。中身を編集する入口と、まとめを解く。 */
 function NestInspector({ clip }: { clip: Clip }) {
-  const { apply, enterNest, setSelection } = useEditor();
+  const { sequence, apply, enterNest, setSelection } = useEditor();
   const easy = useEasy();
   const patch = useClipPatch(clip);
   const inner = clip.nested?.clips ?? [];
+  const kit = useMemo(() => captureKit(sequence, inner), [sequence, inner]);
   return (
     <Panel
       title="まとめたクリップ"
@@ -1926,6 +1977,7 @@ function NestInspector({ clip }: { clip: Clip }) {
       <button type="button" className="wide primary" onClick={() => enterNest(clip.id)}>
         中身を編集する
       </button>
+      {kit && <SaveKitButton kit={kit} />}
       <p className="muted small">タイムラインでダブルクリックしても中に入れます。外へ戻るのは、タイムラインの上の「外へ戻る」から。</p>
       <button
         type="button"

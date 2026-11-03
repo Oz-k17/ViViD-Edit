@@ -31,7 +31,7 @@ export default function TemplatesPage() {
         apply((seq) => placeClip(seq, clip));
         setSelection([clip.id]);
       }
-    } else {
+    } else if (template.kind === 'layout') {
       if (!window.confirm('現在のタイムラインをこのレイアウトで置き換えます。よろしいですか？')) return;
       dispatch({ type: 'load', project: { ...project, sequence: template.sequence } });
     }
@@ -40,6 +40,7 @@ export default function TemplatesPage() {
 
   const textTemplates = templates.filter((t) => t.kind === 'text');
   const layoutTemplates = templates.filter((t) => t.kind === 'layout');
+  const kitTemplates = templates.filter((t) => t.kind === 'kit');
 
   return (
     <div className="page">
@@ -52,6 +53,30 @@ export default function TemplatesPage() {
       </header>
 
       <main className="page-body">
+        <Panel title={`自分の型（${kitTemplates.length}）`}>
+          {kitTemplates.length === 0 ? (
+            <p className="empty-hint">
+              一度組んだ 3 分割（まとめたクリップ）を選び、「この 3 分割を自分の型にする」で追加できます。
+              次からは「3 分割に組む」の型の欄で選ぶだけで、同じ切り抜き位置・同じ見出しの体裁で組めます。
+            </p>
+          ) : (
+            <ul className="template-list">
+              {kitTemplates.map((template) => (
+                <li key={template.id}>
+                  <span className="template-preview layout">型</span>
+                  <input type="text" value={template.name} onChange={(e) => renameTemplate(template.id, e.target.value)} />
+                  <span className="muted">
+                    {template.kind === 'kit' ? (template.kit.title ? '見出しつき' : '見出しなし') : ''}
+                  </span>
+                  <button type="button" className="danger" onClick={() => removeTemplate(template.id)}>
+                    削除
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+
         <Panel title={`テロップスタイル（${textTemplates.length}）`}>
           {textTemplates.length === 0 ? (
             <p className="empty-hint">

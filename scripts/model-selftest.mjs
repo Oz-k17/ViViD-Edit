@@ -175,6 +175,55 @@ eq('空文字', wrap('', 10), ['']);
   check('見出しは字幕なし版でも残る', title.text.role === 'design');
 }
 
+// ---- 自分の型（3 分割の切り抜き位置と見出しの体裁を取っておく） ----
+{
+  const { buildThreeBand } = await import('../src/model/threeBand.ts');
+  const { captureKit, fitSourceToAspect } = await import('../src/model/kit.ts');
+  const { createSequence, baseClip } = await import('../src/model/factory.ts');
+
+  const sequence = createSequence();
+  const track = sequence.tracks.find((t) => t.kind === 'video');
+  const source = { ...baseClip('video', track.id), mediaId: 'media1', start: 0, duration: 5 };
+  const media = { width: 1920, height: 1080 };
+  const built = buildThreeBand({ ...sequence, clips: [source] }, source, media, {
+    titleStyle: { content: '見出し', role: 'design', color: '#ff00aa' },
+    titleText: '見出し',
+  });
+  check('組んだ 3 分割から型が取れる', !!captureKit(built, built.clips));
+  // 顔の帯を右下へずらした（使う人がクロップで合わせた）ことにする
+  const bands = built.clips.filter((c) => c.kind === 'video').sort((a, b) => a.crop.dy - b.crop.dy);
+  const moved = { ...bands[2].crop, sx: 1 - bands[2].crop.sw, sy: 1 - bands[2].crop.sh };
+  const adjusted = { ...built, clips: built.clips.map((c) => (c.id === bands[2].id ? { ...c, crop: moved } : c)) };
+  const kit = captureKit(adjusted, adjusted.clips);
+  check('型は合わせた位置を覚える', Math.abs(kit.bands.bottom.sx - moved.sx) < 1e-9 && Math.abs(kit.bands.bottom.sy - moved.sy) < 1e-9);
+  check('型は見出しの体裁を覚える（文言は持たない）', kit.title?.color === '#ff00aa' && !('content' in kit.title));
+  check('帯が足りなければ型にならない', captureKit(adjusted, adjusted.clips.filter((c) => c.id !== bands[0].id)) === null);
+  check('帯でない映像だけなら型にならない', captureKit(sequence, [source]) === null);
+
+  // 次の録画に型を当てる
+  const next = { ...baseClip('video', track.id), mediaId: 'media2', start: 0, duration: 5 };
+  const again = buildThreeBand({ ...sequence, clips: [next] }, next, media, { sources: kit.bands });
+  const face = again.clips.filter((c) => c.kind === 'video').sort((a, b) => a.crop.dy - b.crop.dy)[2];
+  check('型で組むと同じ位置に切り抜かれる', Math.abs(face.crop.sx - moved.sx) < 1e-9 && Math.abs(face.crop.sy - moved.sy) < 1e-9);
+
+  // 解像度が違う録画（4:3）でも、絵はつぶれない
+  const square = { width: 1440, height: 1080 };
+  const other = buildThreeBand({ ...sequence, clips: [next] }, next, square, { sources: kit.bands });
+  for (const c of other.clips.filter((c) => c.kind === 'video')) {
+    const srcAspect = (c.crop.sw * square.width) / (c.crop.sh * square.height);
+    const dstAspect = (c.crop.dw * 1080) / (c.crop.dh * 1920);
+    check(`違う解像度でも比が合う（dy=${c.crop.dy.toFixed(3)}）`, Math.abs(srcAspect - dstAspect) < 1e-6, `${srcAspect} / ${dstAspect}`);
+    check(`違う解像度でも素材からはみ出さない（dy=${c.crop.dy.toFixed(3)}）`,
+      c.crop.sx >= -1e-9 && c.crop.sy >= -1e-9 && c.crop.sx + c.crop.sw <= 1 + 1e-9 && c.crop.sy + c.crop.sh <= 1 + 1e-9);
+  }
+  const fourThreeFace = other.clips.filter((c) => c.kind === 'video').sort((a, b) => a.crop.dy - b.crop.dy)[2];
+  check('隅に合わせた顔は、違う解像度でも隅のまま', Math.abs(fourThreeFace.crop.sx + fourThreeFace.crop.sw - 1) < 1e-9 && Math.abs(fourThreeFace.crop.sy + fourThreeFace.crop.sh - 1) < 1e-9, JSON.stringify(fourThreeFace.crop));
+  const mid = fitSourceToAspect({ sx: 0.3, sy: 0.3, sw: 0.2, sh: 0.2 }, square, 1);
+  check('端に付いていなければ中心を保つ', Math.abs(mid.sx + mid.sw / 2 - 0.4) < 1e-9 && Math.abs(mid.sy + mid.sh / 2 - 0.4) < 1e-9, JSON.stringify(mid));
+  const same = fitSourceToAspect(kit.bands.middle, media, (1080 * 1) / (1920 * bands[1].crop.dh));
+  check('同じ解像度なら型のまま', Math.abs(same.sw - kit.bands.middle.sw) < 1e-9 && Math.abs(same.sh - kit.bands.middle.sh) < 1e-6, JSON.stringify(same));
+}
+
 // ---- 映像と音のつなぎ ----
 {
   const { placeWithSound, reconcileLinks, unlinkClips, partnerOf } = await import('../src/model/links.ts');
