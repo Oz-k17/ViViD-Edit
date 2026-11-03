@@ -12,6 +12,7 @@
  * 端末の速さで数字は変わるので、**同じ環境で前後を比べる**ためのもの。
  */
 import { spawn } from 'node:child_process';
+import { existsSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
@@ -23,7 +24,20 @@ try {
 } catch {
   pw = createRequire('/')('/opt/node22/lib/node_modules/playwright');
 }
-const CHROMIUM = process.env.CHROMIUM ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+// 環境によって Chromium の置き場所（版の番号）が違うので、決め打ちせずに探す。
+const CHROMIUM =
+  process.env.CHROMIUM ??
+  (() => {
+    const base = '/opt/pw-browsers';
+    try {
+      for (const dir of readdirSync(base).filter((d) => /^chromium-\d+$/.test(d)).sort().reverse()) {
+        for (const sub of ['chrome-linux64/chrome', 'chrome-linux/chrome']) if (existsSync(`${base}/${dir}/${sub}`)) return `${base}/${dir}/${sub}`;
+      }
+    } catch {
+      /* 見つからなければ、下の既定 */
+    }
+    return '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+  })();
 const PORT = 5299;
 const ROUNDS = 3;
 const asJson = process.argv.includes('--json');

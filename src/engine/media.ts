@@ -15,6 +15,7 @@
  */
 
 import { BlobSource, Input, UrlSource } from 'mediabunny';
+import { audioGraph } from './audio';
 import { VIDEO_INPUT_FORMATS } from './formats';
 import { scopedDbName } from '../store/profile';
 import { sanitizeLabels, type LabelColor } from '../model/labels';
@@ -975,6 +976,9 @@ class MediaRegistry {
   releaseElement(key: string) {
     const el = this.elements.get(key);
     if (!el) return;
+    // 音量のために Web Audio へつないだ配線も外す。外さないと、配線の表が要素を持ち続けて要素が消えず、
+    // 配線も鳴らない音を流し続ける。遠くへ飛ぶ・作り直す・メモリ警告で手放すたびに、それが積み上がる。
+    audioGraph.forget(el);
     el.pause();
     el.removeAttribute('src');
     el.load();
