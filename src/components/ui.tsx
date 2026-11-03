@@ -14,6 +14,22 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
   );
 }
 
+/**
+ * ボタンを並べる欄。`Field` は <label> で包むので、中にボタンを置くと、
+ * 見出しの文字を押しただけで最初のボタンが押されてしまう（label は中の操作部品へ押下を渡す）。
+ */
+export function ButtonField({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return (
+    <div className="field">
+      <span className="field-label">
+        {label}
+        {hint && <span className="field-hint">{hint}</span>}
+      </span>
+      {children}
+    </div>
+  );
+}
+
 interface SliderProps {
   value: number;
   min: number;

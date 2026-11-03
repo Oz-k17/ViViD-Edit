@@ -8,6 +8,7 @@
 | `thumb.ts` `pick.ts` | `lab/thumbnail/src/` | 表紙に使えるコマの選別 |
 | `columns.ts` `reframe.ts` | `lab/reframe/src/` | 被写体を追う枠の置き所 |
 | `audio/loudness.ts` `audio/lufs.ts` `audio/limiter.ts` | `lab/auto-cut/src/` | 音量の測り（LUFS）・倍率の決め方・真のピークのリミッタ |
+| `audio/silence.ts` `audio/features.ts` `audio/fft.ts` | `lab/auto-cut/src/` | 無音カットの計画（テンポのつまみで使う。いまは音量だけで見る `level` のみ） |
 | `decode.ts` | `lab/scene-cut/src/decode.ts` | 動画をコマの列にする（**本体で `from`/`to` を足した**） |
 | `cover-export.ts` | `lab/thumbnail/src/export.ts` | コマを画像にする（**ラボの `saveBlob` は持ってきていない**） |
 | `segments.ts` | **本体で足した** | 枠の中心の列を、止まった区間に畳む（下を参照） |

@@ -315,6 +315,62 @@ eq('空文字', wrap('', 10), ['']);
   check('音割れが多いときは、まとめて知らせる', manyItems.length <= 6 && manyItems.length >= 2, String(manyItems.length));
 }
 
+// ---- テンポのつまみ（間を詰める） ----
+{
+  const { tempoOptions, cutRanges, removeRanges } = await import('../src/model/tempo.ts');
+  const { planJetCut } = await import('../src/analysis/audio/silence.ts');
+  const { analyzeLoudness } = await import('../src/analysis/audio/loudness.ts');
+  const { placeWithSound, partnerOf } = await import('../src/model/links.ts');
+  const { createSequence, clipFromAsset, textClip } = await import('../src/model/factory.ts');
+  const { tracksOf } = await import('../src/model/ops.ts');
+
+  const loose = tempoOptions(0);
+  const tight = tempoOptions(1);
+  check('つまみを上げるほど短い間まで詰める', tight.minSilence < loose.minSilence && tight.padding < loose.padding);
+  check('きびきびでも語頭・語尾の余白は残す', tight.padding > 0.04 && tight.minSilence >= 0.2);
+
+  // 声 1 秒・間 1.5 秒・声 1 秒・間 0.5 秒・声 1 秒（8kHz）
+  const rate = 8000;
+  const pattern = [[1, true], [1.5, false], [1, true], [0.5, false], [1, true]];
+  const samples = [];
+  for (const [sec, on] of pattern) for (let i = 0; i < sec * rate; i++) samples.push(on ? 0.3 * Math.sin((2 * Math.PI * 220 * i) / rate) : 0.0005 * Math.sin(i));
+  const buffer = { sampleRate: rate, numberOfChannels: 1, length: samples.length, getChannelData: () => Float32Array.from(samples) };
+  const track = analyzeLoudness(buffer);
+  const planLoose = planJetCut(track, { mode: 'level', ...tempoOptions(0) });
+  const planTight = planJetCut(track, { mode: 'level', ...tempoOptions(1) });
+  check('ゆったりでは長い間だけ詰める', planLoose.cut.filter((r) => r.end - r.start > 0.2).length === 1, JSON.stringify(planLoose.cut));
+  check('きびきびでは短い間も詰める', planTight.cut.filter((r) => r.end - r.start > 0.2).length === 2, JSON.stringify(planTight.cut));
+
+  // タイムラインに当てる: 動画（映像と音）＋ 後ろに別の動画、BGM と字幕は別トラック
+  const base = createSequence();
+  const v1 = tracksOf(base, 'video')[0];
+  const first = clipFromAsset({ id: 'talk', kind: 'video', duration: 5 }, v1.id, 0);
+  let seq = placeWithSound(base, [first], false, () => true);
+  const second = clipFromAsset({ id: 'next', kind: 'video', duration: 2 }, v1.id, 5);
+  seq = placeWithSound(seq, [second], false, () => true);
+  const t1 = tracksOf(seq, 'text')[0];
+  seq = { ...seq, clips: [...seq.clips, textClip(t1.id, 4, 1, { content: '字幕' })] };
+  const talk = seq.clips.find((c) => c.kind === 'video' && c.mediaId === 'talk');
+  const cuts = cutRanges(talk, planTight.keep);
+  check('取り除く範囲は後ろから', cuts.length === 2 && cuts[0].start > cuts[1].start, JSON.stringify(cuts));
+  const result = removeRanges(seq, talk.id, cuts);
+  const pictures = result.sequence.clips.filter((c) => c.kind === 'video' && c.mediaId === 'talk').sort((a, b) => a.start - b.start);
+  const sounds = result.sequence.clips.filter((c) => c.kind === 'audio' && c.mediaId === 'talk').sort((a, b) => a.start - b.start);
+  const expected = cuts.reduce((sum, c) => sum + c.end - c.start, 0);
+  check('詰めた秒数が合う', Math.abs(result.removed - expected) < 0.01 && result.count === 2, `${result.removed} / ${expected}`);
+  check('声の所が 3 本残る', pictures.length === 3, String(pictures.length));
+  check('隙間なく並ぶ', pictures.every((c, i) => i === 0 || Math.abs(pictures[i - 1].start + pictures[i - 1].duration - c.start) < 1e-6));
+  check('音も同じに割れて詰まる', sounds.length === 3 && sounds.every((s, i) => Math.abs(s.start - pictures[i].start) < 1e-6 && Math.abs(s.sourceIn - pictures[i].sourceIn) < 1e-6 && Math.abs(s.duration - pictures[i].duration) < 1e-6));
+  check('映像と音のつなぎが保たれる', pictures.every((p) => partnerOf(result.sequence, p)?.kind === 'audio'));
+  const nextPic = result.sequence.clips.find((c) => c.kind === 'video' && c.mediaId === 'next');
+  check('後ろの動画も詰まる', Math.abs(nextPic.start - (5 - expected)) < 0.01, String(nextPic.start));
+  check('後ろの動画の音も詰まる', Math.abs(partnerOf(result.sequence, nextPic).start - nextPic.start) < 1e-6);
+  const caption = result.sequence.clips.find((c) => c.kind === 'text');
+  check('ほかのトラック（字幕）は動かさない', caption.start === 4);
+  check('声の中身は変わらない（1 本目の頭は素材の頭）', pictures[0].sourceIn === 0);
+  check('残すものが無ければ何もしない', cutRanges(talk, []).length === 0);
+}
+
 // ---- 映像と音のつなぎ ----
 {
   const { placeWithSound, reconcileLinks, unlinkClips, partnerOf } = await import('../src/model/links.ts');

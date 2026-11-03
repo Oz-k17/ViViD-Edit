@@ -28,6 +28,9 @@ const FILES = [
   ['lab/auto-cut/src/loudness.ts', 'src/analysis/audio/loudness.ts'],
   ['lab/auto-cut/src/lufs.ts', 'src/analysis/audio/lufs.ts'],
   ['lab/auto-cut/src/limiter.ts', 'src/analysis/audio/limiter.ts'],
+  ['lab/auto-cut/src/fft.ts', 'src/analysis/audio/fft.ts'],
+  ['lab/auto-cut/src/features.ts', 'src/analysis/audio/features.ts'],
+  ['lab/auto-cut/src/silence.ts', 'src/analysis/audio/silence.ts'],
 ];
 
 let drifted = 0;

@@ -7,6 +7,10 @@ import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
 import { buildThreeBand } from '../../model/threeBand';
 import { captureKit } from '../../model/kit';
+import { cutRanges, removeRanges, tempoOptions, type TimeRange } from '../../model/tempo';
+import { usedSourceRange } from '../../model/analysisEdits';
+import { analyzeLoudness, type LoudnessTrack } from '../../analysis/audio/loudness';
+import { planJetCut } from '../../analysis/audio/silence';
 import { partnerOf, separateSound, unlinkClips } from '../../model/links';
 import { canJoin, joinClips, nestClips, nestedLength, unnestClip } from '../../model/nest';
 import { clipsOnTrack } from '../../model/ops';
@@ -51,7 +55,7 @@ import {
 import { useApp } from '../../store/app';
 import { MoreSettings, useEasy } from '../UiModeToggle';
 import { useEditor } from '../../store/editor';
-import { ColorInput, EmptyHint, Field, MuteIcon, Panel, Segmented, Slider, SoundIcon, Tabs, Toggle } from '../ui';
+import { ButtonField, ColorInput, EmptyHint, Field, MuteIcon, Panel, Segmented, Slider, SoundIcon, Tabs, Toggle } from '../ui';
 import { importFiles, useMediaAssets } from './MediaPanel';
 import { Icon } from '../Icon';
 import { AnalysisSection } from './AnalysisSection';
@@ -656,6 +660,9 @@ function PropsTab({ clip }: { clip: Clip }) {
               </button>
             )
           )}
+          {(clip.kind === 'video' || clip.kind === 'audio') && clip.mediaId && asset?.hasAudio !== false && (
+            <TempoSection key={clip.id} clip={clip} />
+          )}
         </>
       )}
 
@@ -944,7 +951,7 @@ function ThreeBandSection({ clip }: { clip: Clip }) {
 
   return (
     <>
-      <Field label="画面構成" hint="このクリップをショート動画のスタイルに置き換えます">
+      <ButtonField label="画面構成" hint="このクリップをショート動画のスタイルに置き換えます">
         <div className="chip-row wrap">
           <button type="button" className="chip" onClick={() => build(true)}>
             3分割に組む（見出しつき）
@@ -953,7 +960,7 @@ function ThreeBandSection({ clip }: { clip: Clip }) {
             3分割に組む
           </button>
         </div>
-      </Field>
+      </ButtonField>
       {kits.length > 0 && (
         <Field label="自分の型" hint="型を選ぶと、いつもの切り抜き位置・見出しの体裁で組みます">
           <select value={kitId} onChange={(e) => setKitId(e.target.value)}>
@@ -1920,6 +1927,112 @@ function joinablePair(sequence: Sequence, clips: Clip[]): boolean {
     for (let i = 1; i < run.length; i += 1) if (canJoin(run[i - 1], run[i])) return true;
   }
   return false;
+}
+
+/** テンポを調べるのは、これより短いクリップだけ（音を丸ごと起こすので、長いとメモリを食う）。 */
+const TEMPO_LIMIT_SECONDS = 20 * 60;
+
+/**
+ * テンポのつまみ。しゃべりの間（無音）を、つまみ 1 本で詰める（model/tempo.ts）。
+ * 音を起こして測るのは最初の 1 回だけ。つまみを動かすと、どれだけ詰まるかがすぐ出る。
+ */
+function TempoSection({ clip }: { clip: Clip }) {
+  const { apply, sequence } = useEditor();
+  const [amount, setAmount] = useState(0.5);
+  const [measured, setMeasured] = useState<{ key: string; track: LoudnessTrack; offset: number } | null>(null);
+  const [state, setState] = useState<'idle' | 'measuring' | 'failed' | 'tooLong'>('idle');
+  // 詰めたという知らせは、詰めた直後のタイムラインのあいだだけ出す（「戻す」を押したら、またつまみに戻る）。
+  const [doneState, setDoneState] = useState<{ text: string; before: Sequence; after: Sequence | null } | null>(null);
+  useEffect(() => {
+    if (doneState && !doneState.after && sequence !== doneState.before) setDoneState({ ...doneState, after: sequence });
+  }, [doneState, sequence]);
+  const done = doneState && (doneState.after === null || doneState.after === sequence) ? doneState.text : null;
+  const range = usedSourceRange(clip);
+  const key = `${clip.id}:${clip.mediaId}:${range.from.toFixed(3)}:${range.to.toFixed(3)}`;
+  const ready = measured?.key === key ? measured : null;
+
+  const measure = async () => {
+    if (!clip.mediaId) return;
+    if (range.to - range.from > TEMPO_LIMIT_SECONDS) {
+      setState('tooLong');
+      return;
+    }
+    setState('measuring');
+    setDoneState(null);
+    try {
+      const decoded = await decodeAssetAudioRange(clip.mediaId, range.from, range.to);
+      if (!decoded) throw new Error('decode');
+      setMeasured({ key, track: analyzeLoudness(decoded.buffer), offset: decoded.start });
+      setState('idle');
+    } catch {
+      setState('failed');
+    }
+  };
+
+  /** 残す範囲（素材の秒）。 */
+  const keep = useMemo<TimeRange[] | null>(() => {
+    if (!ready) return null;
+    const plan = planJetCut(ready.track, { mode: 'level', ...tempoOptions(amount) });
+    return plan.keep.map((r) => ({ start: r.start + ready.offset, end: r.end + ready.offset }));
+  }, [ready, amount]);
+  const cuts = useMemo(() => (keep ? cutRanges(clip, keep) : []), [clip, keep]);
+  const removed = cuts.reduce((sum, c) => sum + c.end - c.start, 0);
+
+  const run = () => {
+    if (!keep) return;
+    const id = clip.id;
+    apply((seq) => {
+      const current = seq.clips.find((c) => c.id === id);
+      return current ? removeRanges(seq, id, cutRanges(current, keep)).sequence : seq;
+    });
+    setDoneState({
+      text: `${cuts.length} か所・${removed.toFixed(1)} 秒詰めました。元に戻すなら「戻す」を押してください。`,
+      before: sequence,
+      after: null,
+    });
+  };
+
+  return (
+    <>
+      <hr />
+      <ButtonField label="テンポ（間を詰める）" hint="しゃべりの間（音の無い所）を詰めます">
+        {done ? (
+          <p className="muted small">{done}</p>
+        ) : !ready ? (
+          <button type="button" className="wide" onClick={measure} disabled={state === 'measuring'}>
+            {state === 'measuring' ? '音を調べています…' : '間を調べる'}
+          </button>
+        ) : (
+          <>
+            <Slider
+              value={amount}
+              min={0}
+              max={1}
+              step={0.05}
+              onChange={setAmount}
+              format={(v) => (v < 0.34 ? 'ゆったり' : v < 0.67 ? 'ふつう' : 'きびきび')}
+              onReset={() => setAmount(0.5)}
+            />
+            <p className="muted small">
+              {cuts.length === 0
+                ? 'この強さでは、詰める間はありません。'
+                : `${cuts.length} か所・${removed.toFixed(1)} 秒詰まります（${clip.duration.toFixed(1)} 秒 → ${(clip.duration - removed).toFixed(1)} 秒）`}
+            </p>
+            <button type="button" className="wide primary" onClick={run} disabled={cuts.length === 0}>
+              間を詰める
+            </button>
+          </>
+        )}
+      </ButtonField>
+      {state === 'failed' && <p className="muted small">音を読めませんでした。</p>}
+      {state === 'tooLong' && <p className="muted small">20 分より長いクリップは調べません。分割してからお試しください。</p>}
+      {!done && (
+        <p className="muted small">
+          つないだ音（映像）も一緒に詰まり、後ろのクリップも寄ります。BGM・字幕のトラックは動かさないので、3 分割や字幕より先に使うのがおすすめです。
+        </p>
+      )}
+    </>
+  );
 }
 
 /** 組んである 3 分割を「自分の型」として取っておくボタン。名前は既定で付け、テンプレートのページで直せる。 */
