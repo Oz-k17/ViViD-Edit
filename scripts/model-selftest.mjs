@@ -371,6 +371,40 @@ eq('空文字', wrap('', 10), ['']);
   check('残すものが無ければ何もしない', cutRanges(talk, []).length === 0);
 }
 
+// ---- 一回で全部書き出す ----
+{
+  const { EXPORT_VARIANTS, variantSequence, normalizeTags, titleOf, captionScript, postNote } = await import('../src/model/batchExport.ts');
+  const { createSequence, textClip } = await import('../src/model/factory.ts');
+  const { exportFilename } = await import('../src/engine/exporter.ts');
+
+  const base = createSequence();
+  const tt = base.tracks.find((t) => t.kind === 'text');
+  const seq = {
+    ...base,
+    clips: [
+      textClip(tt.id, 0, 5, { content: '見出しを入れる', role: 'design' }),
+      textClip(tt.id, 0.5, 5, { content: 'ただ喋れば\nいいってもんじゃない', role: 'design' }),
+      textClip(tt.id, 2, 1, { content: 'ふたつめ', role: 'caption' }),
+      textClip(tt.id, 1, 1, { content: 'ひとつ\nめ' }),
+    ],
+  };
+  check('字幕なしは字幕だけを消す', variantSequence(seq, 'clean').clips.length === 2 && variantSequence(seq, 'captions').clips.length === 4);
+  check('タグを整える（# の有無・区切り・重複）', JSON.stringify(normalizeTags('#ゲーム実況 切り抜き、Shorts,shorts  ＃ゲーム実況')) === JSON.stringify(['#ゲーム実況', '#切り抜き', '#Shorts']));
+  check('空のタグは無し', normalizeTags('  ').length === 0);
+  check('見出しは仮の文言を飛ばして、改行は空白に', titleOf(seq) === 'ただ喋れば いいってもんじゃない', String(titleOf(seq)));
+  check('見出しが無ければ null', titleOf({ ...seq, clips: seq.clips.slice(2) }) === null);
+  check('字幕の全文は出る順', captionScript(seq) === 'ひとつめ\nふたつめ', JSON.stringify(captionScript(seq)));
+  const note = postNote({ projectName: '作品', title: titleOf(seq), tags: ['#a', '#b'], script: captionScript(seq), duration: 65 });
+  check('投稿メモにタイトル・タグ・長さ・字幕', note.startsWith('タイトル: ただ喋れば') && note.includes('#a #b') && note.includes('長さ: 1:05') && note.includes('ひとつめ'));
+  check('タイトルが無ければ作品名', postNote({ projectName: '作品', title: null, tags: [], script: '', duration: 3 }).startsWith('タイトル: 作品'));
+  const now = new Date(2026, 10, 4, 9, 5);
+  const a = exportFilename('作品', '9:16', 'mp4', now, 'sub');
+  const b = exportFilename('作品', '9:16', 'mp4', now, 'nosub');
+  check('字幕あり・なしでファイル名が分かれる', a !== b && a === 'short_sub_9x16_20261104-0905.mp4', a);
+  check('印が無ければ今までどおりの名前', exportFilename('my clip', '9:16', 'mp4', now) === 'my_clip_9x16_20261104-0905.mp4');
+  check('版の印は英数字', EXPORT_VARIANTS.every((v) => /^[a-z]+$/.test(v.tag)));
+}
+
 // ---- 映像と音のつなぎ ----
 {
   const { placeWithSound, reconcileLinks, unlinkClips, partnerOf } = await import('../src/model/links.ts');

@@ -32,6 +32,8 @@ export interface ExportSettings {
   finishAudio?: boolean;
   /** 高速エンコード（既定は切。高精度書き出しの WebM で、動きの激しい映像ほど効く）。 */
   fast?: boolean;
+  /** ファイル名に入れる版の印（`sub` / `nosub` など。英数字）。 */
+  tag?: string;
 }
 
 export interface ExportResult {
@@ -91,7 +93,7 @@ export function exportSize(aspect: AspectKey, quality: number): { width: number;
  * Chromium は <a download> に非 ASCII が混ざると名前ごと捨てて拡張子なしの "download" にしてしまうため、
  * 日本語のタイトルでも必ず拡張子付きで保存されるようにする。
  */
-export function exportFilename(name: string, aspect: string, ext: string, now = new Date()): string {
+export function exportFilename(name: string, aspect: string, ext: string, now = new Date(), tag?: string): string {
   const ascii = name
     .replace(/[^\w-]+/g, '_')
     .replace(/_+/g, '_')
@@ -99,7 +101,8 @@ export function exportFilename(name: string, aspect: string, ext: string, now = 
   const base = /[A-Za-z0-9]/.test(ascii) ? ascii.slice(0, 40) : 'short';
   const pad = (n: number) => n.toString().padStart(2, '0');
   const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
-  return `${base}_${aspect.replace(':', 'x')}_${stamp}.${ext}`;
+  const mark = tag ? `_${tag.replace(/[^\w-]+/g, '')}` : '';
+  return `${base}${mark}_${aspect.replace(':', 'x')}_${stamp}.${ext}`;
 }
 
 const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
@@ -169,7 +172,7 @@ export class Exporter {
       onProgress(1);
       return {
         blob: output.blob,
-        filename: exportFilename(name, settings.aspect, output.ext),
+        filename: exportFilename(name, settings.aspect, output.ext, new Date(), settings.tag),
         mimeType: output.mimeType,
         durationMs: performance.now() - startedAt,
         warning: output.warning,
@@ -269,7 +272,7 @@ export class Exporter {
     const blob = picked.ext === 'webm' ? await withWebmDuration(recorded, player.duration) : recorded;
     return {
       blob,
-      filename: exportFilename(name, settings.aspect, picked.ext),
+      filename: exportFilename(name, settings.aspect, picked.ext, new Date(), settings.tag),
       mimeType: picked.mime,
       durationMs: performance.now() - startedAt,
     };

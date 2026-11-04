@@ -8,6 +8,7 @@ import {
   isExportSupported,
   isFrameAccurate,
   isNativeHost,
+  exportFilename,
   pickMimeType,
   saveBlob,
   type ExportResult,
@@ -23,6 +24,7 @@ import { useEditor } from '../../store/editor';
 import { Field, Segmented, Toggle } from '../ui';
 import { Icon } from '../Icon';
 import { CheckList } from './CheckList';
+import { EXPORT_VARIANTS, captionScript, normalizeTags, postNote, titleOf, variantSequence, type VariantKey } from '../../model/batchExport';
 import { useEasy } from '../UiModeToggle';
 
 const QUALITIES = [
@@ -114,6 +116,13 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const [saved, setSaved] = useState(false);
   const [errorCode, setErrorCode] = useState<SaveErrorCode | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // まとめて書き出す（字幕あり・なし・投稿メモ）。何を作るかとタグは、次も同じだろうから覚えておく。
+  const [batchPicks, setBatchPicks] = useState<('captions' | 'clean' | 'note')[]>(settings.batchVariants ?? ['captions', 'clean', 'note']);
+  const [tagInput, setTagInput] = useState(settings.postTags ?? '');
+  const [batchStep, setBatchStep] = useState<{ index: number; total: number; label: string } | null>(null);
+  const [batchSaved, setBatchSaved] = useState<string[]>([]);
+  const [note, setNote] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const duration = sequenceDuration(sequence);
   // 字幕あり / なしの 2 種類を作るための切り替え。消えるのは「種類＝字幕」だけで、
@@ -163,7 +172,16 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         withoutCaption ? `${project.name}_字幕なし` : project.name,
         withoutCaption ? withoutCaptions(sequence) : sequence,
         player,
-        { aspect, quality: effectiveQuality, fps, bitrate: effectiveBitrate, format, finishAudio: frameAccurate && finishAudio, fast },
+        {
+          aspect,
+          quality: effectiveQuality,
+          fps,
+          bitrate: effectiveBitrate,
+          format,
+          finishAudio: frameAccurate && finishAudio,
+          fast,
+          tag: withoutCaption ? 'nosub' : undefined,
+        },
         setProgress,
       );
       setResult(output);
@@ -173,6 +191,78 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       setErrorMessage(e instanceof Error ? e.message : '書き出しに失敗しました');
     } finally {
       setProgress(null);
+    }
+  };
+
+  /** 字幕が無ければ「字幕なし」は「字幕あり」と同じものになるので、作らない。 */
+  const batchVariants = EXPORT_VARIANTS.filter((v) => batchPicks.includes(v.key) && (v.key === 'captions' || captions > 0));
+  const wantNote = batchPicks.includes('note');
+  const togglePick = (key: VariantKey | 'note', on: boolean) =>
+    setBatchPicks((picks) => (on ? [...picks.filter((k) => k !== key), key] : picks.filter((k) => k !== key)));
+
+  /** 選んだ版を順に書き出して保存し、最後に投稿メモを作る。 */
+  const runBatch = async () => {
+    setErrorCode(null);
+    setErrorMessage(null);
+    setResult(null);
+    setSaved(false);
+    setBatchSaved([]);
+    setNote(null);
+    setCopied(false);
+    updateSettings({ exportAspect: aspect, exportQuality: quality, exportFormat: format, postTags: tagInput, batchVariants: batchPicks });
+    const total = batchVariants.length;
+    const savedNames: string[] = [];
+    try {
+      for (const [index, variant] of batchVariants.entries()) {
+        setBatchStep({ index, total, label: variant.label });
+        setProgress(0);
+        const output = await exporter.run(
+          project.name,
+          variantSequence(sequence, variant.key),
+          player,
+          { aspect, quality, fps, bitrate, format, finishAudio: frameAccurate && finishAudio, fast, tag: variant.tag },
+          setProgress,
+        );
+        await saveBlob(output.blob, output.filename);
+        savedNames.push(`${variant.label}: ${output.filename}（${formatBytes(output.blob.size)}）`);
+        setBatchSaved([...savedNames]);
+      }
+      if (wantNote) {
+        const text = postNote({
+          projectName: project.name,
+          title: titleOf(sequence),
+          tags: normalizeTags(tagInput),
+          script: captionScript(sequence),
+          duration,
+        });
+        setNote(text);
+        // iPad アプリの保存先はカメラロールなので、文字のファイルは送らない（画面のメモをコピーしてもらう）。
+        if (!isNativeHost()) {
+          const filename = exportFilename(project.name, aspect, 'txt', new Date(), 'post');
+          await saveBlob(new Blob([text], { type: 'text/plain;charset=utf-8' }), filename);
+          savedNames.push(`投稿メモ: ${filename}`);
+          setBatchSaved([...savedNames]);
+        }
+      }
+    } catch (e) {
+      const code = ((e as { code?: string }).code ?? 'unknown') as SaveErrorCode;
+      setErrorCode(code);
+      setErrorMessage(
+        code !== 'unknown' ? saveErrorMessage(code, 0) : e instanceof Error ? e.message : '書き出しに失敗しました',
+      );
+    } finally {
+      setProgress(null);
+      setBatchStep(null);
+    }
+  };
+
+  const copyNote = async () => {
+    if (!note) return;
+    try {
+      await navigator.clipboard.writeText(note);
+      setCopied(true);
+    } catch {
+      setCopied(false);
     }
   };
 
@@ -347,6 +437,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               <span style={{ width: `${Math.round((progress ?? 0) * 100)}%` }} />
             </div>
             <p className="muted">
+              {batchStep && `${batchStep.index + 1} / ${batchStep.total} 本目（${batchStep.label}）・`}
               {frameAccurate ? '書き出し中' : '収録中'}… {Math.round((progress ?? 0) * 100)}%
               {frameAccurate
                 ? '（1 コマずつ書き出しています。素材が重いと動画の長さより時間がかかりますが、そのぶんコマ落ちしません）'
@@ -357,9 +448,55 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             </button>
           </>
         ) : (
-          <button type="button" className="wide primary" disabled={!supported || duration <= 0} onClick={() => void run()}>
-            <Icon name="export" />書き出す
-          </button>
+          <>
+            <button type="button" className="wide primary" disabled={!supported || duration <= 0} onClick={() => void run()}>
+              <Icon name="export" />書き出す
+            </button>
+            <section className="batch-export">
+              <span className="field-label">まとめて書き出す</span>
+              <div className="chip-row wrap">
+                {EXPORT_VARIANTS.filter((v) => v.key === 'captions' || captions > 0).map((v) => (
+                  <Toggle key={v.key} label={v.label} checked={batchPicks.includes(v.key)} onChange={(on) => togglePick(v.key, on)} />
+                ))}
+                <Toggle label="投稿メモ（タイトル・タグ・字幕の全文）" checked={wantNote} onChange={(on) => togglePick('note', on)} />
+              </div>
+              {wantNote && (
+                <label className="field">
+                  <span className="field-label">
+                    タグ<span className="field-hint">空白で区切る。# は付けなくてよい（次も同じタグが入っています）</span>
+                  </span>
+                  <input type="text" value={tagInput} placeholder="例: ゲーム実況 切り抜き shorts" onChange={(e) => setTagInput(e.target.value)} />
+                </label>
+              )}
+              <button
+                type="button"
+                className="wide"
+                disabled={!supported || duration <= 0 || batchVariants.length + (wantNote ? 1 : 0) === 0}
+                onClick={() => void runBatch()}
+              >
+                <Icon name="export" />
+                まとめて書き出す（{[...batchVariants.map((v) => v.label), ...(wantNote ? ['投稿メモ'] : [])].join('・') || 'なし'}）
+              </button>
+            </section>
+          </>
+        )}
+        {batchSaved.length > 0 && !running && (
+          <div className="success-note">
+            保存しました:
+            <ul className="batch-saved">
+              {batchSaved.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {note && !running && (
+          <div className="batch-note">
+            <textarea readOnly value={note} rows={8} onFocus={(e) => e.currentTarget.select()} />
+            <button type="button" onClick={() => void copyNote()}>
+              {copied ? 'コピーしました' : '投稿メモをコピー'}
+            </button>
+          </div>
         )}
 
         {errorMessage && (

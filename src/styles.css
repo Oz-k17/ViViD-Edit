@@ -3589,3 +3589,29 @@ html.tl-zooming .tl-clip {
   align-items: center;
   flex-wrap: wrap;
 }
+
+/* まとめて書き出す */
+.batch-export {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.batch-saved {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  word-break: break-all;
+}
+.batch-note {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.batch-note textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 12px;
+  line-height: 1.6;
+}
