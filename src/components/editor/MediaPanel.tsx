@@ -10,6 +10,7 @@ import { pick, prune, sortAssets, type PickState } from '../../model/assetView';
 import { clipEnd } from '../../model/types';
 import { placeWithSound } from '../../model/links';
 import { useAssetView } from '../../store/assetView';
+import { DRAFT_MIN_SECONDS, DraftFinder } from './DraftFinder';
 import { BulkBar, SortControl, StripStatus, removeAssets, confirmRemoveAssets } from './AssetControls';
 import { startAssetDrag } from './assetDrag';
 import { BinTree, type BinSelection } from './BinTree';
@@ -272,6 +273,10 @@ export function MediaPanel() {
           </button>
         </div>
       )}
+
+      {selectedAssets.length === 1 &&
+        (selectedAssets[0].kind === 'video' || selectedAssets[0].kind === 'audio') &&
+        selectedAssets[0].duration >= DRAFT_MIN_SECONDS && <DraftFinder key={selectedAssets[0].id} asset={selectedAssets[0]} />}
 
       <BulkBar
         ids={picked.selected}

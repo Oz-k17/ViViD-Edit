@@ -405,6 +405,66 @@ eq('空文字', wrap('', 10), ['']);
   check('版の印は英数字', EXPORT_VARIANTS.every((v) => /^[a-z]+$/.test(v.tag)));
 }
 
+// ---- おまかせ下書き（見どころの候補・下書き） ----
+{
+  const { findHighlights, baselineLevels, buildDraft } = await import('../src/model/highlights.ts');
+  const { createSequence } = await import('../src/model/factory.ts');
+  const { partnerOf } = await import('../src/model/links.ts');
+  const { flattenNests } = await import('../src/model/nest.ts');
+
+  // 40 分の配信: ふだん -30dB（ゆらぎ ±2dB）、10 分目に +12dB の大笑い、25 分目に +7dB、
+  // 15〜20 分目はゲームの音で全体が +6dB（ふだんが上がるだけで、見どころではない）
+  let seed = 7;
+  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const n = 2400;
+  const levels = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let v = -30 + (rand() - 0.5) * 4;
+    if (i % 17 < 3) v = -55; // ときどきの間
+    if (i >= 900 && i < 1200) v += 6;
+    if (i >= 600 && i < 608) v = -18;
+    if (i >= 1500 && i < 1506) v = -23;
+    levels[i] = v;
+  }
+  const base = baselineLevels(levels);
+  check('ふだんの大きさは、ゲームの音が鳴る所で上がる', base[1050] > base[300] + 4, `${base[1050]} / ${base[300]}`);
+  const found = findHighlights(levels, { length: 45, count: 5 });
+  check('見どころが見つかる', found.length >= 2, String(found.length));
+  check('いちばん上は 10 分目の大笑い', found[0].start <= 600 && found[0].end > 607, JSON.stringify(found[0]));
+  check('2 番目は 25 分目', found[1].start <= 1500 && found[1].end > 1505, JSON.stringify(found[1]));
+  const h = found[0];
+  const at = (h.peak - h.start) / (h.end - h.start);
+  check('山は候補の後ろ寄り（前振りが入る）', at > 0.45 && at < 0.85, String(at));
+  check('長さはだいたい 45 秒', h.end - h.start >= 40 && h.end - h.start <= 51, String(h.end - h.start));
+  check('候補は重ならない', found.every((a, i) => found.every((b, j) => i === j || a.end <= b.start || b.end <= a.start)));
+  check('ゲームの音が大きいだけの所は、上に来ない', !found.slice(0, 2).some((f) => f.peak >= 900 && f.peak < 1200));
+  check('頭は静かな秒から始まる', levels[h.start] <= Math.min(...Array.from(levels.subarray(Math.max(0, h.start - 3), h.start + 4))) + 1e-6);
+  check('ずっと同じ調子なら候補は無し', findHighlights(new Float32Array(1200).fill(-30)).length === 0);
+  check('候補より短い録画なら無し', findHighlights(new Float32Array(20).fill(-30), { length: 45 }).length === 0);
+  check('数を絞れる', findHighlights(levels, { length: 30, count: 1 }).length === 1);
+
+  // 下書き
+  const seq = createSequence();
+  const asset = { id: 'stream', kind: 'video', duration: 2400, width: 1920, height: 1080 };
+  const plain = buildDraft(seq, asset, { start: 570, end: 615 }, { threeBand: false });
+  const pic = plain.clips.find((c) => c.kind === 'video');
+  check('下書きは候補の範囲を頭から置く', pic.start === 0 && pic.sourceIn === 570 && Math.abs(pic.duration - 45) < 1e-9);
+  check('音もつないで置く', partnerOf(plain, pic)?.kind === 'audio');
+  const keep = [{ start: 570, end: 585 }, { start: 590, end: 615 }];
+  const tight = buildDraft(seq, asset, { start: 570, end: 615 }, { threeBand: false, keep });
+  check('間を詰める（5 秒）', Math.abs(Math.max(...tight.clips.map((c) => c.start + c.duration)) - 40) < 0.01);
+  const kit = { bands: { top: { sx: 0, sy: 0, sw: 1, sh: 0.3 }, middle: { sx: 0.1, sy: 0.1, sw: 0.8, sh: 0.6 }, bottom: { sx: 0.75, sy: 0.75, sw: 0.25, sh: 0.25 } }, title: { color: '#ff00aa', role: 'design' } };
+  const three = buildDraft(seq, asset, { start: 570, end: 615 }, { threeBand: true, keep, kit, nestId: 'draft1' });
+  check('1 本にまとめる', three.clips.length === 1 && three.clips[0].id === 'draft1' && three.clips[0].kind === 'nest');
+  const flat = flattenNests(three);
+  const videos = flat.clips.filter((c) => c.kind === 'video');
+  check('詰めた 2 つがそれぞれ 3 分割になる', videos.length === 6, String(videos.length));
+  check('型の位置で切り抜く', videos.filter((c) => c.crop.dy > 0.6).every((c) => Math.abs(c.crop.sx + c.crop.sw - 1) < 1e-6));
+  const title = flat.clips.find((c) => c.kind === 'text');
+  check('見出しは型の体裁で、下書き全体に出る', title?.text.color === '#ff00aa' && Math.abs(title.duration - 40) < 0.01 && title.text.content === '見出しを入れる');
+  check('音は 1 本ぶんだけ鳴る', flat.clips.filter((c) => c.kind === 'audio').length === 2 && videos.filter((c) => !c.muted).length === 0);
+}
+
 // ---- 映像と音のつなぎ ----
 {
   const { placeWithSound, reconcileLinks, unlinkClips, partnerOf } = await import('../src/model/links.ts');

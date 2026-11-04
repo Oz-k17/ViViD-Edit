@@ -3615,3 +3615,60 @@ html.tl-zooming .tl-clip {
   font-size: 12px;
   line-height: 1.6;
 }
+
+/* おまかせ下書き */
+.draft-finder {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.draft-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.draft-preview {
+  width: 100%;
+  max-height: 180px;
+  background: #000;
+  border-radius: var(--radius-xs, 4px);
+}
+.draft-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.draft-list > li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.draft-list > li.active {
+  border-color: var(--accent);
+}
+.draft-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+.draft-time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.draft-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
