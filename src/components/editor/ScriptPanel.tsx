@@ -9,6 +9,7 @@
  * 行を押すと、そのクリップを選んで頭出しする（プレビューで形を確かめながら直せる）。
  */
 
+import { LearnedNote, useCaptionLearning } from './useCaptionLearning';
 import { useMemo } from 'react';
 import { formatTime, mediaRegistry } from '../../engine/media';
 import { player } from '../../engine/player';
@@ -24,6 +25,7 @@ const SPEAKER_DOT: Record<string, string> = { '1': '#5cd6ff', '2': '#c084fc' };
 
 export function ScriptPanel() {
   const { sequence, selection, setSelection, apply } = useEditor();
+  const learning = useCaptionLearning();
 
   const { texts, audios, visuals } = useMemo(() => {
     const sorted = [...sequence.clips].sort((a, b) => a.start - b.start || a.trackId.localeCompare(b.trackId));
@@ -62,6 +64,7 @@ export function ScriptPanel() {
         </EmptyHint>
       ) : (
         <>
+          <LearnedNote learned={learning.learned} forget={learning.forget} />
           <Section label="テロップ" count={texts.length}>
             {texts.map((clip) => {
               const content = clip.text?.content ?? '';
@@ -95,7 +98,11 @@ export function ScriptPanel() {
                     value={content}
                     rows={Math.min(4, content.split('\n').length)}
                     onChange={(e) => write(clip, e.target.value)}
-                    onFocus={() => pick(clip)}
+                    onFocus={() => {
+                      pick(clip);
+                      learning.begin(clip);
+                    }}
+                    onBlur={(e) => learning.finish(clip, e.target.value)}
                   />
                 </li>
               );

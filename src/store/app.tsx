@@ -8,6 +8,7 @@ import { setLang, type Lang } from '../i18n';
 import { uid } from '../model/factory';
 import type { AspectKey, Sequence, TextProps } from '../model/types';
 import type { Kit } from '../model/kit';
+import { addEntry, countHits, type DictEntry } from '../model/dictionary';
 import { migrateStorageKey } from './storage';
 import {
   currentProfile,
@@ -354,6 +355,7 @@ export type Template = TextTemplate | LayoutTemplate | KitTemplate;
 // 使う人ごとに分ける。既定の人は昔のキーのまま（`profile.ts` を見よ）。
 const SETTINGS_KEY = scopedKey('vivid.settings');
 const TEMPLATES_KEY = scopedKey('vivid.templates');
+const DICTIONARY_KEY = scopedKey('vivid.dictionary');
 
 // 旧名で保存されていた分を引き継ぐ（アプリ名変更にともなう一度きりの処理）。
 migrateStorageKey('tateyoko.settings', SETTINGS_KEY);
@@ -420,6 +422,13 @@ interface AppApi {
   ) => Template;
   removeTemplate: (id: string) => void;
   renameTemplate: (id: string, name: string) => void;
+  /** わたし辞書（字幕の直し）。model/dictionary.ts。 */
+  dictionary: DictEntry[];
+  /** 直しを覚える（同じ前の言葉があれば置き換える）。 */
+  learnWord: (from: string, to: string) => void;
+  removeWord: (from: string) => void;
+  /** 当てた回数を足す。 */
+  recordHits: (counts: Map<string, number>) => void;
 }
 
 const AppContext = createContext<AppApi | null>(null);
@@ -471,6 +480,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     save(TEMPLATES_KEY, templates);
   }, [templates]);
+
+  const [dictionary, setDictionary] = useState<DictEntry[]>(() => {
+    try {
+      const raw = localStorage.getItem(DICTIONARY_KEY);
+      const parsed = raw ? (JSON.parse(raw) as DictEntry[]) : [];
+      return Array.isArray(parsed) ? parsed.filter((e) => typeof e?.from === 'string' && typeof e?.to === 'string') : [];
+    } catch {
+      return [];
+    }
+  });
+  useEffect(() => {
+    save(DICTIONARY_KEY, dictionary);
+  }, [dictionary]);
+  const learnWord = useCallback((from: string, to: string) => {
+    if (!from) return;
+    setDictionary((prev) => addEntry(prev, from, to));
+  }, []);
+  const removeWord = useCallback((from: string) => {
+    setDictionary((prev) => prev.filter((e) => e.from !== from));
+  }, []);
+  const recordHits = useCallback((counts: Map<string, number>) => {
+    if (counts.size === 0) return;
+    setDictionary((prev) => countHits(prev, counts));
+  }, []);
 
   useEffect(() => {
     saveMediaRoots(mediaRoots);
@@ -567,6 +600,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addTemplate,
       removeTemplate,
       renameTemplate,
+      dictionary,
+      learnWord,
+      removeWord,
+      recordHits,
       profile,
       profiles,
       switchProfile,
@@ -587,6 +624,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addTemplate,
       removeTemplate,
       renameTemplate,
+      dictionary,
+      learnWord,
+      removeWord,
+      recordHits,
       profile,
       profiles,
       switchProfile,

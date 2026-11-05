@@ -465,6 +465,44 @@ eq('空文字', wrap('', 10), ['']);
   check('音は 1 本ぶんだけ鳴る', flat.clips.filter((c) => c.kind === 'audio').length === 2 && videos.filter((c) => !c.muted).length === 0);
 }
 
+// ---- わたし辞書 ----
+{
+  const { learnCorrection, addEntry, applyDictionary, applyToCaptions, countHits } = await import('../src/model/dictionary.ts');
+  const { createSequence, textClip } = await import('../src/model/factory.ts');
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  check('名前の直しを覚える', eq(learnCorrection('今日はりくさんと遊ぶ', '今日は陸さんと遊ぶ'), { from: 'りく', to: '陸' }));
+  check('1 文字の直しは前後を含めて覚える', eq(learnCorrection('また会うよ', 'また合うよ'), { from: 'た会う', to: 'た合う' }), JSON.stringify(learnCorrection('また会うよ', 'また合うよ')));
+  check('足しただけは覚えない', learnCorrection('そうだね', 'そうだね。') === null);
+  check('1 文字消しただけは覚えない', learnCorrection('そうだねえ', 'そうだね') === null);
+  check('口癖を消したのは覚える', eq(learnCorrection('えーとそれでね', 'それでね'), { from: 'えーと', to: '' }));
+  check('改行の位置を変えただけは覚えない', learnCorrection('ただ喋れば\nいい', 'ただ喋れば いい') === null);
+  check('行を丸ごと書き直したのは覚えない', learnCorrection('今日はいい天気', 'あしたも晴れるかな') === null);
+  check('同じなら覚えない', learnCorrection('同じ', '同じ') === null);
+
+  let dict = addEntry([], 'りく', '陸', 1);
+  dict = addEntry(dict, 'えーと', '', 2);
+  dict = addEntry(dict, 'りく', '陸くん', 3);
+  check('同じ言葉は新しい直しで置き換える', dict.length === 2 && dict.find((e) => e.from === 'りく').to === '陸くん');
+  check('直しを打ち消すと辞書から外れる', addEntry(dict, '陸くん', 'りく').length === 1);
+
+  const r = applyDictionary('えーとりくとりくで', dict);
+  check('辞書を当てる', r.text === '陸くんと陸くんで', r.text);
+  check('当てた回数を数える', r.counts.get('りく') === 2 && r.counts.get('えーと') === 1);
+  check('回数を辞書に足す', countHits(dict, r.counts).find((e) => e.from === 'りく').hits === 2);
+  const chain = applyDictionary('AB', [{ from: 'A', to: 'B', hits: 0, createdAt: 0 }, { from: 'B', to: 'C', hits: 0, createdAt: 0 }]);
+  check('直した所を 2 度は直さない', chain.text === 'BC', chain.text);
+  check('長い言葉から当てる', applyDictionary('東京タワー', [{ from: '東京', to: 'X', hits: 0, createdAt: 0 }, { from: '東京タワー', to: 'Y', hits: 0, createdAt: 0 }]).text === 'Y');
+
+  const base = createSequence();
+  const tt = base.tracks.find((t) => t.kind === 'text');
+  const seq = { ...base, clips: [textClip(tt.id, 0, 2, { content: 'りくだよ', role: 'caption' }), textClip(tt.id, 0, 2, { content: 'りくの部屋', role: 'design' }), textClip(tt.id, 2, 2, { content: 'こんにちは' })] };
+  const applied = applyToCaptions(seq, dict);
+  check('タイムラインの字幕に当てる', applied.changed === 1 && applied.sequence.clips[0].text.content === '陸くんだよ');
+  check('見出しには当てない', applied.sequence.clips[1].text.content === 'りくの部屋');
+  check('直す所が無ければ同じもの', applyToCaptions(seq, []).sequence === seq);
+}
+
 // ---- 映像と音のつなぎ ----
 {
   const { placeWithSound, reconcileLinks, unlinkClips, partnerOf } = await import('../src/model/links.ts');

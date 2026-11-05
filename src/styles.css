@@ -3672,3 +3672,26 @@ html.tl-zooming .tl-clip {
   align-items: center;
   gap: 6px;
 }
+
+/* わたし辞書 */
+.dict-pair {
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-all;
+}
+.dict-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.dict-add input {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+.learned-note .link {
+  margin-left: 6px;
+}
+.template-list.dictionary-list li {
+  grid-template-columns: 1fr auto auto;
+}

@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { applyToCaptions } from '../model/dictionary';
 import { useNavigate } from '../router';
 import { LayoutToggle } from '../components/LayoutToggle';
 import { Brand, SiteNav } from '../components/SiteNav';
@@ -9,7 +11,20 @@ import { useApp, type Template } from '../store/app';
 import { useEditor } from '../store/editor';
 
 export default function TemplatesPage() {
-  const { templates, removeTemplate, renameTemplate } = useApp();
+  const { templates, removeTemplate, renameTemplate, dictionary, learnWord, removeWord, recordHits } = useApp();
+  const [newFrom, setNewFrom] = useState('');
+  const [newTo, setNewTo] = useState('');
+  const [applied, setApplied] = useState<string | null>(null);
+  const applyDict = () => {
+    // 外のタイムラインごと当てる（まとめたクリップの中の字幕は、中に入って当てる）。
+    const result = applyToCaptions(sequence, dictionary);
+    if (result.changed > 0) {
+      apply(() => result.sequence);
+      recordHits(result.counts);
+    }
+    const total = [...result.counts.values()].reduce((a, b) => a + b, 0);
+    setApplied(result.changed > 0 ? `字幕 ${result.changed} 行・${total} か所を直しました。` : '直す所はありませんでした。');
+  };
   const { project, sequence, apply, dispatch, selection, setSelection } = useEditor();
   const navigate = useNavigate();
 
@@ -53,6 +68,49 @@ export default function TemplatesPage() {
       </header>
 
       <main className="page-body">
+        <Panel title={`わたし辞書（${dictionary.length}）`}>
+          <p className="empty-hint">
+            字幕を手で直すと、その直しをここに覚えます。次に音から字幕を起こしたとき、自動で直します（見出しや飾りの文字には当てません）。
+          </p>
+          {dictionary.length > 0 && (
+            <ul className="template-list dictionary-list">
+              {[...dictionary].reverse().map((entry) => (
+                <li key={entry.from}>
+                  <span className="dict-pair">
+                    <span>{entry.from}</span> → <strong>{entry.to || '（消す）'}</strong>
+                  </span>
+                  <span className="muted">{entry.hits > 0 ? `${entry.hits} 回直した` : 'まだ使っていない'}</span>
+                  <button type="button" className="danger" onClick={() => removeWord(entry.from)}>
+                    削除
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="dict-add">
+            <input type="text" value={newFrom} placeholder="間違える言葉" aria-label="間違える言葉" onChange={(e) => setNewFrom(e.target.value)} />
+            <span aria-hidden="true">→</span>
+            <input type="text" value={newTo} placeholder="正しい言葉" aria-label="正しい言葉" onChange={(e) => setNewTo(e.target.value)} />
+            <button
+              type="button"
+              disabled={!newFrom.trim() || newFrom === newTo}
+              onClick={() => {
+                learnWord(newFrom.trim(), newTo.trim());
+                setNewFrom('');
+                setNewTo('');
+              }}
+            >
+              足す
+            </button>
+          </div>
+          {dictionary.length > 0 && (
+            <button type="button" className="wide" onClick={applyDict}>
+              いまのタイムラインの字幕に当てる
+            </button>
+          )}
+          {applied && <p className="muted small">{applied}（エディタの「戻す」で戻せます）</p>}
+        </Panel>
+
         <Panel title={`自分の型（${kitTemplates.length}）`}>
           {kitTemplates.length === 0 ? (
             <p className="empty-hint">

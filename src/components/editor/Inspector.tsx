@@ -59,6 +59,8 @@ import { ButtonField, ColorInput, EmptyHint, Field, MuteIcon, Panel, Segmented, 
 import { importFiles, useMediaAssets } from './MediaPanel';
 import { Icon } from '../Icon';
 import { AnalysisSection } from './AnalysisSection';
+import { LearnedNote, useCaptionLearning } from './useCaptionLearning';
+import { applyDictionary, mergeCounts } from '../../model/dictionary';
 import { TRANSITION_ICON } from './transitionIcon';
 
 type TabKey = 'props' | 'effects' | 'text' | 'emoji';
@@ -264,6 +266,7 @@ function CaptionPanel() {
  */
 function TranscriptSection() {
   const { apply } = useEditor();
+  const { dictionary, recordHits } = useApp();
   const [preset, setPreset] = useState('tv');
   const [maxChars, setMaxChars] = useState(24);
   const [extendShort, setExtendShort] = useState(true);
@@ -272,7 +275,19 @@ function TranscriptSection() {
 
   /** 整えて置き、やったことをそのまま知らせる。 */
   const place = (cues: Parameters<typeof tidyCues>[0], label: string, extra = '') => {
-    const tidy = tidyCues(cues, { maxChars, extendShort });
+    const tidied = tidyCues(cues, { maxChars, extendShort });
+    // わたし辞書の直しを当ててから置く（いつも同じように間違える名前や用語を、毎回直さなくてよいように）。
+    const counts = new Map<string, number>();
+    const tidy = {
+      ...tidied,
+      cues: tidied.cues.map((cue) => {
+        const fixed = applyDictionary(cue.text, dictionary);
+        mergeCounts(counts, fixed.counts);
+        return fixed.text === cue.text ? cue : { ...cue, text: fixed.text };
+      }),
+    };
+    recordHits(counts);
+    const fixedCount = [...counts.values()].reduce((a, b) => a + b, 0);
     const style = TEXT_PRESETS.find((p) => p.key === preset)?.text;
     apply((seq) =>
       buildCaptionClips(seq, tidy.cues, SPEAKERS, {
@@ -282,6 +297,7 @@ function TranscriptSection() {
       }),
     );
     const parts = [`${tidy.cues.length} 行を置きました`];
+    if (fixedCount > 0) parts.push(`わたし辞書で ${fixedCount} か所直しました`);
     if (tidy.split > 0) parts.push(`長い行を割って ${tidy.split} 行ぶん増えました`);
     if (tidy.extended > 0) parts.push(`短い行を ${tidy.extended} 行伸ばしました`);
     if (tidy.stillShort > 0) parts.push(`${tidy.stillShort} 行は次の行が近く、読める長さに届いていません`);
@@ -1312,6 +1328,7 @@ function previewEntrance(clip: Clip, animationSeconds: number) {
 
 function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; cursorRef: CursorRef }) {
   const patch = useClipPatch(clip);
+  const learning = useCaptionLearning();
   const { addTemplate } = useApp();
   const easy = useEasy();
   const set = (changes: Partial<TextProps>, key?: string) => patch({ text: { ...text, ...changes } }, key);
@@ -1327,6 +1344,8 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
         rows={3}
         value={text.content}
         placeholder="ここに文字を入力"
+        onFocus={() => learning.begin(clip)}
+        onBlur={(e) => learning.finish(clip, e.target.value)}
         onChange={(e) => {
           set({ content: e.target.value }, 'content');
           cursorRef.current = { clipId: clip.id, pos: e.target.selectionStart };
@@ -1335,6 +1354,7 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
         onClick={trackCursor}
         onKeyUp={trackCursor}
       />
+      <LearnedNote learned={learning.learned} forget={learning.forget} />
 
       <Field label="スタイル">
         <div className="chip-row wrap">
