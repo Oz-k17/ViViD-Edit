@@ -1,10 +1,29 @@
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties, MouseEvent, ReactNode } from 'react';
 import { useDockGrip } from './editor/PanelDock';
 import { Icon } from './Icon';
 
+/**
+ * <label> は、見出しの文字を押されると、中の最初の操作部品へ押下を渡す。
+ * 文字の入力欄やスライダーならそれで便利（そこへ移る）だが、ボタンやチェックだと「押した」ことになり、
+ * 見出しを触っただけで 1080p が選ばれる・切り替えが入る、といったことが起きる（iPad の指では特に触りやすい）。
+ * そういう部品が相手のときは、見出しの文字からの押下を渡さない。
+ */
+function keepLabelClickToSelf(e: MouseEvent<HTMLLabelElement>) {
+  const target = e.target as HTMLElement;
+  if (target.closest('button, input, select, textarea, a, [role="button"], [role="tab"]')) return;
+  // 中に入れ子になった <label>（Toggle など）を押したときは、その部品の振る舞いのままにする。
+  if (target.closest('label') !== e.currentTarget) return;
+  const control = e.currentTarget.querySelector('button, input, select, textarea');
+  if (!control) return;
+  const type = control instanceof HTMLInputElement ? control.type : '';
+  if (control.tagName === 'BUTTON' || type === 'checkbox' || type === 'radio' || type === 'button' || type === 'submit') {
+    e.preventDefault();
+  }
+}
+
 export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
-    <label className="field">
+    <label className="field" onClick={keepLabelClickToSelf}>
       <span className="field-label">
         {label}
         {hint && <span className="field-hint">{hint}</span>}
