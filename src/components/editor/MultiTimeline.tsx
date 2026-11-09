@@ -62,7 +62,9 @@ export function laneHeight(track: Track, compact = false, scale = 1): number {
  * 縮めて一度に多く見られるようにする。設定（timelineRowScale）に覚える。
  */
 export const ROW_SCALES = [0.4, 0.55, 0.7, 0.85, 1, 1.25, 1.5, 2];
-const RowScaleContext = createContext(1);
+/** 既定の倍率。いちばん低い段から 2 段上（使う人の希望。トラックが多くても一度に見えるように）。 */
+export const DEFAULT_ROW_SCALE = ROW_SCALES[2];
+const RowScaleContext = createContext(DEFAULT_ROW_SCALE);
 
 /** 倍率の段を 1 つ上げ下げする。 */
 export function stepRowScale(current: number, direction: 1 | -1): number {
@@ -139,7 +141,7 @@ interface Props {
 export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }: Props) {
   const { sequence, rootSequence, nestPath, exitNest, apply, selection, setSelection, editMode, setEditMode, insertMode, setInsertMode, markIn, markOut } = useEditor();
   const { settings, updateSettings } = useApp();
-  const rowScale = settings.timelineRowScale ?? 1;
+  const rowScale = settings.timelineRowScale ?? DEFAULT_ROW_SCALE;
   noteClips(sequence.clips);
   const easy = settings.uiMode === 'easy';
   // 「かんたん」では編集モードの切り替えを隠す。前に選んだモードが残って、見えないまま効かないよう通常へ戻す。
