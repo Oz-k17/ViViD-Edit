@@ -246,6 +246,20 @@ textarea {
   font-size: var(--ios-callout);
 }
 
+/*
+ * 選ぶ欄の一覧（ブラウザが描く）。欄の地は半透明なので、Windows の Chrome などは一覧の地を
+ * それから作って明るい灰色にし、文字（白）が読めなくなる。一覧の地と文字をはっきり決める。
+ */
+select option,
+select optgroup {
+  background-color: var(--bg-raised);
+  color: var(--text);
+}
+
+select option:disabled {
+  color: var(--text-dim);
+}
+
 input[type='text']:focus-visible,
 input[type='search']:focus-visible,
 input[type='number']:focus-visible,
