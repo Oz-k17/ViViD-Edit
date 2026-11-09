@@ -547,6 +547,60 @@ eq('空文字', wrap('', 10), ['']);
   check('まとめたクリップでなければ何もしない', removeRangesInNest(seq, after.id, cuts).sequence === seq);
 }
 
+// ---- まとめたクリップを外から切ると、中身にも移る ----
+{
+  const { bakeNests, nestClips, nestedLength, flattenNests, joinClips, canJoin } = await import('../src/model/nest.ts');
+  const { buildThreeBand } = await import('../src/model/threeBand.ts');
+  const { placeWithSound, reconcileLinks, partnerOf } = await import('../src/model/links.ts');
+  const { createSequence, clipFromAsset } = await import('../src/model/factory.ts');
+  const { tracksOf, splitAt, trimClip, removeClips } = await import('../src/model/ops.ts');
+
+  /** アプリの apply と同じ: 操作 → 中身へ移す → つなぎを揃える。 */
+  const run = (seq, fn) => reconcileLinks(seq, bakeNests(fn(seq)));
+  const base = createSequence();
+  const v1 = tracksOf(base, 'video')[0];
+  let seq = placeWithSound(base, [{ ...clipFromAsset({ id: 'talk', kind: 'video', duration: 20 }, v1.id, 0), duration: 8 }], false, () => true);
+  seq = buildThreeBand(seq, seq.clips.find((c) => c.kind === 'video'), { width: 1920, height: 1080 }, { titleStyle: { content: '見出し', role: 'design' }, titleText: '見出し' });
+  seq = nestClips(seq, seq.clips.map((c) => c.id), '3分割', 'n1').sequence;
+  const look = (s) => flattenNests(s).clips.filter((c) => c.kind !== 'text').map((c) => [c.kind, +c.start.toFixed(4), +c.duration.toFixed(4), +c.sourceIn.toFixed(4)]).sort().join('|');
+
+  const split = run(seq, (s) => splitAt(s, 3, ['n1']));
+  const [left, right] = split.clips.filter((c) => c.kind === 'nest').sort((a, b) => a.start - b.start);
+  check('分割すると、左の中身は頭の 3 秒だけ', Math.abs(nestedLength(left) - 3) < 1e-6 && left.sourceIn === 0, String(nestedLength(left)));
+  check('右の中身は残りの 5 秒だけ（頭は 0 から）', Math.abs(nestedLength(right) - 5) < 1e-6 && right.sourceIn === 0 && Math.min(...right.nested.clips.map((c) => c.start)) === 0);
+  const rightBand = right.nested.clips.find((c) => c.kind === 'video');
+  check('右の中身の帯は、素材の 3 秒目から', Math.abs(rightBand.sourceIn - 3) < 1e-6, String(rightBand.sourceIn));
+  check('見た目は、中身へ移す前と同じ', look(split) === look(splitAt(seq, 3, ['n1'])), `${look(split)}\n${look(splitAt(seq, 3, ['n1']))}`);
+  check('中の映像と音のつなぎが保たれる', [left, right].every((n) => n.nested.clips.filter((c) => c.kind === 'audio').every((a) => partnerOf(n.nested, a)?.kind === 'video')));
+  check('見出しも切った所で分かれる', left.nested.clips.some((c) => c.kind === 'text' && Math.abs(c.duration - 3) < 1e-6) && right.nested.clips.some((c) => c.kind === 'text' && c.start === 0 && Math.abs(c.duration - 5) < 1e-6));
+
+  const trimmed = run(seq, (s) => trimClip(s, 'n1', 'left', 2));
+  const t = trimmed.clips.find((c) => c.id === 'n1');
+  check('左を詰めると、中身も頭が詰まる', t.sourceIn === 0 && Math.abs(nestedLength(t) - 6) < 1e-6, `${t.sourceIn} ${nestedLength(t)}`);
+  check('詰めたあとの見た目は同じ', look(trimmed) === look(trimClip(seq, 'n1', 'left', 2)));
+
+  const deleted = run(split, (s) => removeClips(s, [left.id], true));
+  const only = deleted.clips.filter((c) => c.kind === 'nest');
+  check('左を消すと、右の中身だけが残る', only.length === 1 && Math.abs(nestedLength(only[0]) - 5) < 1e-6);
+
+  check('分割した 2 本は繋げる', canJoin(left, right));
+  const joined = run(split, (s) => joinClips(s, [left.id, right.id]));
+  const j = joined.clips.filter((c) => c.kind === 'nest');
+  check('繋ぐと 1 本・中身も 8 秒に戻る', j.length === 1 && Math.abs(j[0].duration - 8) < 1e-6 && Math.abs(nestedLength(j[0]) - 8) < 1e-6);
+  check('繋いだ見た目は元と同じ', look(joined) === look(seq), `${look(joined)}\n${look(seq)}`);
+  check('繋ぐと中身の切れ目も消える（帯 3 本・音 1 本・見出し 1 枚）', j[0].nested.clips.filter((c) => c.kind === 'video').length === 3 && j[0].nested.clips.filter((c) => c.kind === 'audio').length === 1 && j[0].nested.clips.filter((c) => c.kind === 'text').length === 1);
+  check('繋いだ中身のつなぎも保たれる', j[0].nested.clips.filter((c) => c.kind === 'audio').every((x) => partnerOf(j[0].nested, x)?.kind === 'video'));
+
+  // まとめの中のまとめ
+  const extra = { ...clipFromAsset({ id: 'more', kind: 'video', duration: 4 }, v1.id, 8), id: 'extra' };
+  let deep = nestClips({ ...seq, clips: [...seq.clips, extra] }, ['n1', 'extra'], '外', 'outer').sequence;
+  deep = run(deep, (s) => splitAt(s, 5, ['outer']));
+  const outerRight = deep.clips.filter((c) => c.kind === 'nest').sort((a, b) => b.start - a.start)[0];
+  const innerNest = outerRight.nested.clips.find((c) => c.kind === 'nest');
+  check('まとめの中のまとめも切り直す', innerNest.sourceIn === 0 && Math.abs(nestedLength(innerNest) - 3) < 1e-6, `${innerNest.sourceIn} ${nestedLength(innerNest)}`);
+  check('ずれが無ければ同じもの', bakeNests(seq) === seq);
+}
+
 // ---- 映像と音のつなぎ ----
 {
   const { placeWithSound, reconcileLinks, unlinkClips, partnerOf } = await import('../src/model/links.ts');

@@ -18,7 +18,7 @@ import {
 } from 'react';
 import type { EditMode } from '../model/editModes';
 import { reconcileLinks } from '../model/links';
-import { sequenceAt, updateAt } from '../model/nest';
+import { bakeNests, sequenceAt, updateAt } from '../model/nest';
 import { createProject } from '../model/factory';
 import { ASPECT_PRESETS, type AspectKey, type Project, type Sequence } from '../model/types';
 import { migrateStorageKey } from './storage';
@@ -99,7 +99,8 @@ function reducer(state: State, action: Action): State {
     }
     case 'apply': {
       // つないだ映像と音は、どの操作のあとでも揃え直す（片方だけ動いたら、もう片方も合わせる）。
-      const sequence = reconcileLinks(state.project.sequence, action.fn(state.project.sequence));
+      // 外でまとめたクリップを切ったり詰めたりしたら、中身も見えている所だけにする（bakeNests）。
+      const sequence = reconcileLinks(state.project.sequence, bakeNests(action.fn(state.project.sequence)));
       if (sequence === state.project.sequence) return state;
       return commit(state, { ...state.project, sequence }, action.key);
     }
@@ -210,7 +211,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       return;
     }
     // 中に入っているときは、中身だけを書き換える（つないだ映像と音の揃え直しも、中身の中で行う）。
-    dispatch({ type: 'apply', fn: (root) => updateAt(root, path, (inner) => reconcileLinks(inner, fn(inner))), key });
+    // 中のまとめたクリップを切ったときも、その中身へ移す（bakeNests）。
+    dispatch({ type: 'apply', fn: (root) => updateAt(root, path, (inner) => reconcileLinks(inner, bakeNests(fn(inner)))), key });
   }, []);
 
   const enterNest = useCallback((id: string) => {

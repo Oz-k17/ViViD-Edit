@@ -227,7 +227,9 @@ export function updateAt(root: Sequence, path: string[], fn: (inner: Sequence) =
 
 /** 2 本が「切ったものを繋ぐ」で 1 本に戻せるか（同じ素材・同じ種類・隣り合う・素材の時間も続いている）。 */
 export function canJoin(a: Clip, b: Clip): boolean {
-  if (a.kind !== b.kind || a.trackId !== b.trackId || a.kind === 'text' || a.kind === 'nest') return false;
+  if (a.kind !== b.kind || a.trackId !== b.trackId || a.kind === 'text') return false;
+  // まとめたクリップどうしは、隣り合っていれば繋げる（中身を前の後ろへ続ける）。
+  if (a.kind === 'nest') return !!a.nested && !!b.nested && Math.abs(clipEnd(a) - b.start) <= 0.02;
   if (a.mediaId !== b.mediaId || !a.mediaId) return false;
   if (Math.abs(clipEnd(a) - b.start) > 0.02) return false;
   if (a.kind === 'image') return true;
@@ -251,7 +253,10 @@ export function joinClips(sequence: Sequence, picked: string[]): Sequence {
     for (const clip of run) {
       if (head && canJoin(head, clip)) {
         // 前の 1 本を伸ばして、後ろの 1 本を消す。終わりのフェードは後ろのものを引き継ぐ。
-        head = { ...head, duration: clipEnd(clip) - head.start, fadeOut: clip.fadeOut };
+        head =
+          head.kind === 'nest'
+            ? { ...head, sourceIn: 0, duration: clipEnd(clip) - head.start, fadeOut: clip.fadeOut, nested: concatNested(head, clip) }
+            : { ...head, duration: clipEnd(clip) - head.start, fadeOut: clip.fadeOut };
         changed.set(head.id, head);
         removed.add(clip.id);
       } else {
@@ -265,3 +270,91 @@ export function joinClips(sequence: Sequence, picked: string[]): Sequence {
     clips: sequence.clips.filter((c) => !removed.has(c.id)).map((c) => changed.get(c.id) ?? c),
   };
 }
+
+/**
+ * 中身を [a, b)（中身の秒）だけ切り出し、頭を 0 にした中身。
+ * はみ出したクリップは端で切る（映像・音・まとめたクリップは、切った分だけ素材の頭もずらす）。
+ * 中にまとめたクリップがあれば、それも切り出し直す。
+ */
+export function sliceNested(inner: Sequence, a: number, b: number): Sequence {
+  const clips: Clip[] = [];
+  for (const c of inner.clips) {
+    const end = clipEnd(c);
+    if (end <= a + EPS || c.start >= b - EPS) continue;
+    const from = Math.max(c.start, a);
+    const to = Math.min(end, b);
+    const head = from - c.start;
+    const tail = end - to;
+    const shift = c.kind === 'video' || c.kind === 'audio' ? head * (c.speed || 1) : c.kind === 'nest' ? head : 0;
+    clips.push({
+      ...c,
+      start: from - a,
+      duration: to - from,
+      sourceIn: c.sourceIn + shift,
+      // 切った側のフェードと切り替え効果は、もう端ではないので外す。
+      ...(head > EPS ? { fadeIn: 0, transitionIn: { type: 'none' as const, duration: c.transitionIn?.duration ?? 0.5 } } : {}),
+      ...(tail > EPS ? { fadeOut: 0 } : {}),
+    });
+  }
+  return bakeNests({ ...inner, clips });
+}
+
+/**
+ * 外から切った・詰めたまとめたクリップの、中身を見えている所だけにする（外での切り方を中身へ移す）。
+ * まとめたクリップは「中身のどこからどれだけ見せるか」（`sourceIn`・`duration`）を持つので、
+ * 外で分割すると 2 本とも中身を丸ごと持ったままになり、中に入ると切ったはずの所まで並んでいた。
+ * 見えている範囲と中身の長さがずれているものだけ作り直す。ずれが無ければ同じ Sequence を返す。
+ */
+export function bakeNests(sequence: Sequence): Sequence {
+  let changed = false;
+  const clips = sequence.clips.map((c) => {
+    if (c.kind !== 'nest' || !c.nested) return c;
+    const length = nestedLength(c);
+    if (c.sourceIn <= EPS && Math.abs(c.duration - length) <= EPS) return c;
+    changed = true;
+    return { ...c, sourceIn: 0, nested: sliceNested(c.nested, c.sourceIn, c.sourceIn + c.duration) };
+  });
+  return changed ? { ...sequence, clips } : sequence;
+}
+
+/** 2 本のまとめたクリップの中身を、前の後ろへ続けてつなぐ（分割を戻す）。 */
+function concatNested(a: Clip, b: Clip): Sequence {
+  const first = sliceNested(a.nested!, a.sourceIn, a.sourceIn + a.duration);
+  const second = sliceNested(b.nested!, b.sourceIn, b.sourceIn + b.duration);
+  const tracks = [...first.tracks];
+  for (const t of second.tracks) if (!tracks.some((x) => x.id === t.id)) tracks.push(t);
+  const ids = new Set(first.clips.map((c) => c.id));
+  const moved = second.clips.map((c) => ({ ...c, id: ids.has(c.id) ? uid('cl') : c.id, start: c.start + a.duration }));
+  const joinedSeq: Sequence = { ...first, tracks, clips: [...first.clips, ...moved] };
+  // 分割で 2 つに分かれた中身を、つなぎ目で 1 本に戻す（映像・音は joinClips、文字は同じ体裁で隣り合うもの）。
+  const media = joinClips(joinedSeq, joinedSeq.clips.map((c) => c.id));
+  return mergeTouchingTexts(media);
+}
+
+/** 同じトラックで隣り合い、文字も体裁も同じテロップを 1 枚にする。 */
+function mergeTouchingTexts(sequence: Sequence): Sequence {
+  const removed = new Set<string>();
+  const changed = new Map<string, Clip>();
+  for (const track of sequence.tracks) {
+    let head: Clip | null = null;
+    for (const clip of clipsOnTrack(sequence, track.id)) {
+      if (
+        head &&
+        clip.kind === 'text' &&
+        head.kind === 'text' &&
+        Math.abs(clipEnd(head) - clip.start) <= 0.02 &&
+        JSON.stringify(head.text) === JSON.stringify(clip.text)
+      ) {
+        const grown: Clip = { ...(head as Clip), duration: clipEnd(clip) - head.start, fadeOut: clip.fadeOut };
+        changed.set(grown.id, grown);
+        removed.add(clip.id);
+        head = grown;
+      } else {
+        head = clip;
+      }
+    }
+  }
+  if (removed.size === 0) return sequence;
+  return { ...sequence, clips: sequence.clips.filter((c) => !removed.has(c.id)).map((c) => changed.get(c.id) ?? c) };
+}
+
