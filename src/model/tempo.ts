@@ -11,7 +11,7 @@
  */
 
 import { reconcileLinks } from './links';
-import { removeClips, splitAt } from './ops';
+import { carve, removeClips, splitAt } from './ops';
 import type { Clip, Sequence } from './types';
 
 export interface TimeRange {
@@ -109,3 +109,64 @@ export function removeRanges(sequence: Sequence, clipId: string, cuts: TimeRange
   }
   return { sequence: seq, removed, count };
 }
+
+const EPS = 1e-6;
+
+/**
+ * 中身のすべてのトラックから、範囲 [a, b)（中身の秒）を取り除いて詰める。
+ * 映像・音は割って取り除く（つないだ映像と音は同じに割れる）。文字と画像は割らずに縮める
+ * （見出しのように全体にかかる文字が、切れ目ごとに何枚にも分かれないように）。
+ */
+function rippleCutAll(inner: Sequence, a: number, b: number): Sequence {
+  const d = b - a;
+  if (d <= EPS) return inner;
+  const clips: Clip[] = [];
+  for (const c of inner.clips) {
+    const end = c.start + c.duration;
+    if (end <= a + EPS) {
+      clips.push(c);
+    } else if (c.start >= b - EPS) {
+      clips.push({ ...c, start: c.start - d });
+    } else if (c.kind === 'video' || c.kind === 'audio') {
+      for (const piece of carve([c], c.trackId, a, b, '')) {
+        clips.push(piece.start >= b - EPS ? { ...piece, start: piece.start - d } : piece);
+      }
+    } else {
+      const overlap = Math.min(end, b) - Math.max(c.start, a);
+      const duration = c.duration - overlap;
+      if (duration <= EPS) continue;
+      clips.push({ ...c, start: Math.min(c.start, a), duration });
+    }
+  }
+  return reconcileLinks(inner, { ...inner, clips });
+}
+
+/**
+ * まとめたクリップ（3 分割など）に、丸ごと間を詰める。`cuts` は外のタイムラインの秒（`cutRanges` の結果）。
+ * 中の帯 3 本・音・見出しを同じ所で詰め、まとめたクリップを短くして、同じトラックの後ろのクリップを寄せる。
+ * ほかのトラックは動かさない（`removeRanges` と同じ）。
+ */
+export function removeRangesInNest(sequence: Sequence, nestId: string, cuts: TimeRange[]): TempoResult {
+  const nest = sequence.clips.find((c) => c.id === nestId);
+  if (!nest || nest.kind !== 'nest' || !nest.nested) return { sequence, removed: 0, count: 0 };
+  let current: Clip = nest;
+  let after = sequence.clips.filter((c) => c.id !== nestId);
+  let removed = 0;
+  let count = 0;
+  for (const cut of [...cuts].sort((x, y) => y.start - x.start)) {
+    const from = Math.max(cut.start, current.start);
+    const to = Math.min(cut.end, current.start + current.duration);
+    const d = to - from;
+    if (d <= EPS) continue;
+    const a = current.sourceIn + (from - current.start);
+    const nestEnd = current.start + current.duration;
+    current = { ...current, duration: current.duration - d, nested: rippleCutAll(current.nested!, a, a + d) };
+    after = after.map((c) => (c.trackId === nest.trackId && c.start >= nestEnd - 1e-4 ? { ...c, start: c.start - d } : c));
+    removed += d;
+    count += 1;
+  }
+  const moved = new Map(after.map((c) => [c.id, c]));
+  const clips = sequence.clips.map((c) => (c.id === nestId ? current : (moved.get(c.id) ?? c)));
+  return { sequence: { ...sequence, clips }, removed, count };
+}
+

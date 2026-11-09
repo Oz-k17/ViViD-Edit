@@ -503,6 +503,50 @@ eq('空文字', wrap('', 10), ['']);
   check('直す所が無ければ同じもの', applyToCaptions(seq, []).sequence === seq);
 }
 
+// ---- 3 分割のまとめに丸ごと間を詰める ----
+{
+  const { removeRangesInNest, cutRanges } = await import('../src/model/tempo.ts');
+  const { buildThreeBand } = await import('../src/model/threeBand.ts');
+  const { nestClips, flattenNests } = await import('../src/model/nest.ts');
+  const { placeWithSound, partnerOf } = await import('../src/model/links.ts');
+  const { createSequence, clipFromAsset } = await import('../src/model/factory.ts');
+  const { tracksOf } = await import('../src/model/ops.ts');
+
+  const base = createSequence();
+  const v1 = tracksOf(base, 'video')[0];
+  const talk = clipFromAsset({ id: 'talk', kind: 'video', duration: 20 }, v1.id, 0);
+  let seq = placeWithSound(base, [{ ...talk, duration: 10 }], false, () => true);
+  const picture = seq.clips.find((c) => c.kind === 'video');
+  seq = buildThreeBand(seq, picture, { width: 1920, height: 1080 }, { titleStyle: { content: '見出し', role: 'design' }, titleText: '見出し' });
+  seq = nestClips(seq, seq.clips.map((c) => c.id), '3分割', 'n1').sequence;
+  const after = clipFromAsset({ id: 'next', kind: 'video', duration: 3 }, v1.id, 10);
+  seq = { ...seq, clips: [...seq.clips, after] };
+  const nest = seq.clips.find((c) => c.id === 'n1');
+  // 素材の 2〜4 秒と 7〜8 秒が間（まとめたクリップは 0 秒から）
+  const keep = [{ start: 0, end: 2 }, { start: 4, end: 7 }, { start: 8, end: 10 }];
+  const cuts = cutRanges({ ...nest, sourceIn: 0, speed: 1 }, keep);
+  const r = removeRangesInNest(seq, 'n1', cuts);
+  const n = r.sequence.clips.find((c) => c.id === 'n1');
+  check('まとめたクリップが 3 秒短くなる', Math.abs(n.duration - 7) < 1e-6 && r.count === 2 && Math.abs(r.removed - 3) < 1e-6, `${n.duration}`);
+  const flat = flattenNests(r.sequence);
+  const bands = flat.clips.filter((c) => c.kind === 'video' && c.mediaId === 'talk');
+  check('3 本の帯がそろって割れる（3 つずつ）', bands.length === 9, String(bands.length));
+  const at = (t) => bands.filter((c) => c.start - 1e-6 <= t && t < c.start + c.duration - 1e-6);
+  const src = (t) => at(t).map((c) => c.sourceIn + (t - c.start));
+  check('詰めたあと 2.5 秒目は、素材の 4.5 秒（3 本とも）', src(2.5).length === 3 && src(2.5).every((v) => Math.abs(v - 4.5) < 1e-6), JSON.stringify(src(2.5)));
+  check('詰めたあと 5.5 秒目は、素材の 8.5 秒', src(5.5).every((v) => Math.abs(v - 8.5) < 1e-6));
+  const sounds = flat.clips.filter((c) => c.kind === 'audio');
+  check('音も同じに割れる', sounds.length === 3 && sounds.every((s) => bands.some((b) => Math.abs(b.start - s.start) < 1e-6 && Math.abs(b.sourceIn - s.sourceIn) < 1e-6)));
+  const inner = n.nested.clips;
+  check('中の映像と音のつなぎが保たれる', inner.filter((c) => c.kind === 'audio').every((s) => partnerOf(n.nested, s)?.kind === 'video'));
+  const titles = flat.clips.filter((c) => c.kind === 'text');
+  check('見出しは割れずに縮む（全体にかかったまま）', titles.length === 1 && titles[0].start === 0 && Math.abs(titles[0].duration - 7) < 1e-6, JSON.stringify(titles.map((t) => [t.start, t.duration])));
+  const nextClip = r.sequence.clips.find((c) => c.mediaId === 'next');
+  check('後ろのクリップが寄る', Math.abs(nextClip.start - 7) < 1e-6, String(nextClip.start));
+  check('並び順は変えない', r.sequence.clips.findIndex((c) => c.id === 'n1') === seq.clips.findIndex((c) => c.id === 'n1'));
+  check('まとめたクリップでなければ何もしない', removeRangesInNest(seq, after.id, cuts).sequence === seq);
+}
+
 // ---- 映像と音のつなぎ ----
 {
   const { placeWithSound, reconcileLinks, unlinkClips, partnerOf } = await import('../src/model/links.ts');

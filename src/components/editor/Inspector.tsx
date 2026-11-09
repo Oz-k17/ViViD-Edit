@@ -7,12 +7,13 @@ import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
 import { buildThreeBand } from '../../model/threeBand';
 import { captureKit } from '../../model/kit';
-import { cutRanges, removeRanges, tempoOptions, type TimeRange } from '../../model/tempo';
+import { cutRanges, removeRanges, removeRangesInNest, tempoOptions, type TimeRange } from '../../model/tempo';
+import { renderAudioMix } from '../../engine/offline-export';
 import { usedSourceRange } from '../../model/analysisEdits';
 import { analyzeLoudness, type LoudnessTrack } from '../../analysis/audio/loudness';
 import { planJetCut } from '../../analysis/audio/silence';
 import { partnerOf, separateSound, unlinkClips } from '../../model/links';
-import { canJoin, joinClips, nestClips, nestedLength, unnestClip } from '../../model/nest';
+import { canJoin, flattenNests, joinClips, nestClips, nestedLength, unnestClip } from '../../model/nest';
 import { clipsOnTrack } from '../../model/ops';
 import { DEFAULT_EFFECT_TIMING, EFFECT_SHAPES, type EffectTiming } from '../../model/effects';
 import {
@@ -1959,7 +1960,13 @@ const TEMPO_LIMIT_SECONDS = 20 * 60;
 function TempoSection({ clip }: { clip: Clip }) {
   const { apply, sequence } = useEditor();
   const [amount, setAmount] = useState(0.5);
-  const [measured, setMeasured] = useState<{ key: string; track: LoudnessTrack; offset: number } | null>(null);
+  const [measured, setMeasured] = useState<{ key: string; track: LoudnessTrack; offset: number; nested?: Sequence } | null>(
+    null,
+  );
+  // まとめたクリップ（3 分割など）は、中身を混ぜた音で測り、中身を丸ごと詰める。
+  const isNest = clip.kind === 'nest';
+  /** 素材の秒として扱うための形。まとめたクリップは、頭からの秒を素材の秒とみなす。 */
+  const asSource = (c: Clip): Clip => (c.kind === 'nest' ? { ...c, sourceIn: 0, speed: 1 } : c);
   const [state, setState] = useState<'idle' | 'measuring' | 'failed' | 'tooLong'>('idle');
   // 詰めたという知らせは、詰めた直後のタイムラインのあいだだけ出す（「戻す」を押したら、またつまみに戻る）。
   const [doneState, setDoneState] = useState<{ text: string; before: Sequence; after: Sequence | null } | null>(null);
@@ -1967,12 +1974,13 @@ function TempoSection({ clip }: { clip: Clip }) {
     if (doneState && !doneState.after && sequence !== doneState.before) setDoneState({ ...doneState, after: sequence });
   }, [doneState, sequence]);
   const done = doneState && (doneState.after === null || doneState.after === sequence) ? doneState.text : null;
-  const range = usedSourceRange(clip);
-  const key = `${clip.id}:${clip.mediaId}:${range.from.toFixed(3)}:${range.to.toFixed(3)}`;
-  const ready = measured?.key === key ? measured : null;
+  const range = isNest ? { from: 0, to: clip.duration } : usedSourceRange(clip);
+  const key = `${clip.id}:${clip.mediaId}:${clip.sourceIn.toFixed(3)}:${range.from.toFixed(3)}:${range.to.toFixed(3)}`;
+  // 中に入って直したあとは、測り直す（中身が変わると間の位置も変わる）。
+  const ready = measured?.key === key && (!isNest || measured.nested === clip.nested) ? measured : null;
 
   const measure = async () => {
-    if (!clip.mediaId) return;
+    if (!clip.mediaId && !isNest) return;
     if (range.to - range.from > TEMPO_LIMIT_SECONDS) {
       setState('tooLong');
       return;
@@ -1980,6 +1988,16 @@ function TempoSection({ clip }: { clip: Clip }) {
     setState('measuring');
     setDoneState(null);
     try {
+      if (isNest) {
+        // 書き出しと同じ混ぜ方で、このまとめたクリップの中身だけの音を作る。
+        const alone = flattenNests({ ...sequence, clips: [{ ...clip, start: 0 }] });
+        const mix = await renderAudioMix(alone, clip.duration);
+        if (!mix) throw new Error('mix');
+        setMeasured({ key, track: analyzeLoudness(mix), offset: 0, nested: clip.nested });
+        setState('idle');
+        return;
+      }
+      if (!clip.mediaId) return;
       const decoded = await decodeAssetAudioRange(clip.mediaId, range.from, range.to);
       if (!decoded) throw new Error('decode');
       setMeasured({ key, track: analyzeLoudness(decoded.buffer), offset: decoded.start });
@@ -1995,7 +2013,7 @@ function TempoSection({ clip }: { clip: Clip }) {
     const plan = planJetCut(ready.track, { mode: 'level', ...tempoOptions(amount) });
     return plan.keep.map((r) => ({ start: r.start + ready.offset, end: r.end + ready.offset }));
   }, [ready, amount]);
-  const cuts = useMemo(() => (keep ? cutRanges(clip, keep) : []), [clip, keep]);
+  const cuts = useMemo(() => (keep ? cutRanges(asSource(clip), keep) : []), [clip, keep]);
   const removed = cuts.reduce((sum, c) => sum + c.end - c.start, 0);
 
   const run = () => {
@@ -2003,7 +2021,9 @@ function TempoSection({ clip }: { clip: Clip }) {
     const id = clip.id;
     apply((seq) => {
       const current = seq.clips.find((c) => c.id === id);
-      return current ? removeRanges(seq, id, cutRanges(current, keep)).sequence : seq;
+      if (!current) return seq;
+      const ranges = cutRanges(asSource(current), keep);
+      return current.kind === 'nest' ? removeRangesInNest(seq, id, ranges).sequence : removeRanges(seq, id, ranges).sequence;
     });
     setDoneState({
       text: `${cuts.length} か所・${removed.toFixed(1)} 秒詰めました。元に戻すなら「戻す」を押してください。`,
@@ -2048,7 +2068,9 @@ function TempoSection({ clip }: { clip: Clip }) {
       {state === 'tooLong' && <p className="muted small">20 分より長いクリップは調べません。分割してからお試しください。</p>}
       {!done && (
         <p className="muted small">
-          つないだ音（映像）も一緒に詰まり、後ろのクリップも寄ります。BGM・字幕のトラックは動かさないので、3 分割や字幕より先に使うのがおすすめです。
+          {isNest
+            ? '中の映像（3 分割なら 3 本とも）・音・見出しを、同じ所でまとめて詰めます。まとめたクリップが短くなり、同じトラックの後ろのクリップも寄ります。'
+            : 'つないだ音（映像）も一緒に詰まり、後ろのクリップも寄ります。BGM・字幕のトラックは動かさないので、3 分割や字幕より先に使うのがおすすめです。'}
         </p>
       )}
     </>
@@ -2111,6 +2133,7 @@ function NestInspector({ clip }: { clip: Clip }) {
         中身を編集する
       </button>
       {kit && <SaveKitButton kit={kit} />}
+      <TempoSection key={clip.id} clip={clip} />
       <p className="muted small">タイムラインでダブルクリックしても中に入れます。外へ戻るのは、タイムラインの上の「外へ戻る」から。</p>
       <button
         type="button"
