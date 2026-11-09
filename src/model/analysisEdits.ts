@@ -166,3 +166,30 @@ export function applyReframeSegments(
     segments: pieceIds.length,
   };
 }
+
+/**
+ * まとめたクリップ（3 分割など）で、シーンを調べる映像。中でいちばん大きく映っている映像（3 分割なら真ん中の本編）の
+ * トラックに並ぶクリップを、時間の順に返す（間を詰めて何本かに分かれていても全部）。
+ */
+export function nestSceneClips(nest: Clip): Clip[] {
+  const videos = nest.nested?.clips.filter((c) => c.kind === 'video' && c.mediaId) ?? [];
+  if (videos.length === 0) return [];
+  const area = (c: Clip) => (c.crop.enabled ? c.crop.dw * c.crop.dh : 1) * (c.scale || 1) * (c.opacity > 0.05 ? 1 : 0);
+  const main = videos.reduce((best, c) => (area(c) > area(best) ? c : best));
+  return videos.filter((c) => c.trackId === main.trackId).sort((a, b) => a.start - b.start);
+}
+
+/**
+ * 中の映像で見つけた切り替わり（その素材の頭からの秒）を、外のタイムラインの秒へ直す。
+ * まとめたクリップに見えていない所の切り替わりは捨てる。
+ */
+export function nestSceneTimes(nest: Clip, inner: Clip, sourceTimes: number[]): number[] {
+  const from = nest.start;
+  const to = nest.start + nest.duration;
+  return sourceTimes
+    .map((t) => sourceToTimeline(inner, t))
+    .filter((t) => t > inner.start && t < endOf(inner))
+    .map((t) => nest.start + (t - nest.sourceIn))
+    .filter((t) => t > from && t < to);
+}
+

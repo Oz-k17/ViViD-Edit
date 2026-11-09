@@ -7,6 +7,7 @@ import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
 import { buildThreeBand, relayoutThreeBand } from '../../model/threeBand';
 import { useThreeBandLayouts } from './threeBandLayouts';
+import { NestSceneSplit } from './NestSceneSplit';
 import { captureKit } from '../../model/kit';
 import { goldenBands } from '../../model/layout';
 import { cutRanges, removeRanges, removeRangesInNest, tempoOptions, type TimeRange } from '../../model/tempo';
@@ -2194,6 +2195,7 @@ function NestInspector({ clip }: { clip: Clip }) {
       {kit && <RelayoutField mode="nest" nestId={clip.id} />}
       {kit && <SaveKitButton kit={kit} />}
       <TempoSection key={clip.id} clip={clip} />
+      <NestSceneSplit key={`scene-${clip.id}`} clip={clip} />
       <p className="muted small">タイムラインでダブルクリックしても中に入れます。外へ戻るのは、タイムラインの上の「外へ戻る」から。</p>
       <button
         type="button"

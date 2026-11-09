@@ -649,6 +649,37 @@ eq('空文字', wrap('', 10), ['']);
   check('素材の大きさが分からない帯は変えない', relayoutThreeBand(cut, { bottom: faceSource('topLeft') }, () => null).changed === 0);
 }
 
+// ---- まとめたクリップをシーンで分割 ----
+{
+  const { nestSceneClips, nestSceneTimes, splitClipAtTimes } = await import('../src/model/analysisEdits.ts');
+  const { buildThreeBand } = await import('../src/model/threeBand.ts');
+  const { nestClips, bakeNests, nestedLength, flattenNests } = await import('../src/model/nest.ts');
+  const { placeWithSound, reconcileLinks } = await import('../src/model/links.ts');
+  const { createSequence, clipFromAsset } = await import('../src/model/factory.ts');
+  const { tracksOf } = await import('../src/model/ops.ts');
+
+  const base = createSequence();
+  const v1 = tracksOf(base, 'video')[0];
+  // 素材の 10 秒目から 8 秒ぶんを、タイムラインの 2 秒目に置く
+  let seq = placeWithSound(base, [{ ...clipFromAsset({ id: 'talk', kind: 'video', duration: 30 }, v1.id, 2), sourceIn: 10, duration: 8 }], false, () => true);
+  seq = buildThreeBand(seq, seq.clips.find((c) => c.kind === 'video'), { width: 1920, height: 1080 });
+  seq = nestClips(seq, seq.clips.map((c) => c.id), '3分割', 'n1').sequence;
+  const nest = seq.clips.find((c) => c.id === 'n1');
+  const sources = nestSceneClips(nest);
+  check('3 分割では、本編の帯（いちばん大きい映像）で調べる', sources.length === 1 && sources[0].crop.dy > 0.1 && sources[0].crop.dy < 0.4, JSON.stringify(sources.map((c) => c.crop.dy)));
+  // 素材の 13 秒目と 16 秒目に切り替わり、5 秒目と 25 秒目は使っていない所
+  const times = nestSceneTimes(nest, sources[0], [5, 13, 16, 25]);
+  check('外のタイムラインの秒に直す（使っていない所は捨てる）', JSON.stringify(times.map((t) => +t.toFixed(6))) === JSON.stringify([5, 8]), JSON.stringify(times));
+  const split = reconcileLinks(seq, bakeNests(splitClipAtTimes(seq, 'n1', times).sequence));
+  const nests = split.clips.filter((c) => c.kind === 'nest').sort((a, b) => a.start - b.start);
+  check('3 本に割れる', nests.length === 3);
+  check('それぞれの中身は自分の範囲だけ（3 秒・3 秒・2 秒）', JSON.stringify(nests.map((n) => +nestedLength(n).toFixed(6))) === JSON.stringify([3, 3, 2]));
+  const at = (t) => flattenNests(split).clips.filter((c) => c.kind === 'video' && c.start - 1e-6 <= t && t < c.start + c.duration - 1e-6).map((c) => +(c.sourceIn + (t - c.start)).toFixed(6));
+  check('割ったあと 6 秒目は素材の 14 秒目（3 本とも）', JSON.stringify(at(6)) === JSON.stringify([14, 14, 14]), JSON.stringify(at(6)));
+  const empty = { ...nest, nested: { ...nest.nested, clips: nest.nested.clips.filter((c) => c.kind !== 'video') } };
+  check('映像の無いまとめでは調べない', nestSceneClips(empty).length === 0);
+}
+
 // ---- 映像と音のつなぎ ----
 {
   const { placeWithSound, reconcileLinks, unlinkClips, partnerOf } = await import('../src/model/links.ts');
