@@ -601,6 +601,54 @@ eq('空文字', wrap('', 10), ['']);
   check('ずれが無ければ同じもの', bakeNests(seq) === seq);
 }
 
+// ---- 3 分割のレイアウト（顔の位置） ----
+{
+  const { buildThreeBand, relayoutThreeBand } = await import('../src/model/threeBand.ts');
+  const { faceSource, FACE_POSITIONS } = await import('../src/model/kit.ts');
+  const { createSequence, baseClip } = await import('../src/model/factory.ts');
+  const { removeRanges, removeRangesInNest } = await import('../src/model/tempo.ts');
+
+  check('顔の位置は 5 つ', FACE_POSITIONS.length === 5);
+  const seq0 = createSequence();
+  const vt = seq0.tracks.find((t) => t.kind === 'video');
+  const src = { ...baseClip('video', vt.id), mediaId: 'm', start: 0, duration: 6 };
+  const media = { width: 1920, height: 1080 };
+  const bandsOf = (s) => s.clips.filter((c) => c.kind === 'video').sort((a, b) => a.crop.dy - b.crop.dy || a.start - b.start);
+  const aspectOk = (c) => Math.abs((c.crop.sw * 1920) / (c.crop.sh * 1080) - (c.crop.dw * 1080) / (c.crop.dh * 1920)) < 1e-6;
+  for (const { key, label } of FACE_POSITIONS) {
+    const built = buildThreeBand({ ...seq0, clips: [src] }, src, media, { sources: { bottom: faceSource(key) } });
+    const face = bandsOf(built)[2];
+    const right = face.crop.sx + face.crop.sw > 0.999;
+    const left = face.crop.sx < 0.001;
+    const bottom = face.crop.sy + face.crop.sh > 0.999;
+    const top = face.crop.sy < 0.001;
+    const want = { bottomRight: right && bottom, bottomLeft: left && bottom, topRight: right && top, topLeft: left && top, center: !right && !left && !top && !bottom }[key];
+    check(`${label}: 顔の帯がその位置を切り抜く`, want, JSON.stringify(face.crop));
+    check(`${label}: 絵はつぶれない`, aspectOk(face));
+  }
+  const plain = buildThreeBand({ ...seq0, clips: [src] }, src, media);
+  const leftBuilt = buildThreeBand({ ...seq0, clips: [src] }, src, media, { sources: { bottom: faceSource('bottomLeft') } });
+  check('顔の位置だけ決めても、上と中は中心から', JSON.stringify(bandsOf(leftBuilt).slice(0, 2).map((c) => c.crop)) === JSON.stringify(bandsOf(plain).slice(0, 2).map((c) => c.crop)));
+
+  // 組んだあとで付け替える（間を詰めて帯が何本にも分かれていても全部）
+  const titled = buildThreeBand({ ...seq0, clips: [src] }, src, media, { titleStyle: { content: '見出し', role: 'design' }, titleText: '見出し' });
+  let cut = titled;
+  for (const band of bandsOf(titled)) cut = removeRanges(cut, band.id, [{ start: 2, end: 3 }]).sequence;
+  check('詰めて帯が 6 本になっている', bandsOf(cut).length === 6, String(bandsOf(cut).length));
+  const mediaOf = () => media;
+  const moved = relayoutThreeBand(cut, { bottom: faceSource('topRight') }, mediaOf);
+  const faces = bandsOf(moved.sequence).filter((c) => c.crop.dy > 0.6);
+  check('付け替えると、顔の帯は全部その位置に', faces.length === 2 && faces.every((c) => c.crop.sx + c.crop.sw > 0.999 && c.crop.sy < 0.001));
+  check('付け替えても時間は変わらない', JSON.stringify(bandsOf(moved.sequence).map((c) => [c.start, c.duration, c.sourceIn])) === JSON.stringify(bandsOf(cut).map((c) => [c.start, c.duration, c.sourceIn])));
+  check('付け替えても絵はつぶれない', bandsOf(moved.sequence).every(aspectOk));
+  const back = relayoutThreeBand(moved.sequence, undefined, mediaOf);
+  check('「中心から」で元の切り抜きに戻る', JSON.stringify(bandsOf(back.sequence).map((c) => c.crop)) === JSON.stringify(bandsOf(cut).map((c) => c.crop)));
+  const kitTitle = relayoutThreeBand(cut, undefined, mediaOf, { color: '#123456', role: 'design' });
+  const t = kitTitle.sequence.clips.find((c) => c.kind === 'text');
+  check('自分の型なら見出しの体裁も付け替える（文言はそのまま）', t.text.color === '#123456' && t.text.content === '見出し');
+  check('素材の大きさが分からない帯は変えない', relayoutThreeBand(cut, { bottom: faceSource('topLeft') }, () => null).changed === 0);
+}
+
 // ---- 映像と音のつなぎ ----
 {
   const { placeWithSound, reconcileLinks, unlinkClips, partnerOf } = await import('../src/model/links.ts');

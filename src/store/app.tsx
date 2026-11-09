@@ -304,6 +304,8 @@ export interface Settings {
   postTags?: string;
   /** タイムラインのレーンの高さの倍率（縦の拡大縮小）。無ければ既定（いちばん低い段から 2 段上の 0.7）。 */
   timelineRowScale?: number;
+  /** 3 分割で最後に選んだレイアウト（'center' / 'face:<位置>' / 'kit:<id>'）。次の既定にする。 */
+  threeBandLayout?: string;
   /** まとめて書き出すときに作るもの。 */
   batchVariants?: ('captions' | 'clean' | 'note')[];
 }

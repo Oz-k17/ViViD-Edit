@@ -10,7 +10,7 @@
  */
 
 import { baseClip, textClip, uid } from './factory';
-import { bandCrop, coverSource, goldenBands } from './layout';
+import { bandCrop, coverSource, goldenBands, type SourceRect } from './layout';
 import { addTrack, placeClip, tracksOf } from './ops';
 import { fitSourceToAspect, type KitBands } from './kit';
 import type { Clip, Sequence, TextProps } from './types';
@@ -25,8 +25,54 @@ export interface ThreeBandOptions {
   /**
    * 「自分の型」の切り抜き範囲（素材に対する割合）。渡せば、中心から取る代わりにこの位置で切り抜く。
    * 素材の解像度が型と違っても、帯の形に合わせて直す（kit.ts の fitSourceToAspect）。
+   * 帯ごとに省ける（省いた帯は中心から取る。顔の位置だけ決めたレイアウトなど）。
    */
-  sources?: KitBands;
+  sources?: Partial<KitBands>;
+}
+
+/**
+ * 帯 1 本の切り抜き範囲（素材に対する割合）。決めてあればそれを帯の形に合わせ、無ければ中心から取る。
+ * `aspect` は帯の画素の縦横比。顔の帯（bottom）は既定で `faceZoom` 倍に寄せる。
+ */
+export function bandSource(
+  key: keyof KitBands,
+  aspect: number,
+  media: { width: number; height: number },
+  sources?: Partial<KitBands>,
+  faceZoom = 4,
+): SourceRect {
+  const chosen = sources?.[key];
+  return chosen ? fitSourceToAspect(chosen, media, aspect) : coverSource(media, aspect, key === 'bottom' ? faceZoom : 1);
+}
+
+/**
+ * 組んである 3 分割の、帯の切り抜き範囲（とあれば見出しの体裁）だけを、別のレイアウトに付け替える。
+ * 帯は置き場所（dy・dh）で見分けるので、間を詰めて何本にも分かれていても全部に当たる。時間や音は変えない。
+ * `mediaOf` は素材の画素の大きさ（分からなければ null で、その帯は変えない）。
+ */
+export function relayoutThreeBand(
+  sequence: Sequence,
+  sources: Partial<KitBands> | undefined,
+  mediaOf: (clip: Clip) => { width: number; height: number } | null,
+  title?: Omit<TextProps, 'content'> | null,
+): { sequence: Sequence; changed: number } {
+  const bands = goldenBands(sequence.height);
+  const keys: (keyof KitBands)[] = ['top', 'middle', 'bottom'];
+  let changed = 0;
+  const clips = sequence.clips.map((c) => {
+    if (c.kind === 'text' && title && c.text && c.text.role === 'design') {
+      changed += 1;
+      return { ...c, text: { ...c.text, ...title, content: c.text.content } };
+    }
+    if (c.kind !== 'video' || !c.crop.enabled || Math.abs(c.crop.dw - 1) > 0.002) return c;
+    const key = keys.find((k) => Math.abs(c.crop.dy - bands[k].dy) < 0.002 && Math.abs(c.crop.dh - bands[k].dh) < 0.002);
+    const media = key ? mediaOf(c) : null;
+    if (!key || !media) return c;
+    const src = bandSource(key, sequence.width / bands[key].h, media, sources);
+    changed += 1;
+    return { ...c, crop: { ...c.crop, sx: src.sx, sy: src.sy, sw: src.sw, sh: src.sh } };
+  });
+  return { sequence: changed ? { ...sequence, clips } : sequence, changed };
 }
 
 /** 背景として敷く帯のぼかしと暗さ。見出しを読ませるために、はっきり落とす。 */
@@ -73,9 +119,7 @@ export function buildThreeBand(
   });
 
   const pick = (key: keyof KitBands, band: { h: number }, zoom = 1) =>
-    options.sources
-      ? fitSourceToAspect(options.sources[key], media, aspect(band))
-      : coverSource(media, aspect(band), zoom);
+    bandSource(key, aspect(band), media, options.sources, key === 'bottom' ? zoom : 4);
   const backdrop = band(videoTracks[0].id, bandCrop(pick('top', bands.top), bands.top), backdropEffects());
   const main = {
     ...band(videoTracks[1].id, bandCrop(pick('middle', bands.middle), bands.middle)),

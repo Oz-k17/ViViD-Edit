@@ -90,3 +90,27 @@ export function fitSourceToAspect(source: SourceRect, media: { width: number; he
   const y = Math.min(Math.max(0, place(source.sy, source.sh, h, mh)), mh - h);
   return { sx: x / mw, sy: y / mh, sw: w / mw, sh: h / mh };
 }
+
+/** 録画の中で、顔（カメラ）が映っている所。人によって違う。 */
+export type FacePosition = 'bottomRight' | 'bottomLeft' | 'topRight' | 'topLeft' | 'center';
+
+export const FACE_POSITIONS: { key: FacePosition; label: string }[] = [
+  { key: 'bottomRight', label: '顔は右下' },
+  { key: 'bottomLeft', label: '顔は左下' },
+  { key: 'topRight', label: '顔は右上' },
+  { key: 'topLeft', label: '顔は左上' },
+  { key: 'center', label: '顔は真ん中' },
+];
+
+/**
+ * 顔の帯の切り抜き範囲を、録画の隅（または真ん中）に置く。幅は録画の 1/`zoom`。
+ * 隅のものは端に付けてあるので、帯の形に合わせて直しても隅のまま（fitSourceToAspect）。
+ */
+export function faceSource(position: FacePosition, zoom = 4): SourceRect {
+  const w = 1 / Math.max(1, zoom);
+  const right = position === 'bottomRight' || position === 'topRight';
+  const bottom = position === 'bottomRight' || position === 'bottomLeft';
+  if (position === 'center') return { sx: 0.5 - w / 2, sy: 0.5 - w / 2, sw: w, sh: w };
+  return { sx: right ? 1 - w : 0, sy: bottom ? 1 - w : 0, sw: w, sh: w };
+}
+

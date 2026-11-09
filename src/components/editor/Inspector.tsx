@@ -5,8 +5,10 @@ import { defaultCrop } from '../../engine/renderer';
 import { FONT_OPTIONS, LOOK_PRESETS, SPEED_PRESETS, TEXT_PRESETS } from '../../presets';
 import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
-import { buildThreeBand } from '../../model/threeBand';
+import { buildThreeBand, relayoutThreeBand } from '../../model/threeBand';
+import { useThreeBandLayouts } from './threeBandLayouts';
 import { captureKit } from '../../model/kit';
+import { goldenBands } from '../../model/layout';
 import { cutRanges, removeRanges, removeRangesInNest, tempoOptions, type TimeRange } from '../../model/tempo';
 import { renderAudioMix } from '../../engine/offline-export';
 import { usedSourceRange } from '../../model/analysisEdits';
@@ -933,29 +935,36 @@ function PropsTab({ clip }: { clip: Clip }) {
  */
 function ThreeBandSection({ clip }: { clip: Clip }) {
   const { sequence, apply, setSelection } = useEditor();
-  const { templates } = useApp();
   const asset = mediaRegistry.get(clip.mediaId);
   // 組んだ 3 本（と見出し・音）を、1 本のクリップにまとめておくか。ダブルクリックで中を直せる。
   const [nest, setNest] = useState(true);
-  const kits = templates.filter((t) => t.kind === 'kit');
-  // 型があれば、いちばん新しい型で組むのを既定にする（いつも同じ型を使う人が多いので、選び直さずに済むように）。
-  const [kitId, setKitId] = useState<string>(() => kits[kits.length - 1]?.id ?? '');
-  const kitTemplate = kits.find((t) => t.id === kitId);
-  const kit = kitTemplate?.kind === 'kit' ? kitTemplate.kit : null;
-  // いまの画面（まとめの中に入っているときは、その中身）が 3 分割なら、型にできる。
+  const layouts = useThreeBandLayouts();
+  const [layoutValue, setLayoutValue] = useState(layouts.defaultValue);
+  const layout = layouts.resolve(layoutValue);
+  // いまの画面（まとめの中に入っているときは、その中身）が 3 分割なら、型にできる・レイアウトを変えられる。
   const capturable = useMemo(() => captureKit(sequence, sequence.clips), [sequence]);
+  // 選んだクリップが、その 3 分割の帯の 1 本か（違う録画を選んでいるなら、組めるようにしておく）。
+  const isBand = useMemo(() => {
+    const bands = goldenBands(sequence.height);
+    return (
+      clip.crop.enabled &&
+      Math.abs(clip.crop.dw - 1) < 0.002 &&
+      [bands.top, bands.middle, bands.bottom].some((b) => Math.abs(clip.crop.dy - b.dy) < 0.002 && Math.abs(clip.crop.dh - b.dh) < 0.002)
+    );
+  }, [clip, sequence.height]);
 
   const build = (withTitle: boolean) => {
     const media = { width: asset?.width || sequence.width, height: asset?.height || sequence.height };
     const presetTitle = TEXT_PRESETS.find((preset) => preset.key === 'title')?.text;
-    const titleStyle = kit?.title ? { ...kit.title, content: '見出しを入れる' } : presetTitle;
+    const titleStyle = layout.title ? { ...layout.title, content: '見出しを入れる' } : presetTitle;
+    layouts.remember(layoutValue);
     // apply に渡した処理は次の描画で走るので、まとめたクリップの id は先に決めて渡す。
     const nestId = uid('cl');
     apply((seq) => {
       const built = buildThreeBand(seq, clip, media, {
         titleStyle: withTitle ? titleStyle : undefined,
         titleText: withTitle ? '見出しを入れる' : undefined,
-        sources: kit?.bands,
+        sources: layout.sources,
       });
       if (!nest) return built;
       const before = new Set(seq.clips.map((c) => c.id));
@@ -968,36 +977,84 @@ function ThreeBandSection({ clip }: { clip: Clip }) {
 
   return (
     <>
-      <ButtonField label="画面構成" hint="このクリップをショート動画のスタイルに置き換えます">
-        <div className="chip-row wrap">
-          <button type="button" className="chip" onClick={() => build(true)}>
-            3分割に組む（見出しつき）
-          </button>
-          <button type="button" className="chip" onClick={() => build(false)}>
-            3分割に組む
-          </button>
-        </div>
-      </ButtonField>
-      {kits.length > 0 && (
-        <Field label="自分の型" hint="型を選ぶと、いつもの切り抜き位置・見出しの体裁で組みます">
-          <select value={kitId} onChange={(e) => setKitId(e.target.value)}>
-            <option value="">使わない（中心から切り抜く）</option>
-            {kits.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        </Field>
+      {capturable && isBand ? (
+        // もう 3 分割になっている（まとめずに組んだ・まとめの中に入っている）なら、組み直さずにレイアウトだけ変える。
+        <RelayoutField mode="here" />
+      ) : (
+        <>
+          <ButtonField label="画面構成" hint="このクリップをショート動画のスタイルに置き換えます">
+            <div className="chip-row wrap">
+              <button type="button" className="chip" onClick={() => build(true)}>
+                3分割に組む（見出しつき）
+              </button>
+              <button type="button" className="chip" onClick={() => build(false)}>
+                3分割に組む
+              </button>
+            </div>
+          </ButtonField>
+          <Field label="レイアウト" hint="録画の中で顔（カメラ）が映っている所を選びます">
+            <select value={layoutValue} onChange={(e) => setLayoutValue(e.target.value)}>
+              {layouts.options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Toggle label="組んだあと 1 つにまとめる（ダブルクリックで中を編集）" checked={nest} onChange={setNest} />
+          <p className="muted small">
+            上＝ぼかした背景と見出し、中＝本編、下＝顔のアップ。
+            {layoutValue === 'center'
+              ? '切り出す場所は中心から取るので、置いたあと各クリップのクロップで合わせてください。合わせ終えたら「自分の型にする」で、次からはそのまま組めます。'
+              : `「${layout.label}」の位置で切り抜きます。組んだあとでも、まとめたクリップの「レイアウトを変える」で変えられます。`}
+          </p>
+        </>
       )}
-      <Toggle label="組んだあと 1 つにまとめる（ダブルクリックで中を編集）" checked={nest} onChange={setNest} />
-      <p className="muted small">
-        上＝ぼかした背景と見出し、中＝本編、下＝顔のアップ。
-        {kit
-          ? '型の位置で切り抜きます。'
-          : '切り出す場所は中心から取るので、置いたあと各クリップのクロップで合わせてください。合わせ終えたら「自分の型にする」で、次からはそのまま組めます。'}
-      </p>
       {capturable && <SaveKitButton kit={capturable} />}
+    </>
+  );
+}
+
+/**
+ * 組んである 3 分割のレイアウトを変える。帯の切り抜き位置（と自分の型なら見出しの体裁）だけを付け替え、時間や音は変えない。
+ * `nest` を渡せばそのまとめたクリップの中身に、`here` ならいま見ているシーケンスに当てる。
+ */
+function RelayoutField({ mode, nestId }: { mode: 'here' | 'nest'; nestId?: string }) {
+  const { apply } = useEditor();
+  const layouts = useThreeBandLayouts();
+  const [note, setNote] = useState<string | null>(null);
+  const mediaOf = (c: Clip) => {
+    const a = mediaRegistry.get(c.mediaId);
+    return a && a.width > 0 && a.height > 0 ? { width: a.width, height: a.height } : null;
+  };
+  const change = (value: string) => {
+    if (!value) return;
+    const layout = layouts.resolve(value);
+    layouts.remember(value);
+    apply((seq) => {
+      if (mode === 'here') return relayoutThreeBand(seq, layout.sources, mediaOf, layout.title).sequence;
+      return {
+        ...seq,
+        clips: seq.clips.map((c) =>
+          c.id === nestId && c.nested ? { ...c, nested: relayoutThreeBand(c.nested, layout.sources, mediaOf, layout.title).sequence } : c,
+        ),
+      };
+    });
+    setNote(`「${layout.label}」に変えました（「戻す」で戻せます）。`);
+  };
+  return (
+    <>
+      <Field label="レイアウトを変える" hint="顔（カメラ）の位置が違う録画のとき">
+        <select value="" onChange={(e) => change(e.target.value)}>
+          <option value="">選ぶ…</option>
+          {layouts.options.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {note && <p className="muted small">{note}</p>}
     </>
   );
 }
@@ -2079,12 +2136,14 @@ function TempoSection({ clip }: { clip: Clip }) {
 
 /** 組んである 3 分割を「自分の型」として取っておくボタン。名前は既定で付け、テンプレートのページで直せる。 */
 function SaveKitButton({ kit }: { kit: NonNullable<ReturnType<typeof captureKit>> }) {
-  const { templates, addTemplate } = useApp();
+  const { templates, addTemplate, updateSettings } = useApp();
   const [saved, setSaved] = useState<string | null>(null);
   const save = () => {
     // window.prompt は iPad のアプリ（WKWebView）で出ないことがあるので、名前は決め打ちで付ける。
     const name = `自分の型 ${templates.filter((t) => t.kind === 'kit').length + 1}`;
-    addTemplate({ kind: 'kit', name, kit });
+    const template = addTemplate({ kind: 'kit', name, kit });
+    // 作ったばかりの型を、次に組むときの既定にする（そのために作ったはずなので）。
+    updateSettings({ threeBandLayout: `kit:${template.id}` });
     setSaved(name);
   };
   return (
@@ -2132,6 +2191,7 @@ function NestInspector({ clip }: { clip: Clip }) {
       <button type="button" className="wide primary" onClick={() => enterNest(clip.id)}>
         中身を編集する
       </button>
+      {kit && <RelayoutField mode="nest" nestId={clip.id} />}
       {kit && <SaveKitButton kit={kit} />}
       <TempoSection key={clip.id} clip={clip} />
       <p className="muted small">タイムラインでダブルクリックしても中に入れます。外へ戻るのは、タイムラインの上の「外へ戻る」から。</p>
