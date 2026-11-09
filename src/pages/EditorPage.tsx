@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Inspector } from '../components/editor/Inspector';
 import { ExportDialog } from '../components/editor/ExportDialog';
-import { MediaPanel, importFiles, seedSoundEffects } from '../components/editor/MediaPanel';
+import { MediaPanel, importFiles, removeBuiltInSoundEffects } from '../components/editor/MediaPanel';
 import { ScriptPanel } from '../components/editor/ScriptPanel';
 import { GettingStarted } from '../components/editor/GettingStarted';
 import { MobileEditor } from '../components/editor/MobileEditor';
@@ -170,8 +170,20 @@ export default function EditorPage() {
   const [transitionFor, setTransitionFor] = useState<string | null>(null);
   const [dropping, setDropping] = useState(false);
 
+  // 以前アプリが入れていた効果音を、1 度だけ片付ける（タイムラインで使っているものは残す）。
+  const { rootSequence } = useEditor();
   useEffect(() => {
-    void seedSoundEffects();
+    const used = new Set<string>();
+    const walk = (clips: typeof rootSequence.clips) => {
+      for (const c of clips) {
+        if (c.mediaId) used.add(c.mediaId);
+        if (c.nested) walk(c.nested.clips);
+      }
+    };
+    walk(rootSequence.clips);
+    void removeBuiltInSoundEffects(used);
+    // 開いたときに 1 度だけ。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 長い動画の下見の絵を、裏で作っておく（素材が増えたら、その分も）。

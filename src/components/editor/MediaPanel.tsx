@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { formatTime, assetHasSound, mediaRegistry, SFX_FOLDER, UNSORTED, type MediaAsset } from '../../engine/media';
-import { renderPreset, SFX_PRESETS } from '../../engine/sfx';
+import { formatTime, assetHasSound, mediaRegistry, UNSORTED, type MediaAsset } from '../../engine/media';
+import { scopedKey } from '../../store/profile';
 import { player } from '../../engine/player';
 import { clipFromAsset } from '../../model/factory';
 import { adoptSourceFps, tracksOf } from '../../model/ops';
@@ -48,17 +48,32 @@ export async function importFiles(files: FileList | File[], folder = UNSORTED): 
   return errors;
 }
 
-/** 効果音プリセットを 1 度だけライブラリへ入れる。 */
-export async function seedSoundEffects(): Promise<void> {
-  await mediaRegistry.restore();
-  if (mediaRegistry.all().some((a) => a.folder === SFX_FOLDER)) return;
-  for (const preset of SFX_PRESETS) {
-    try {
-      await mediaRegistry.add(await renderPreset(preset), SFX_FOLDER);
-    } catch {
-      /* 合成できない環境では黙って諦める */
-    }
+/**
+ * 以前はアプリが合成した効果音 8 種を、最初に「効果音」ビンへ入れていた。使う人の希望で入れるのをやめたので、
+ * 入っているものを 1 度だけ取り除く。タイムラインで使っているものは残す（音が消えないように）。
+ * 1 度だけにするのは、あとから自分で同じ名前の音を入れたときに消さないため。
+ */
+const OLD_SFX_FOLDER = '効果音';
+const OLD_SFX_NAMES = ['ピロリン', '通知音', 'ポン', 'シュワ', 'カシャ', 'タッ', 'キラキラ', 'ブー'].map((n) => `${n}.wav`);
+const SFX_CLEANUP_KEY = scopedKey('vivid.sfxRemoved.v1');
+
+export async function removeBuiltInSoundEffects(usedMediaIds: Set<string>): Promise<number> {
+  try {
+    if (localStorage.getItem(SFX_CLEANUP_KEY)) return 0;
+  } catch {
+    return 0;
   }
+  await mediaRegistry.restore();
+  const targets = mediaRegistry
+    .all()
+    .filter((a) => a.folder === OLD_SFX_FOLDER && a.kind === 'audio' && OLD_SFX_NAMES.includes(a.name) && !usedMediaIds.has(a.id));
+  for (const asset of targets) mediaRegistry.remove(asset.id);
+  try {
+    localStorage.setItem(SFX_CLEANUP_KEY, '1');
+  } catch {
+    /* 覚えられなくても、名前と場所で見分けているので次も同じものだけを消す */
+  }
+  return targets.length;
 }
 
 export function MediaPanel() {

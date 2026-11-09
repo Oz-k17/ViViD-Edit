@@ -9,7 +9,7 @@
  * **ビンを消しても素材は消さない**（ひとつ上のビンへ上げる）。
  */
 import { useSyncExternalStore } from 'react';
-import { EMOJI_FOLDER, mediaRegistry, SFX_FOLDER, UNSORTED } from '../engine/media';
+import { EMOJI_FOLDER, mediaRegistry, UNSORTED } from '../engine/media';
 import {
   allBinPaths,
   ancestorsOf,
@@ -26,9 +26,9 @@ import {
 const KEY = 'vivid-edit.bins.v1';
 
 /** アプリが場所を決め打ちで使うビン。名前変更・移動・削除はさせない（中に作るのは自由）。 */
-export const PROTECTED_BINS: readonly string[] = [UNSORTED, SFX_FOLDER, EMOJI_FOLDER];
+export const PROTECTED_BINS: readonly string[] = [UNSORTED, EMOJI_FOLDER];
 /** 最上位でいつも先頭に出す順。 */
-export const PINNED_BINS: readonly string[] = [UNSORTED, SFX_FOLDER, EMOJI_FOLDER];
+export const PINNED_BINS: readonly string[] = [UNSORTED, EMOJI_FOLDER];
 
 export const isProtected = (path: string) => PROTECTED_BINS.includes(path);
 

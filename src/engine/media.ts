@@ -95,7 +95,6 @@ export async function deleteProxyFile(name: string): Promise<void> {
 }
 
 export const UNSORTED = '未分類';
-export const SFX_FOLDER = '効果音';
 /** テロップに絵文字として挿入できる画像を置いておくフォルダ。 */
 export const EMOJI_FOLDER = '絵文字';
 
@@ -548,7 +547,6 @@ class MediaRegistry {
   private elements = new Map<string, HTMLVideoElement | HTMLAudioElement>();
   private images = new Map<string, HTMLImageElement>();
   private cache: MediaAsset[] = [];
-  private restored = false;
 
   subscribe = (fn: () => void): (() => void) => {
     this.listeners.add(fn);
@@ -613,9 +611,21 @@ class MediaRegistry {
   }
 
   /** IndexedDB から復元する（起動時に 1 度だけ）。 */
-  async restore(): Promise<void> {
-    if (this.restored) return;
-    this.restored = true;
+  /**
+   * 保存した素材を読み戻す。何度呼んでも 1 度だけ読み、**読み終わるまで待たせる**。
+   * 以前は「読み始めた」時点で済んだことにしていたので、読んでいる最中に呼んだ側は空のライブラリを見ていた
+   * （効果音を 2 重に入れてしまう原因だった）。
+   */
+  restore(): Promise<void> {
+    if (!this.restoring) {
+      this.restoring = this.load();
+    }
+    return this.restoring;
+  }
+
+  private restoring: Promise<void> | null = null;
+
+  private async load(): Promise<void> {
     await migrateLegacyAssets();
     const legacyProxyIds: string[] = [];
     for (const record of await dbAll()) {
