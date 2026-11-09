@@ -3695,3 +3695,30 @@ html.tl-zooming .tl-clip {
 .template-list.dictionary-list li {
   grid-template-columns: 1fr auto auto;
 }
+
+/* タイムラインの縦の拡大縮小（レーンを低くしたとき） */
+.zoom-label {
+  align-self: center;
+  padding: 0 2px 0 6px;
+  font-size: var(--ios-caption-2, 10px);
+  color: var(--text-dim);
+}
+.tl.dense .tl-head {
+  font-size: 10px;
+  padding: 0 4px 0 6px;
+}
+.tl.dense .tl-head-buttons button {
+  width: 18px;
+  min-height: 16px;
+  height: 16px;
+}
+.tl.dense .tl-head-buttons .icon,
+.tl.dense .tl-head-buttons svg {
+  width: 12px;
+  height: 12px;
+}
+.tl.dense .tl-clip {
+  top: 1px;
+  bottom: 1px;
+  font-size: 10px;
+}

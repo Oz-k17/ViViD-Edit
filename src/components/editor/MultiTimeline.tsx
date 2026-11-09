@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
+import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import { formatTime, assetHasSound, mediaRegistry } from '../../engine/media';
 import { player } from '../../engine/player';
 import { sourceLengthOf } from '../../engine/sourceLength';
@@ -50,9 +50,24 @@ const MAX_PPS = 400;
 const SNAP_PX = 8;
 
 /** compact はスマホ表示用に一回り小さくしたレーンの高さ。 */
-export function laneHeight(track: Track, compact = false): number {
-  if (compact) return track.kind === 'video' ? 44 : track.kind === 'audio' ? 30 : 26;
-  return track.kind === 'video' ? 56 : track.kind === 'audio' ? 40 : 34;
+export function laneHeight(track: Track, compact = false, scale = 1): number {
+  const base = compact
+    ? track.kind === 'video' ? 44 : track.kind === 'audio' ? 30 : 26
+    : track.kind === 'video' ? 56 : track.kind === 'audio' ? 40 : 34;
+  return Math.max(16, Math.round(base * scale));
+}
+
+/**
+ * レーンの高さの倍率（縦の拡大縮小）。トラックが多いと、既定の高さでは 3 本ほどしか見えないので、
+ * 縮めて一度に多く見られるようにする。設定（timelineRowScale）に覚える。
+ */
+export const ROW_SCALES = [0.4, 0.55, 0.7, 0.85, 1, 1.25, 1.5, 2];
+const RowScaleContext = createContext(1);
+
+/** 倍率の段を 1 つ上げ下げする。 */
+export function stepRowScale(current: number, direction: 1 | -1): number {
+  const index = ROW_SCALES.reduce((best, v, i) => (Math.abs(v - current) < Math.abs(ROW_SCALES[best] - current) ? i : best), 0);
+  return ROW_SCALES[Math.min(ROW_SCALES.length - 1, Math.max(0, index + direction))];
 }
 
 /** Premiere と同じく、上からテロップ → V2 → V1 → A1 の順に並べる。 */
@@ -124,6 +139,7 @@ interface Props {
 export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }: Props) {
   const { sequence, rootSequence, nestPath, exitNest, apply, selection, setSelection, editMode, setEditMode, insertMode, setInsertMode, markIn, markOut } = useEditor();
   const { settings, updateSettings } = useApp();
+  const rowScale = settings.timelineRowScale ?? 1;
   noteClips(sequence.clips);
   const easy = settings.uiMode === 'easy';
   // 「かんたん」では編集モードの切り替えを隠す。前に選んだモードが残って、見えないまま効かないよう通常へ戻す。
@@ -233,7 +249,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
         let top = 0;
         const hits: string[] = [];
         for (const track of tracks) {
-          const height = laneHeight(track, compact) + 4;
+          const height = laneHeight(track, compact, rowScale) + 4;
           const overlapsRow = top < box.y + box.h && top + height > box.y;
           if (overlapsRow) {
             for (const clip of clipsOnTrack(sequence, track.id)) {
@@ -248,7 +264,9 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
   };
 
   return (
-    <div className={`tl${compact ? ' compact' : ''} mode-${editMode}${nestPath.length > 0 ? ' in-nest' : ''}`}>
+    <div
+      className={`tl${compact ? ' compact' : ''}${rowScale < 0.8 ? ' dense' : ''} mode-${editMode}${nestPath.length > 0 ? ' in-nest' : ''}`}
+    >
       {nestPath.length > 0 && (
         <div className="tl-nest-bar">
           <button type="button" className="primary" onClick={() => exitNest()}>
@@ -294,12 +312,32 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
             </button>
           </>
         )}
-        <div className="zoom">
-          <button type="button" onClick={() => setPps((p) => Math.max(MIN_PPS, p / 1.4))} title="縮小">
-            <Icon name="minus" size={15} label="縮小" />
+        <div className="zoom" role="group" aria-label="横（時間）の拡大縮小">
+          <span className="zoom-label" aria-hidden="true">横</span>
+          <button type="button" onClick={() => setPps((p) => Math.max(MIN_PPS, p / 1.4))} title="横を縮小（長い時間を見る）">
+            <Icon name="minus" size={15} label="横を縮小" />
           </button>
-          <button type="button" onClick={() => setPps((p) => Math.min(MAX_PPS, p * 1.4))} title="拡大">
-            <Icon name="plus" size={15} label="拡大" />
+          <button type="button" onClick={() => setPps((p) => Math.min(MAX_PPS, p * 1.4))} title="横を拡大（細かく見る）">
+            <Icon name="plus" size={15} label="横を拡大" />
+          </button>
+        </div>
+        <div className="zoom" role="group" aria-label="縦（トラックの高さ）の拡大縮小">
+          <span className="zoom-label" aria-hidden="true">縦</span>
+          <button
+            type="button"
+            disabled={rowScale <= ROW_SCALES[0]}
+            onClick={() => updateSettings({ timelineRowScale: stepRowScale(rowScale, -1) })}
+            title="縦を縮小（トラックを低くして、たくさん見る）"
+          >
+            <Icon name="minus" size={15} label="縦を縮小" />
+          </button>
+          <button
+            type="button"
+            disabled={rowScale >= ROW_SCALES[ROW_SCALES.length - 1]}
+            onClick={() => updateSettings({ timelineRowScale: stepRowScale(rowScale, 1) })}
+            title="縦を拡大（トラックを高くする）"
+          >
+            <Icon name="plus" size={15} label="縦を拡大" />
           </button>
         </div>
       </div>
@@ -367,6 +405,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
       </div>
       )}
 
+      <RowScaleContext.Provider value={rowScale}>
       <div className="tl-body">
         <div className="tl-heads">
           <div className="tl-head-spacer" />
@@ -407,17 +446,19 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           </div>
         </div>
       </div>
+      </RowScaleContext.Provider>
     </div>
   );
 }
 
 function TrackHead({ track, compact }: { track: Track; compact: boolean }) {
   const { apply } = useEditor();
+  const rowScale = useContext(RowScaleContext);
   const patch = (changes: Partial<Track>) =>
     apply((seq) => ({ ...seq, tracks: seq.tracks.map((t) => (t.id === track.id ? { ...t, ...changes } : t)) }));
 
   return (
-    <div className={`tl-head kind-${track.kind}`} style={{ height: laneHeight(track, compact) }}>
+    <div className={`tl-head kind-${track.kind}`} style={{ height: laneHeight(track, compact, rowScale) }}>
       <strong>{track.name}</strong>
       <div className="tl-head-buttons">
         {track.kind !== 'audio' && (
@@ -502,6 +543,7 @@ function Lane({
 }) {
   const { sequence, apply, insertMode, selection, setSelection, toggleSelection, isSelected, editMode, enterNest } = useEditor();
   const { settings } = useApp();
+  const rowScale = useContext(RowScaleContext);
   const [dropping, setDropping] = useState(false);
   const clips = clipsOnTrack(sequence, track.id);
   // クリップの操作（ドラッグ・トリム）が使う「いまの状態」。描くたびに入れ替えるが、入れ物は同じなので
@@ -538,7 +580,7 @@ function Lane({
   return (
     <div
       className={`tl-lane kind-${track.kind}${dropping ? ' dropping' : ''}${track.locked ? ' locked' : ''}`}
-      style={{ height: laneHeight(track, compact) }}
+      style={{ height: laneHeight(track, compact, rowScale) }}
       onPointerDown={(e) => e.target === e.currentTarget && onEmptyPointerDown(e)}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes(MEDIA_DND_TYPE) || e.dataTransfer.types.includes(MEDIA_LIST_DND_TYPE)) {
@@ -616,6 +658,7 @@ const ClipBlock = memo(function ClipBlock({
   assetName: string | undefined;
   live: MutableRefObject<ClipLive>;
 }) {
+  const rowScale = useContext(RowScaleContext);
   const width = Math.max(14, clip.duration * pps);
 
   const label =
@@ -642,7 +685,7 @@ const ClipBlock = memo(function ClipBlock({
     const additive = event.shiftKey;
     if (!selected) toggleSelection(clip.id, additive);
     const ids = selected ? selection : additive ? [...selection, clip.id] : [clip.id];
-    const rowHeight = laneHeight(track, compact) + 4;
+    const rowHeight = laneHeight(track, compact, rowScale) + 4;
     // 差分を積み上げると carve と噛み合ってズレるので、常に開始時点の状態から作り直す。
     const original = sequence;
     const candidates = snapCandidates(sequence, player.time, ids);

@@ -302,6 +302,8 @@ export interface Settings {
   mediaBase: string;
   /** 投稿のタグ（まとめて書き出すときの投稿メモに入れる）。毎回同じタグを使う人が多いので覚えておく。 */
   postTags?: string;
+  /** タイムラインのレーンの高さの倍率（縦の拡大縮小）。既定 1。 */
+  timelineRowScale?: number;
   /** まとめて書き出すときに作るもの。 */
   batchVariants?: ('captions' | 'clean' | 'note')[];
 }
