@@ -3736,3 +3736,122 @@ html.tl-zooming .tl-clip {
   bottom: 1px;
   font-size: 10px;
 }
+
+/* ---------- 右クリック（長押し）のメニュー ---------- */
+
+.context-menu {
+  position: fixed;
+  z-index: 400;
+  min-width: 208px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 0.5px solid var(--ios-separator);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev, #1f2228);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+  user-select: none;
+}
+
+.context-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.context-menu button:hover:not(:disabled),
+.context-menu button:focus-visible {
+  background: var(--accent-soft);
+}
+
+.context-menu button:disabled {
+  opacity: 0.4;
+}
+
+.context-menu button.danger {
+  color: var(--danger);
+}
+
+.context-menu kbd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+.context-menu-sep {
+  height: 0.5px;
+  margin: 4px 6px;
+  background: var(--ios-separator);
+}
+
+/* 指では、項目を押しやすい高さに。キーの表示は要らない。 */
+@media (pointer: coarse) {
+  .context-menu button {
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .context-menu kbd {
+    display: none;
+  }
+}
+
+/* ---------- 再生ヘッドのつまみ: 掴めることが見て分かる大きさに ---------- */
+
+.tl-playhead-grip {
+  left: -6px;
+  width: 14px;
+  height: 14px;
+  pointer-events: auto;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+/* 見た目より広い当たり（指でも掴める）。 */
+.tl-playhead-grip::after {
+  content: '';
+  position: absolute;
+  inset: -4px -8px -8px;
+}
+
+/* ---------- 指で触る端末: クリップの端のつまみを広げる ---------- */
+
+@media (pointer: coarse) {
+  .tl-handle,
+  .tl.compact .tl-handle {
+    /* 短いクリップでは、真ん中（動かす所）が残るように。 */
+    width: min(24px, 30%);
+    opacity: 1;
+    background: transparent;
+  }
+  /* 当たりは広く、見える印は細く。 */
+  .tl-handle::after {
+    content: '';
+    position: absolute;
+    top: 22%;
+    bottom: 22%;
+    width: 4px;
+    border-radius: 2px;
+    background: rgba(231, 229, 223, 0.55);
+  }
+  .tl-handle.left::after {
+    left: 4px;
+  }
+  .tl-handle.right::after {
+    right: 4px;
+  }
+  .tl-clip:not(.selected) .tl-handle::after {
+    opacity: 0.35;
+  }
+}

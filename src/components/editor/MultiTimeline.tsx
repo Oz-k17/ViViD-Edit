@@ -9,19 +9,19 @@ import {
   clipsOnTrack,
   moveClips,
   previousAdjacent,
-  removeClips,
   sequenceDuration,
   snapCandidates,
   snapTime,
 } from '../../model/ops';
 import { clipFromAsset } from '../../model/factory';
 import { clipEnd, previewText, type Clip, type Sequence, type Track } from '../../model/types';
-import { useApp } from '../../store/app';
+import { shortcutLabel, useApp, useShortcutHint } from '../../store/app';
 import { useEditor } from '../../store/editor';
 import { EyeIcon, EyeOffIcon, MuteIcon, SoundIcon } from '../ui';
 import { Icon } from '../Icon';
 import { TRANSITION_ICON } from './transitionIcon';
-import { useTimelineActions } from './timelineActions';
+import { hasClipboard, useTimelineActions } from './timelineActions';
+import { ContextMenu, type MenuItem } from '../ContextMenu';
 
 export const MEDIA_DND_TYPE = 'application/x-vivid-media';
 /** 複数の素材をまとめてドラッグするときの id の配列（JSON）。単体の `MEDIA_DND_TYPE` も併せて入れる。 */
@@ -48,6 +48,14 @@ function effectiveMode(mode: EditMode, event: { altKey: boolean; ctrlKey: boolea
 const MIN_PPS = 6;
 const MAX_PPS = 400;
 const SNAP_PX = 8;
+/** 指で長押ししてメニューを出すまでの時間と、その間に許す指のぶれ。 */
+const LONG_PRESS_MS = 520;
+const TOUCH_SLOP_PX = 7;
+
+/** 指で触る端末か（iPad をパソコン表示で使っているときも含む）。 */
+function hasCoarsePointer(): boolean {
+  return typeof window !== 'undefined' && !!window.matchMedia?.('(any-pointer: coarse)').matches;
+}
 
 /** compact はスマホ表示用に一回り小さくしたレーンの高さ。 */
 export function laneHeight(track: Track, compact = false, scale = 1): number {
@@ -139,7 +147,7 @@ interface Props {
 }
 
 export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }: Props) {
-  const { sequence, rootSequence, nestPath, exitNest, apply, selection, setSelection, editMode, setEditMode, insertMode, setInsertMode, markIn, markOut } = useEditor();
+  const { sequence, rootSequence, nestPath, enterNest, exitNest, selection, setSelection, editMode, setEditMode, insertMode, setInsertMode, markIn, markOut } = useEditor();
   const { settings, updateSettings } = useApp();
   const rowScale = settings.timelineRowScale ?? DEFAULT_ROW_SCALE;
   noteClips(sequence.clips);
@@ -149,12 +157,82 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
     if (easy && editMode !== 'normal') setEditMode('normal');
   }, [easy, editMode, setEditMode]);
   const actions = useTimelineActions();
+  const key = (action: Parameters<typeof hint>[0]) => shortcutLabel(settings.shortcuts[action]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
   /** いま見えている横の範囲（px）。ルーラーの目盛りを見える分だけ描くのに使う。 */
   const [view, setView] = useState({ left: 0, width: 1600 });
   const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  /** 右クリック（長押し）のメニュー。clipId が null なら空いた所。 */
+  const [menu, setMenu] = useState<{ x: number; y: number; clipId: string | null } | null>(null);
+  const closeMenu = useRef(() => setMenu(null)).current;
+  /** タップで選び足す（Shift を押せない指のための切り替え）。 */
+  const [multi, setMulti] = useState(false);
+  const [touch] = useState(hasCoarsePointer);
+  const hint = useShortcutHint();
+
+  // ---- 拡大縮小の中心 ----
+  // ホイール・ピンチはカーソルの下を、ボタン・キーは再生ヘッド（見えていなければ画面の中央）を動かさずに拡大縮小する。
+  const zoomAnchor = useRef<{ time: number; x: number } | null>(null);
+  const ppsNow = useRef(pps);
+  useLayoutEffect(() => {
+    const box = scrollRef.current;
+    const from = ppsNow.current;
+    ppsNow.current = pps;
+    if (!box || from === pps) return;
+    let anchor = zoomAnchor.current;
+    zoomAnchor.current = null;
+    if (!anchor) {
+      const headX = player.time * from - box.scrollLeft;
+      anchor =
+        headX >= 0 && headX <= box.clientWidth
+          ? { time: player.time, x: headX }
+          : { time: (box.scrollLeft + box.clientWidth / 2) / from, x: box.clientWidth / 2 };
+    }
+    box.scrollLeft = Math.max(0, anchor.time * pps - anchor.x);
+  }, [pps]);
+
+  // Ctrl/⌘+ホイール（トラックパッドのピンチも同じ形で届く）と、Safari のピンチ。
+  // preventDefault が要るので、React の onWheel（passive）ではなく直接聞く。
+  useEffect(() => {
+    const box = scrollRef.current;
+    if (!box) return;
+    const clampPps = (value: number) => Math.min(MAX_PPS, Math.max(MIN_PPS, value));
+    const anchorAt = (clientX: number) => {
+      const x = clientX - box.getBoundingClientRect().left;
+      zoomAnchor.current = { time: (box.scrollLeft + x) / ppsNow.current, x };
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      const raw = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+      const delta = Math.max(-120, Math.min(120, raw));
+      if (delta === 0) return;
+      anchorAt(event.clientX);
+      setPps((p) => clampPps(p * Math.exp(-delta * 0.0025)));
+    };
+    let pinchFrom = 0;
+    const onGestureStart = (event: Event) => {
+      event.preventDefault();
+      pinchFrom = ppsNow.current;
+    };
+    const onGestureChange = (event: Event) => {
+      event.preventDefault();
+      const gesture = event as Event & { scale?: number; clientX?: number };
+      if (!pinchFrom || !gesture.scale) return;
+      anchorAt(gesture.clientX ?? box.getBoundingClientRect().left + box.clientWidth / 2);
+      setPps(clampPps(pinchFrom * gesture.scale));
+    };
+    box.addEventListener('wheel', onWheel, { passive: false });
+    box.addEventListener('gesturestart', onGestureStart);
+    box.addEventListener('gesturechange', onGestureChange);
+    return () => {
+      box.removeEventListener('wheel', onWheel);
+      box.removeEventListener('gesturestart', onGestureStart);
+      box.removeEventListener('gesturechange', onGestureChange);
+    };
+  }, [setPps]);
 
   useEffect(() => {
     const box = scrollRef.current;
@@ -223,7 +301,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
     // 途中の値を追いかけるので、state ではなく ref に持つ
     const box = { ...origin, w: 0, h: 0 };
     setMarquee(box);
-    if (!event.shiftKey) setSelection([]);
+    if (!event.shiftKey && !multi) setSelection([]);
 
     beginDrag(
       event,
@@ -260,9 +338,30 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           }
           top += height;
         }
-        setSelection(hits);
+        setSelection(event.shiftKey || multi ? [...new Set([...selection, ...hits])] : hits);
       },
     );
+  };
+
+  const menuItems = (): MenuItem[] => {
+    const paste: MenuItem = { label: '再生位置に貼り付け', hint: key('paste'), onSelect: actions.paste, disabled: !hasClipboard() };
+    if (!menu?.clipId) {
+      return [paste, { label: 'すべて選ぶ', hint: key('selectAll'), onSelect: actions.selectAll, disabled: sequence.clips.length === 0 }];
+    }
+    const clip = sequence.clips.find((c) => c.id === menu.clipId);
+    const none = selection.length === 0;
+    const items: MenuItem[] = [
+      { label: '再生位置で分割', hint: key('split'), onSelect: actions.split, disabled: none },
+      { label: '複製', hint: key('duplicate'), onSelect: actions.duplicate, disabled: none },
+      'separator',
+      { label: 'コピー', hint: key('copy'), onSelect: actions.copy, disabled: none },
+      { label: '切り取り', hint: key('cut'), onSelect: actions.cut, disabled: none },
+      paste,
+    ];
+    if (clip?.kind === 'nest') items.push('separator', { label: '中身を編集する', onSelect: () => enterNest(clip.id) });
+    items.push('separator', { label: '削除', hint: key('delete'), onSelect: actions.remove, disabled: none, danger: true });
+    if (!easy) items.push({ label: '後ろを詰めて削除', hint: key('rippleDelete'), onSelect: actions.rippleRemove, disabled: none, danger: true });
+    return items;
   };
 
   return (
@@ -284,15 +383,29 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
         </div>
       )}
       <div className="tl-toolbar">
-        <button type="button" onClick={() => apply((seq) => removeClips(seq, selection, easy))} disabled={!selection.length} title={easy ? '削除（後ろのクリップを前へ詰めます）' : undefined}>
+        <button type="button" onClick={actions.remove} disabled={!selection.length} title={`${easy ? '削除（後ろのクリップを前へ詰めます）' : '削除'}${hint('delete')}`}>
           削除
         </button>
+        <button type="button" onClick={actions.duplicate} disabled={!selection.length} title={`選んだクリップを、すぐ後ろへ複製${hint('duplicate')}`}>
+          複製
+        </button>
+        {(touch || compact) && (
+          <button
+            type="button"
+            className={multi ? 'active' : ''}
+            aria-pressed={multi}
+            onClick={() => setMulti((on) => !on)}
+            title="オンの間、タップしたクリップを選び足します（もう一度タップで外す）"
+          >
+            複数選択
+          </button>
+        )}
         {!easy && (
           <button
             type="button"
-            onClick={() => apply((seq) => removeClips(seq, selection, true))}
+            onClick={actions.rippleRemove}
             disabled={!selection.length}
-            title="後続のクリップを詰めて削除（Shift+Delete）"
+            title={`後続のクリップを詰めて削除${hint('rippleDelete')}`}
           >
             <Icon name="ripple-delete" />リップル削除
           </button>
@@ -316,10 +429,10 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
         )}
         <div className="zoom" role="group" aria-label="横（時間）の拡大縮小">
           <span className="zoom-label" aria-hidden="true">横</span>
-          <button type="button" onClick={() => setPps((p) => Math.max(MIN_PPS, p / 1.4))} title="横を縮小（長い時間を見る）">
+          <button type="button" onClick={() => setPps((p) => Math.max(MIN_PPS, p / 1.4))} title={`横を縮小（長い時間を見る）${hint('zoomOut')}・Ctrl/⌘+ホイールでも`}>
             <Icon name="minus" size={15} label="横を縮小" />
           </button>
-          <button type="button" onClick={() => setPps((p) => Math.min(MAX_PPS, p * 1.4))} title="横を拡大（細かく見る）">
+          <button type="button" onClick={() => setPps((p) => Math.min(MAX_PPS, p * 1.4))} title={`横を拡大（細かく見る）${hint('zoomIn')}・Ctrl/⌘+ホイールでも`}>
             <Icon name="plus" size={15} label="横を拡大" />
           </button>
         </div>
@@ -426,7 +539,17 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
               />
             )}
             <Ruler pps={pps} duration={duration} view={view} onScrub={scrub} />
-            <div className="tl-lanes" ref={lanesRef} onPointerDown={(e) => e.target === e.currentTarget && startMarquee(e)}>
+            <div
+              className="tl-lanes"
+              ref={lanesRef}
+              onPointerDown={(e) => e.button === 0 && e.target === e.currentTarget && startMarquee(e)}
+              onContextMenu={(e) => {
+                // 空いた所の右クリック。押した所へ再生位置を移してから、貼り付けなどを出す。
+                e.preventDefault();
+                scrub(e.clientX);
+                setMenu({ x: e.clientX, y: e.clientY, clipId: null });
+              }}
+            >
               {tracks.map((track) => (
                 <Lane
                   key={track.id}
@@ -435,6 +558,8 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
                   compact={compact}
                   onEmptyPointerDown={startMarquee}
                   onPickTransition={onPickTransition}
+                  multi={multi}
+                  onMenu={(x, y, clipId) => setMenu({ x, y, clipId })}
                 />
               ))}
               {marquee && (
@@ -444,11 +569,12 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
                 />
               )}
             </div>
-            <Playhead pps={pps} follow={follow} scrollRef={scrollRef} />
+            <Playhead pps={pps} follow={follow} scrollRef={scrollRef} onScrub={scrub} />
           </div>
         </div>
       </div>
       </RowScaleContext.Provider>
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems()} onClose={closeMenu} />}
     </div>
   );
 }
@@ -536,12 +662,16 @@ function Lane({
   compact,
   onEmptyPointerDown,
   onPickTransition,
+  multi,
+  onMenu,
 }: {
   track: Track;
   pps: number;
   compact: boolean;
   onEmptyPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPickTransition: (clipId: string) => void;
+  multi: boolean;
+  onMenu: (x: number, y: number, clipId: string) => void;
 }) {
   const { sequence, apply, insertMode, selection, setSelection, toggleSelection, isSelected, editMode, enterNest } = useEditor();
   const { settings } = useApp();
@@ -551,7 +681,7 @@ function Lane({
   // クリップの操作（ドラッグ・トリム）が使う「いまの状態」。描くたびに入れ替えるが、入れ物は同じなので
   // クリップ側は描き直しのきっかけにならない（押した瞬間に、ここから最新を読む）。
   const live = useRef<ClipLive>(null as unknown as ClipLive);
-  live.current = { sequence, apply, selection, setSelection, toggleSelection, editMode, snap: settings.snap, onPickTransition, enterNest };
+  live.current = { sequence, apply, selection, setSelection, toggleSelection, editMode, snap: settings.snap, onPickTransition, enterNest, multi, onMenu };
 
   const accepts = (kind: string) =>
     (track.kind === 'audio' && kind === 'audio') || (track.kind === 'video' && (kind === 'video' || kind === 'image'));
@@ -583,7 +713,7 @@ function Lane({
     <div
       className={`tl-lane kind-${track.kind}${dropping ? ' dropping' : ''}${track.locked ? ' locked' : ''}`}
       style={{ height: laneHeight(track, compact, rowScale) }}
-      onPointerDown={(e) => e.target === e.currentTarget && onEmptyPointerDown(e)}
+      onPointerDown={(e) => e.button === 0 && e.target === e.currentTarget && onEmptyPointerDown(e)}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes(MEDIA_DND_TYPE) || e.dataTransfer.types.includes(MEDIA_LIST_DND_TYPE)) {
           e.preventDefault();
@@ -627,6 +757,9 @@ interface ClipLive {
   snap: boolean;
   onPickTransition: (clipId: string) => void;
   enterNest: (clipId: string) => void;
+  /** タップで選び足すモード。 */
+  multi: boolean;
+  onMenu: (x: number, y: number, clipId: string) => void;
 }
 
 /**
@@ -670,9 +803,17 @@ const ClipBlock = memo(function ClipBlock({
         ? `${clip.name || 'まとめたクリップ'}（${clip.nested?.clips.length ?? 0} 本）`
         : (assetName ?? '素材');
 
+  /** メニューを出す。選んでいないクリップの上なら、まずそれを選ぶ（メニューは選んだもの全部に効く）。 */
+  const openMenu = (x: number, y: number) => {
+    if (!selected) live.current.setSelection([clip.id]);
+    live.current.onMenu(x, y, clip.id);
+  };
+
   const startMove = (event: React.PointerEvent) => {
+    // 右クリックはメニュー（onContextMenu）。ドラッグを始めない。
+    if (event.button !== 0) return;
     if (track.locked) return;
-    const { sequence, apply, selection, setSelection, toggleSelection, editMode, snap } = live.current;
+    const { sequence, apply, selection, setSelection, toggleSelection, editMode, snap, multi } = live.current;
     // スリップ / スライドは、動かすのではなく中身・前後を変えるドラッグ。選択はそのクリップだけにする。
     const bodyMode = effectiveMode(editMode, event, 'body');
     if (bodyMode === 'slip' || bodyMode === 'slide') {
@@ -684,7 +825,7 @@ const ClipBlock = memo(function ClipBlock({
       });
       return;
     }
-    const additive = event.shiftKey;
+    const additive = event.shiftKey || multi;
     if (!selected) toggleSelection(clip.id, additive);
     const ids = selected ? selection : additive ? [...selection, clip.id] : [clip.id];
     const rowHeight = laneHeight(track, compact, rowScale) + 4;
@@ -692,10 +833,28 @@ const ClipBlock = memo(function ClipBlock({
     const original = sequence;
     const candidates = snapCandidates(sequence, player.time, ids);
     let moved = false;
+    // 指は押しただけでも少しぶれる。ぶれの分は動かさず、長押しでメニューを出す。
+    const byTouch = event.pointerType === 'touch';
+    let slipped = !byTouch;
+    let menuShown = false;
+    const pressX = event.clientX;
+    const pressY = event.clientY;
+    const longPress = byTouch
+      ? window.setTimeout(() => {
+          if (moved || slipped) return;
+          menuShown = true;
+          openMenu(pressX, pressY);
+        }, LONG_PRESS_MS)
+      : undefined;
 
     beginDrag(
       event,
       (dx, dy) => {
+        if (menuShown) return;
+        if (!slipped) {
+          if (Math.hypot(dx, dy) < TOUCH_SLOP_PX) return;
+          slipped = true;
+        }
         let deltaTime = dx / pps;
         if (snap) {
           deltaTime = snapTime(clip.start + deltaTime, candidates, SNAP_PX / pps) - clip.start;
@@ -707,12 +866,17 @@ const ClipBlock = memo(function ClipBlock({
         apply(() => moveClips(original, ids, deltaTime, deltaTrack), `move:${clip.id}`);
       },
       () => {
-        if (!moved && !event.shiftKey) setSelection([clip.id]);
+        window.clearTimeout(longPress);
+        if (moved || menuShown) return;
+        // 動かさずに離した: ふつうはそのクリップだけを選ぶ。選び足しのときは、選んであったものを外す。
+        if (!additive) setSelection([clip.id]);
+        else if (selected) toggleSelection(clip.id, true);
       },
     );
   };
 
   const startTrim = (event: React.PointerEvent, side: 'left' | 'right') => {
+    if (event.button !== 0) return;
     if (track.locked) return;
     const { sequence, apply, setSelection, editMode, snap } = live.current;
     setSelection([clip.id]);
@@ -737,9 +901,14 @@ const ClipBlock = memo(function ClipBlock({
         ['--thumb' as string]: thumbnail ? `url(${thumbnail})` : undefined,
       }}
       onPointerDown={startMove}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openMenu(e.clientX, e.clientY);
+      }}
       // まとめたクリップは、ダブルクリックで中に入って編集する。
       onDoubleClick={clip.kind === 'nest' ? () => live.current.enterNest(clip.id) : undefined}
-      title={clip.kind === 'nest' ? `${label} — ダブルクリックで中身を編集` : `${label} — ${clip.duration.toFixed(2)}秒`}
+      title={clip.kind === 'nest' ? `${label} — ダブルクリックで中身を編集・右クリックでメニュー` : `${label} — ${clip.duration.toFixed(2)}秒・右クリックでメニュー`}
     >
       <span className="tl-handle left" onPointerDown={(e) => startTrim(e, 'left')} />
       {hasPrevious && (
@@ -777,10 +946,12 @@ function Playhead({
   pps,
   follow,
   scrollRef,
+  onScrub,
 }: {
   pps: number;
   follow: boolean;
   scrollRef: React.RefObject<HTMLDivElement | null>;
+  onScrub: (clientX: number) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -807,7 +978,20 @@ function Playhead({
 
   return (
     <div className="tl-playhead" ref={ref} style={{ transform: `translateX(${player.time * pps}px)` }}>
-      <span className="tl-playhead-grip" />
+      {/* つまみは掴んで左右に動かせる（目盛りをなぞるのと同じ）。 */}
+      <span
+        className="tl-playhead-grip"
+        title="ドラッグで再生位置を動かす"
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          player.setScrubbing(true);
+          beginDrag(
+            event,
+            (_dx, _dy, native) => onScrub(native.clientX),
+            () => player.setScrubbing(false),
+          );
+        }}
+      />
     </div>
   );
 }

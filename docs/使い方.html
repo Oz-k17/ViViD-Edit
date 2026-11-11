@@ -85,7 +85,7 @@
 <td>下の「iPhone で使う」</td>
 </tr>
 </tbody></table></div>
-<!-- version -->いまの版: **2026-11-09 21:31（日本時間）** に組み立てたもの<!-- /version -->
+<!-- version -->いまの版: **2026-11-11 20:07（日本時間）** に組み立てたもの<!-- /version -->
 
 <p><strong>この説明書は、ZIP を展開した <code>ViViD-Edit</code> フォルダの「使い方.html」でも読めます</strong>（パソコン版・iPad 版とも。ネットにつながっていなくても開けます）。</p>
 <ul>
@@ -270,11 +270,23 @@
 <li><strong>分割</strong> — 再生位置で <code>C</code></li>
 <li><strong>削除</strong> — <code>Delete</code>。<code>Shift</code>+<code>Delete</code> で、後ろを前へ詰めて削除</li>
 <li><strong>吸着（スナップ）</strong> — 他のクリップの端・再生位置・0 秒にくっつきます</li>
-<li><strong>拡大 / 縮小</strong>、再生位置のドラッグ<ul>
+<li><strong>拡大 / 縮小</strong> — タイムラインの上で <code>Ctrl/⌘</code>+ホイール（トラックパッドや iPad ではピンチ）。<strong>カーソルのある所を中心に</strong>広がります。右上の −／＋ やキーで変えたときは、再生位置を中心にします</li>
+<li><strong>再生位置を動かす</strong> — 目盛りをクリック / なぞる。再生位置の上のつまみを掴んで左右に動かしても同じです<ul>
 <li>タイムラインの右上に <strong>横</strong>（時間の幅）と <strong>縦</strong>（トラックの高さ）の −／＋ があります。トラックが多くて見切れるときは、<strong>縦の −</strong> で低くすると一度にたくさん見えます（8 段。最初は低いほうから 3 段目で、そこから 2 回縮めるといちばん低く、5 回広げるといちばん高くなります）。縦の倍率は次に開いたときも残ります</li>
 </ul>
 </li>
-<li><strong>複数選択</strong> — <code>Shift</code>+クリック、または空いた所をドラッグして囲む</li>
+<li><strong>複数選択</strong> — <code>Shift</code>+クリック（もう一度で外す）、または空いた所をドラッグして囲む<ul>
+<li>指で触る端末（iPad など）とスマホ表示では、タイムラインの上に <strong>「複数選択」</strong> のボタンが出ます。オンの間は、タップしたクリップを選び足します（もう一度タップで外す）</li>
+</ul>
+</li>
+<li><strong>右クリックのメニュー</strong> — クリップを右クリック（指では<strong>長押し</strong>）すると、分割・複製・コピー・切り取り・貼り付け・削除が出ます。空いた所なら、そこへ再生位置を移して貼り付けられます</li>
+<li><strong>複製</strong>（<code>Ctrl/⌘+D</code>、または「複製」ボタン）— 選んだクリップを、すぐ後ろへもう 1 本置きます。後ろのクリップは送るので、何も上書きしません</li>
+<li><strong>コピー / 切り取り / 貼り付け</strong>（<code>Ctrl/⌘+C</code> / <code>X</code> / <code>V</code>）— 再生位置へ貼ります。続けて貼ると後ろへ順に並びます<ul>
+<li>つないだ映像と音は、2 本そろって運びます。まとめたクリップの中と外のあいだでも貼れます</li>
+<li>「かんたん」と「挿入配置」のときは後ろを送って差し込み、それ以外は上書きします</li>
+</ul>
+</li>
+<li><strong>ボタンのキー</strong> — ボタンにマウスを載せると、そのボタンのショートカットキーが出ます</li>
 <li><strong>元に戻す / やり直す</strong> — 60 回以上</li>
 <li>段ごとの表示 / ミュートの切り替え</li>
 </ul>
@@ -618,6 +630,18 @@
 <tr>
 <td><code>Ctrl</code> / <code>⌘</code> + <code>A</code></td>
 <td>クリップをすべて選ぶ</td>
+</tr>
+<tr>
+<td><code>Ctrl</code> / <code>⌘</code> + <code>C</code> <code>X</code> <code>V</code></td>
+<td>選んだクリップをコピー / 切り取り / 再生位置に貼り付け</td>
+</tr>
+<tr>
+<td><code>Ctrl</code> / <code>⌘</code> + <code>D</code></td>
+<td>選んだクリップを複製（すぐ後ろへ）</td>
+</tr>
+<tr>
+<td><code>Ctrl</code> / <code>⌘</code> + ホイール</td>
+<td>タイムラインの拡大 / 縮小（カーソルの所を中心に）</td>
 </tr>
 </tbody></table></div>
 <h2 id="nas-に置いて何人かで使う">NAS に置いて何人かで使う</h2>

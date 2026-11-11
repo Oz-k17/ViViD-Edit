@@ -20,7 +20,7 @@ import { cropDestForSelection, cropDestFromRect, cropDestRect, keptDestRatio, re
 import { clipAtTime, clipsOnTrack, splitAt } from '../../model/ops';
 import { flattenNests } from '../../model/nest';
 import { clipEnd, type Clip, type Sequence } from '../../model/types';
-import { useApp } from '../../store/app';
+import { useApp, useShortcutHint } from '../../store/app';
 import { useEditor } from '../../store/editor';
 import { Icon } from '../Icon';
 
@@ -593,6 +593,7 @@ export function PreviewStage() {
 }
 
 function Transport({ guides, onToggleGuides }: { guides: boolean; onToggleGuides: () => void }) {
+  const hint = useShortcutHint();
   const { sequence, apply, selection } = useEditor();
   const playing = usePlayerPlaying();
   const duration = player.duration;
@@ -663,13 +664,13 @@ function Transport({ guides, onToggleGuides }: { guides: boolean; onToggleGuides
           <button type="button" title="前の継ぎ目へ" onClick={() => jump(-1)}>
             <Icon name="skip-back" label="前の継ぎ目へ" />
           </button>
-          <button type="button" title="1 フレーム戻る" onClick={() => player.nudge(-frame)}>
+          <button type="button" title={`1 フレーム戻る${hint('stepBack')}`} onClick={() => player.nudge(-frame)}>
             <Icon name="step-back" label="1 フレーム戻る" />
           </button>
-          <button type="button" className="primary" title="再生 / 一時停止" onClick={() => player.toggle()}>
+          <button type="button" className="primary" title={`再生 / 一時停止${hint('playPause')}`} onClick={() => player.toggle()}>
             <Icon name={playing ? 'pause' : 'play'} size={20} label="再生 / 一時停止" />
           </button>
-          <button type="button" title="1 フレーム進む" onClick={() => player.nudge(frame)}>
+          <button type="button" title={`1 フレーム進む${hint('stepForward')}`} onClick={() => player.nudge(frame)}>
             <Icon name="step-forward" label="1 フレーム進む" />
           </button>
           <button type="button" title="次の継ぎ目へ" onClick={() => jump(1)}>
@@ -677,7 +678,7 @@ function Transport({ guides, onToggleGuides }: { guides: boolean; onToggleGuides
           </button>
         </div>
         <div className="transport-tools">
-          <button type="button" title="再生ヘッドで分割" onClick={() => apply((seq) => splitAt(seq, player.time, selection))}>
+          <button type="button" title={`再生ヘッドで分割${hint('split')}`} onClick={() => apply((seq) => splitAt(seq, player.time, selection))}>
             <Icon name="scissors" />分割
           </button>
           <button type="button" className={guides ? 'active' : ''} title="SNS の UI に隠れる範囲" onClick={onToggleGuides}>

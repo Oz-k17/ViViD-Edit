@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { t } from '../../i18n';
-import { useApp } from '../../store/app';
+import { useApp, useShortcutHint } from '../../store/app';
 import { useEditor } from '../../store/editor';
 import { LayoutToggle } from '../LayoutToggle';
 import { UiModeToggle } from '../UiModeToggle';
@@ -12,6 +12,7 @@ export function TopBar({ onExport, onHelp }: { onExport: () => void; onHelp: () 
   const { project, sequence, dispatch, canUndo, canRedo } = useEditor();
   const { addTemplate, settings } = useApp();
   const [saved, setSaved] = useState(false);
+  const hint = useShortcutHint();
   // スマホ表示にはパネルの置き場そのものが無いので出さない。
   const mobile = settings.layout === 'mobile';
   const easy = settings.uiMode === 'easy';
@@ -31,10 +32,10 @@ export function TopBar({ onExport, onHelp }: { onExport: () => void; onHelp: () 
       <div className="topbar-actions">
         <UiModeToggle />
         <LayoutToggle />
-        <button type="button" disabled={!canUndo} onClick={() => dispatch({ type: 'undo' })} title="元に戻す">
+        <button type="button" disabled={!canUndo} onClick={() => dispatch({ type: 'undo' })} title={`元に戻す${hint('undo')}`}>
           <Icon name="undo" /><span className="btn-label">{t('戻す')}</span>
         </button>
-        <button type="button" disabled={!canRedo} onClick={() => dispatch({ type: 'redo' })} title="やり直す">
+        <button type="button" disabled={!canRedo} onClick={() => dispatch({ type: 'redo' })} title={`やり直す${hint('redo')}`}>
           <Icon name="redo" /><span className="btn-label">{t('進む')}</span>
         </button>
         {!mobile && !easy && <PanelMenu />}
