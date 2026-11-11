@@ -21,6 +21,7 @@ import {
   shortcutFromEvent,
   shortcutLabel,
   useApp,
+  useShortcutHint,
   type PanelId,
   type ShortcutAction,
 } from '../store/app';
@@ -122,6 +123,7 @@ function TimelinePanel({
   onSplit: () => void;
 }) {
   const grip = useDockGrip();
+  const hint = useShortcutHint();
   return (
     <section className={`panel timeline-panel${grip?.dragging ? ' dragging' : ''}`}>
       <header
@@ -134,10 +136,10 @@ function TimelinePanel({
         {/* ボタンは右端にまとめる。見出しとの間の余白が、掴むための場所になる。 */}
         <div className="panel-head-tail">
           <div className="panel-actions">
-            <button type="button" onClick={onAddText}>
+            <button type="button" onClick={onAddText} title={`再生位置にテロップを追加${hint('addText')}`}>
               <Icon name="plus" />テロップ
             </button>
-            <button type="button" onClick={onSplit}>
+            <button type="button" onClick={onSplit} title={`再生位置で分割${hint('split')}`}>
               <Icon name="scissors" />分割
             </button>
           </div>
@@ -231,6 +233,10 @@ export default function EditorPage() {
       extract: timeline.extract,
       closeGap: timeline.closeGap,
       selectAll: timeline.selectAll,
+      copy: timeline.copy,
+      cut: timeline.cut,
+      paste: timeline.paste,
+      duplicate: timeline.duplicate,
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -255,6 +261,8 @@ export default function EditorPage() {
         event.preventDefault();
         return;
       }
+      // 何も選んでいないときのコピー・切り取りは、ブラウザに任せる（画面の文字をコピーできるように）。
+      if ((action === 'copy' || action === 'cut') && selection.length === 0) return;
       event.preventDefault();
       actions[action](event);
     };

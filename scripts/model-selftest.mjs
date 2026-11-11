@@ -1838,6 +1838,73 @@ eq('空文字', wrap('', 10), ['']);
   check('年をまたいでも正しく比べる', V.isNewer('2027-01-01 00:00', '2026-12-31 23:59'));
 }
 
+// ---- コピー・貼り付け・複製 ----
+{
+  const { copyClips, pasteClips, duplicateClips } = await import('../src/model/clipboard.ts');
+  const { placeWithSound, partnerOf, reconcileLinks } = await import('../src/model/links.ts');
+  const { createSequence, clipFromAsset, textClip } = await import('../src/model/factory.ts');
+  const { tracksOf } = await import('../src/model/ops.ts');
+  const { nestClips } = await import('../src/model/nest.ts');
+
+  const base = createSequence();
+  const v1 = tracksOf(base, 'video')[0];
+  const t1 = tracksOf(base, 'text')[0];
+  const a = clipFromAsset({ id: 'a', kind: 'video', duration: 4 }, v1.id, 0);
+  const b = clipFromAsset({ id: 'b', kind: 'video', duration: 3 }, v1.id, 4);
+  let seq = placeWithSound(base, [a, b], false, () => true);
+  const near = (x, y) => Math.abs(x - y) < 1e-6;
+
+  check('何も選ばなければ束は無い', copyClips(seq, []) === null);
+  const bundle = copyClips(seq, [b.id]);
+  check('つないだ音も一緒に束になり、頭は 0 秒', bundle.clips.length === 2 && bundle.clips.every((c) => c.start === 0) && near(bundle.duration, 3));
+
+  // 上書きで貼る
+  const over = pasteClips(seq, bundle, 10, false);
+  const pasted = over.sequence.clips.filter((c) => over.ids.includes(c.id));
+  check('貼ったものは新しい id', pasted.length === 2 && pasted.every((c) => !seq.clips.some((o) => o.id === c.id)));
+  check('貼った映像と音は、新しいつなぎで結ばれる', pasted[0].linkId && pasted[0].linkId === pasted[1].linkId && pasted[0].linkId !== seq.clips.find((c) => c.id === b.id).linkId);
+  check('貼った位置は 10 秒', pasted.every((c) => near(c.start, 10)));
+  check('元のクリップはそのまま', seq.clips.every((o) => over.sequence.clips.some((c) => c.id === o.id && c.start === o.start && c.duration === o.duration)));
+  check('揃え直しても変わらない', reconcileLinks(seq, over.sequence) === over.sequence);
+  const twice = pasteClips(over.sequence, bundle, 20, false);
+  const links = new Set(twice.sequence.clips.map((c) => c.linkId));
+  check('同じ束を 2 回貼っても、つなぎは混ざらない', links.size === 4);
+
+  // 差し込みで貼る
+  const ins = pasteClips(seq, bundle, 4, true);
+  const movedB = ins.sequence.clips.find((c) => c.id === b.id);
+  check('差し込むと、後ろは束の長さだけ送られる', near(movedB.start, 7) && near(partnerOf(ins.sequence, movedB).start, 7), String(movedB.start));
+
+  // 複製
+  const dup = duplicateClips(seq, [a.id]);
+  const copy = dup.sequence.clips.find((c) => dup.ids.includes(c.id) && c.kind === 'video');
+  check('複製は、すぐ後ろに置く', near(copy.start, 4) && copy.mediaId === 'a' && near(copy.duration, 4));
+  check('複製しても、後ろのクリップは消えない', near(dup.sequence.clips.find((c) => c.id === b.id).start, 8));
+  check('選んだものが無ければ何もしない', duplicateClips(seq, ['nope']).sequence === seq);
+
+  // テロップ
+  const caption = textClip(t1.id, 1, 2, { content: 'こんにちは' });
+  seq = { ...seq, clips: [...seq.clips, caption] };
+  const capDup = duplicateClips(seq, [caption.id]);
+  const capCopy = capDup.sequence.clips.find((c) => capDup.ids.includes(c.id));
+  check('テロップの複製は中身も同じで、別の入れ物', capCopy.text.content === 'こんにちは' && capCopy.text !== caption.text && near(capCopy.start, 3));
+
+  // まとめたクリップ
+  const nested = nestClips(seq, [a.id], 'まとめ', 'n1').sequence;
+  const nestDup = duplicateClips(nested, ['n1']);
+  const nestCopy = nestDup.sequence.clips.find((c) => nestDup.ids.includes(c.id));
+  const innerIds = nested.clips.find((c) => c.id === 'n1').nested.clips.map((c) => c.id);
+  check('まとめたクリップの複製は、中身の id も振り直す', nestCopy.kind === 'nest' && nestCopy.nested.clips.length === innerIds.length && nestCopy.nested.clips.every((c) => !innerIds.includes(c.id)));
+
+  // 貼る先に同じトラックが無い（まとめたクリップの中へ貼るとき）
+  const other = createSequence();
+  const moved = pasteClips(other, bundle, 0, false);
+  check('別のシーケンスへは、同じ種類のトラックに貼る', moved.ids.length === 2 && moved.sequence.clips.every((c) => other.tracks.some((t) => t.id === c.trackId)));
+  const noAudio = { ...other, tracks: other.tracks.filter((t) => t.kind !== 'audio') };
+  const alone = pasteClips(noAudio, bundle, 0, false);
+  check('相手を置けないときは、つなぎを外す', alone.ids.length === 1 && !alone.sequence.clips[0].linkId);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

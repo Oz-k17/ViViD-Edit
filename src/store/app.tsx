@@ -55,7 +55,11 @@ export type ShortcutAction =
   | 'lift'
   | 'extract'
   | 'closeGap'
-  | 'selectAll';
+  | 'selectAll'
+  | 'copy'
+  | 'cut'
+  | 'paste'
+  | 'duplicate';
 
 export const SHORTCUT_LABELS: Record<ShortcutAction, string> = {
   playPause: '再生 / 一時停止',
@@ -87,6 +91,10 @@ export const SHORTCUT_LABELS: Record<ShortcutAction, string> = {
   extract: 'In〜Out を抽出（詰めて取り除く）',
   closeGap: '再生ヘッドの隙間を詰める',
   selectAll: 'クリップをすべて選ぶ',
+  copy: '選んだクリップをコピー',
+  cut: '選んだクリップを切り取り',
+  paste: '再生位置に貼り付け',
+  duplicate: '選んだクリップを複製（すぐ後ろへ）',
 };
 
 export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
@@ -119,6 +127,10 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
   extract: 'Quote',
   closeGap: 'alt+Delete',
   selectAll: 'mod+KeyA',
+  copy: 'mod+KeyC',
+  cut: 'mod+KeyX',
+  paste: 'mod+KeyV',
+  duplicate: 'mod+KeyD',
 };
 
 export type LayoutMode = 'desktop' | 'mobile';
@@ -675,4 +687,10 @@ export function shortcutLabel(value: string): string {
     .replace('Arrow', '')
     .replace(/\+/g, ' + ')
     .replace('Ctrl/⌘ + ', 'Ctrl/⌘+');
+}
+
+/** ボタンの説明（title）に添える、いまの割り当てのキー。例: `（C）`。 */
+export function useShortcutHint(): (action: ShortcutAction) => string {
+  const { shortcuts } = useApp().settings;
+  return (action) => `（${shortcutLabel(shortcuts[action])}）`;
 }
