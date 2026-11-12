@@ -175,13 +175,26 @@ export interface PanelLayout {
 
 const group = (...panels: PanelId[]): PanelGroup => ({ id: uid('g'), panels, active: panels[0] });
 
+/** 前の版の、下段（タイムライン）の初期の高さ。これが残っている人は「自分で変えていない」とみなして、新しい初期値へ上げる。 */
+const OLD_DOCK_HEIGHT = 300;
+
+/**
+ * 下段（タイムライン）の初期の高さ。
+ * 300px 固定では、道具の列が増えた「かんたん」でトラックが 1〜2 段しか見えなかった。
+ * 画面の高さの半分弱にして、5 段のトラックがだいたい見えるようにする（小さい画面ではプレビューを潰さない範囲で）。
+ */
+export function defaultDockHeight(): number {
+  const screen = typeof window !== 'undefined' && window.innerHeight > 0 ? window.innerHeight : 900;
+  return Math.round(Math.max(320, Math.min(460, screen * 0.46)));
+}
+
 export const DEFAULT_PANELS: PanelLayout = {
   // 素材と台本は同じ場所に重ねてタブにする。どちらも「選んで持ってくる」側なので。
   slots: { left: [group('media', 'script')], right: [group('inspector')], bottom: [group('timeline')] },
   hidden: [],
   leftWidth: 290,
   rightWidth: 330,
-  dockHeight: 300,
+  dockHeight: defaultDockHeight(),
 };
 
 export const PANEL_LIMITS = {
@@ -251,7 +264,11 @@ export function sanitizePanels(layout: Partial<PanelLayout> | undefined): PanelL
     hidden,
     leftWidth: clampSize(layout?.leftWidth ?? DEFAULT_PANELS.leftWidth, PANEL_LIMITS.railMin, PANEL_LIMITS.railMax),
     rightWidth: clampSize(layout?.rightWidth ?? DEFAULT_PANELS.rightWidth, PANEL_LIMITS.railMin, PANEL_LIMITS.railMax),
-    dockHeight: clampSize(layout?.dockHeight ?? DEFAULT_PANELS.dockHeight, PANEL_LIMITS.dockMin, PANEL_LIMITS.dockMax),
+    dockHeight: clampSize(
+      layout?.dockHeight === undefined || layout.dockHeight === OLD_DOCK_HEIGHT ? defaultDockHeight() : layout.dockHeight,
+      PANEL_LIMITS.dockMin,
+      PANEL_LIMITS.dockMax,
+    ),
   };
 }
 
