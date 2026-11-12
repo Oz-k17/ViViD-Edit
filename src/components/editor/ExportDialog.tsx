@@ -26,6 +26,10 @@ import { Icon } from '../Icon';
 import { CheckList } from './CheckList';
 import { EXPORT_VARIANTS, captionScript, normalizeTags, postNote, titleOf, variantSequence, type VariantKey } from '../../model/batchExport';
 import { useEasy } from '../UiModeToggle';
+import { batchId, isResumable, markDone, remainingSteps, startBatch, type BatchRecord } from '../../model/exportProgress';
+import { loadBatchRecord, outputsStore, saveBatchRecord } from '../../store/outputs';
+import { uid } from '../../model/factory';
+import { navigate } from '../../router';
 
 const QUALITIES = [
   { value: 1080, label: '1080p' },
@@ -186,6 +190,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       );
       setResult(output);
       await save(output);
+      shelve(output, withoutCaption ? '字幕なし' : captions > 0 ? '字幕あり' : '', effectiveQuality);
     } catch (e) {
       setErrorCode('unknown');
       setErrorMessage(e instanceof Error ? e.message : '書き出しに失敗しました');
@@ -194,14 +199,51 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     }
   };
 
+  /** 完成品の置き場へ 1 行足す（確認待ちとして）。足した行の id を返す。 */
+  const shelve = (output: ExportResult, variant: string, shelfQuality = quality): string => {
+    const id = uid('out');
+    outputsStore.add({
+      id,
+      project: project.name,
+      filename: output.filename,
+      variant,
+      aspect,
+      quality: shelfQuality,
+      duration,
+      bytes: output.blob.size,
+      at: Date.now(),
+      status: 'check',
+      memo: '',
+    });
+    return id;
+  };
+
   /** 字幕が無ければ「字幕なし」は「字幕あり」と同じものになるので、作らない。 */
   const batchVariants = EXPORT_VARIANTS.filter((v) => batchPicks.includes(v.key) && (v.key === 'captions' || captions > 0));
   const wantNote = batchPicks.includes('note');
   const togglePick = (key: VariantKey | 'note', on: boolean) =>
     setBatchPicks((picks) => (on ? [...picks.filter((k) => k !== key), key] : picks.filter((k) => k !== key)));
 
-  /** 選んだ版を順に書き出して保存し、最後に投稿メモを作る。 */
-  const runBatch = async () => {
+  // ---- 途中で止まったまとめ書き出しの続き ----
+  // 作品の中身か設定が変われば別の書き出しなので、印（batchKey）が同じときだけ「続きから」を出す。
+  const batchSteps = [...batchVariants.map((v) => ({ key: v.key as string, label: v.label })), ...(wantNote ? [{ key: 'note', label: '投稿メモ' }] : [])];
+  const batchKey = useMemo(
+    () => batchId(sequence, { aspect, quality, fps, bitrate, format, finishAudio, fast, tags: tagInput, steps: batchSteps.map((s) => s.key) }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sequence, aspect, quality, fps, bitrate, format, finishAudio, fast, tagInput, batchSteps.map((s) => s.key).join(',')],
+  );
+  const [batchRecord, setBatchRecord] = useState<BatchRecord | null>(loadBatchRecord);
+  const resumable = isResumable(batchRecord, batchKey) ? batchRecord : null;
+  const remember = (record: BatchRecord | null) => {
+    setBatchRecord(record);
+    saveBatchRecord(record);
+  };
+
+  /**
+   * 選んだ版を順に書き出して保存し、最後に投稿メモを作る。
+   * `resume` なら、前回終わった本は飛ばして残りだけ作る。1 本終わるたびに記録するので、途中で落ちても続きから始められる。
+   */
+  const runBatch = async (resume = false) => {
     setErrorCode(null);
     setErrorMessage(null);
     setResult(null);
@@ -212,8 +254,15 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     updateSettings({ exportAspect: aspect, exportQuality: quality, exportFormat: format, postTags: tagInput, batchVariants: batchPicks });
     const total = batchVariants.length;
     const savedNames: string[] = [];
+    let record = resume && resumable ? resumable : startBatch(batchKey, project.name, batchSteps, Date.now());
+    remember(record);
+    const finished = new Set(record.steps.filter((step) => step.done).map((step) => step.key));
+    for (const step of record.steps) if (step.done && step.filename) savedNames.push(`${step.label}: ${step.filename}（前回保存済み）`);
+    setBatchSaved([...savedNames]);
+    const shelved: string[] = [];
     try {
       for (const [index, variant] of batchVariants.entries()) {
+        if (finished.has(variant.key)) continue;
         setBatchStep({ index, total, label: variant.label });
         setProgress(0);
         const output = await exporter.run(
@@ -226,6 +275,9 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         await saveBlob(output.blob, output.filename);
         savedNames.push(`${variant.label}: ${output.filename}（${formatBytes(output.blob.size)}）`);
         setBatchSaved([...savedNames]);
+        shelved.push(shelve(output, variant.label));
+        record = markDone(record, variant.key, output.filename);
+        remember(record);
       }
       if (wantNote) {
         const text = postNote({
@@ -243,7 +295,17 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           savedNames.push(`投稿メモ: ${filename}`);
           setBatchSaved([...savedNames]);
         }
+        // 完成品の置き場からも、投稿メモをコピーできるようにしておく。
+        // 前回の分（続きから再開したとき）にも付ける。ファイル名で見分ける。
+        const names = new Set(record.steps.map((step) => step.filename).filter(Boolean));
+        for (const item of outputsStore.all()) {
+          if (shelved.includes(item.id) || names.has(item.filename)) outputsStore.update(item.id, { postNote: text });
+        }
+        record = markDone(record, 'note');
       }
+      // 全部終わったので、途中の記録は要らない。
+      if (remainingSteps(record).length === 0) remember(null);
+      else remember(record);
     } catch (e) {
       const code = ((e as { code?: string }).code ?? 'unknown') as SaveErrorCode;
       setErrorCode(code);
@@ -454,6 +516,23 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             </button>
             <section className="batch-export">
               <span className="field-label">まとめて書き出す</span>
+              {resumable && (
+                <div className="resume-note" role="status">
+                  <strong>前回のまとめ書き出しが、途中で止まっています。</strong>
+                  <span>
+                    保存済み: {resumable.steps.filter((step) => step.done).map((step) => step.label).join('・')}／残り:{' '}
+                    {remainingSteps(resumable).map((step) => step.label).join('・')}
+                  </span>
+                  <div className="chip-row wrap">
+                    <button type="button" className="primary" disabled={!supported} onClick={() => void runBatch(true)}>
+                      続きから書き出す（残り {remainingSteps(resumable).length} つ）
+                    </button>
+                    <button type="button" className="ghost" onClick={() => remember(null)}>
+                      記録を消す（最初からやり直す）
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="chip-row wrap">
                 {EXPORT_VARIANTS.filter((v) => v.key === 'captions' || captions > 0).map((v) => (
                   <Toggle key={v.key} label={v.label} checked={batchPicks.includes(v.key)} onChange={(on) => togglePick(v.key, on)} />
@@ -489,6 +568,21 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               ))}
             </ul>
           </div>
+        )}
+        {(batchSaved.length > 0 || saved) && !running && (
+          <p className="muted small">
+            書き出したものは「完成品」に「確認待ち」で並べました。
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => {
+                onClose();
+                navigate('/outputs');
+              }}
+            >
+              完成品を開く
+            </button>
+          </p>
         )}
         {note && !running && (
           <div className="batch-note">

@@ -1,11 +1,13 @@
 import { NavLink } from '../router';
 import { t } from '../i18n';
 import { useApp } from '../store/app';
+import { useOutputs } from '../store/outputs';
 
 const LINKS = [
   { to: '/', label: 'エディタ', short: 'エディタ', end: true },
   { to: '/media-library', label: '素材管理', short: '素材', end: false },
   { to: '/templates', label: 'テンプレート集', short: 'テンプレ', end: false },
+  { to: '/outputs', label: '完成品', short: '完成品', end: false },
   { to: '/settings', label: '設定', short: '設定', end: false },
 ];
 
@@ -13,11 +15,14 @@ export function SiteNav() {
   // スマホ幅では書き出しボタンまで入りきらないので、見出しを短くする
   const { settings } = useApp();
   const short = settings.layout === 'mobile';
+  const waiting = useOutputs().filter((item) => item.status === 'check').length;
   return (
     <nav className="site-nav">
       {LINKS.map((link) => (
         <NavLink key={link.to} to={link.to} end={link.end}>
           {t(short ? link.short : link.label)}
+          {/* 確認待ちが残っていることを、数で知らせる。 */}
+          {link.to === '/outputs' && waiting > 0 && <span className="nav-badge">{waiting}</span>}
         </NavLink>
       ))}
     </nav>

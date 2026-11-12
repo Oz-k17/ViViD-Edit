@@ -2047,7 +2047,7 @@ const SPEAKER_DEFAULT_COLORS: Record<string, string> = { '1': '#5cd6ff', '2': '#
 const UNSURE_MARGIN = 0.03;
 
 function SpeakerSection({ text, set }: { text: TextProps; set: (changes: Partial<TextProps>, key?: string) => void }) {
-  const { sequence, apply } = useEditor();
+  const { sequence, apply, setSelection } = useEditor();
   const [colors, setColors] = useState(SPEAKER_DEFAULT_COLORS);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -2055,6 +2055,18 @@ function SpeakerSection({ text, set }: { text: TextProps; set: (changes: Partial
   const captions = sequence.clips.filter((c) => c.kind === 'text' && (c.text?.role ?? 'caption') === 'caption');
   const anchorFor = (speaker: string) => captions.find((c) => c.text?.speaker === speaker) ?? null;
   const ready = SPEAKERS.every((s) => anchorFor(s) !== null);
+  /** 声で決めきれなかった行（時刻順）。 */
+  const unsureRows = captions.filter((c) => c.text?.speakerGuess).sort((a, b) => a.start - b.start);
+  /** 要確認の行を、人が決める。色もその人の色にする。 */
+  const decide = (clipId: string, speaker: string) =>
+    apply((seq) => ({
+      ...seq,
+      clips: seq.clips.map((c) =>
+        c.id === clipId && c.text
+          ? { ...c, text: { ...c.text, speaker, speakerGuess: null, color: colors[speaker] ?? c.text.color } }
+          : c,
+      ),
+    }));
 
   const run = async () => {
     setBusy(true);
@@ -2080,15 +2092,17 @@ function SpeakerSection({ text, set }: { text: TextProps; set: (changes: Partial
           if (own) return { ...c, text: { ...c.text, color: colors[own.speaker] ?? c.text.color } };
           const decision = decided.get(c.id);
           if (!decision) return c;
-          return { ...c, text: { ...c.text, speaker: decision.id, color: colors[decision.id] ?? c.text.color } };
+          // 決めきれなかった行は、推測で色を付けない。「たぶんこちら」だけ覚えて、要確認の一覧に出す。
+          if (decision.margin < UNSURE_MARGIN) return { ...c, text: { ...c.text, speaker: null, speakerGuess: decision.id } };
+          return { ...c, text: { ...c.text, speaker: decision.id, speakerGuess: null, color: colors[decision.id] ?? c.text.color } };
         }),
       }));
 
       const unsure = [...decided.values()].filter((d) => d.margin < UNSURE_MARGIN).length;
       const skipped = results.length - decided.size;
       setNote(
-        `${decided.size} 行を振り分けました。` +
-          (unsure ? `うち ${unsure} 行は迷っています（見直してください）。` : '') +
+        `${decided.size - unsure} 行を振り分けました。` +
+          (unsure ? `${unsure} 行は決めきれなかったので、色を付けずに下の「要確認」に並べました。` : '') +
           (skipped ? `${skipped} 行は声が見つからず、そのままにしました。` : ''),
       );
     } catch (e) {
@@ -2104,7 +2118,7 @@ function SpeakerSection({ text, set }: { text: TextProps; set: (changes: Partial
         <Segmented<string>
           value={text.speaker ?? ''}
           options={[{ value: '', label: 'なし' }, ...SPEAKERS.map((s) => ({ value: String(s), label: `話者${s}` }))]}
-          onChange={(speaker) => set({ speaker: speaker || null })}
+          onChange={(speaker) => set({ speaker: speaker || null, speakerGuess: null })}
         />
       </Field>
       <div className="two-col">
@@ -2127,9 +2141,49 @@ function SpeakerSection({ text, set }: { text: TextProps; set: (changes: Partial
         </p>
       )}
       {note && <p className="muted small">{note}</p>}
+      {unsureRows.length > 0 && (
+        <div className="review-list" role="group" aria-label="話者の要確認">
+          <div className="review-head">
+            <strong>要確認 {unsureRows.length} 行</strong>
+            <span className="muted small">だれの声か決めきれなかった字幕です。聞いて確かめて、どちらか選んでください。</span>
+          </div>
+          <ul>
+            {unsureRows.map((row) => (
+              <li key={row.id}>
+                <button
+                  type="button"
+                  className="review-row"
+                  title="この字幕の所へ飛んで、再生します"
+                  onClick={() => {
+                    setSelection([row.id]);
+                    player.seek(row.start);
+                    player.play();
+                  }}
+                >
+                  <span className="review-time">{formatTime(row.start)}</span>
+                  <span className="review-text">{previewText(row.text!.content).split('\n')[0]}</span>
+                </button>
+                <span className="review-pick">
+                  {SPEAKERS.map((speaker) => (
+                    <button
+                      key={speaker}
+                      type="button"
+                      className={row.text!.speakerGuess === String(speaker) ? 'chip guess' : 'chip'}
+                      title={row.text!.speakerGuess === String(speaker) ? 'たぶんこちら（声が少しだけ近い）' : undefined}
+                      onClick={() => decide(row.id, String(speaker))}
+                    >
+                      話者{speaker}
+                    </button>
+                  ))}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <p className="muted small">
         声の高さと音色で判断します。同じ人でもささやくと外れることがあるので、
-        迷った行として数えたものは目で確かめてください。
+        決めきれなかった行には色を付けず、「要確認」に並べます。
       </p>
     </>
   );

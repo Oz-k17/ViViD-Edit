@@ -4,6 +4,7 @@ import EditorPage from './pages/EditorPage';
 import MediaLibraryPage from './pages/MediaLibraryPage';
 import SettingsPage from './pages/SettingsPage';
 import TemplatesPage from './pages/TemplatesPage';
+import OutputsPage from './pages/OutputsPage';
 import { AppProvider } from './store/app';
 import { EditorProvider } from './store/editor';
 import { ToastHost } from './components/Toast';
@@ -19,6 +20,7 @@ export default function App() {
             '/': () => <EditorPage />,
             '/media-library': () => <MediaLibraryPage />,
             '/templates': () => <TemplatesPage />,
+            '/outputs': () => <OutputsPage />,
             '/settings': () => <SettingsPage />,
           }}
           fallback={() => <EditorPage />}

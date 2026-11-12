@@ -93,16 +93,10 @@ export function baselineLevels(levels: Float32Array, half = BASELINE_HALF, step 
 }
 
 /**
- * 見どころの候補。`levels` は 1 秒ごとの音の大きさ（dBFS）。点数の高い順。
- * 盛り上がる所が無い（ずっと同じ調子の）録画では、空になる。
+ * 1 秒ごとの「ふだんより何 dB 大きいか」（盛り上がり）。0 以上。
  */
-export function findHighlights(levels: Float32Array, options: HighlightOptions = {}): Highlight[] {
+export function loudnessLift(levels: Float32Array): Float32Array {
   const n = levels.length;
-  const length = Math.max(5, Math.round(options.length ?? 45));
-  const count = Math.max(1, options.count ?? 5);
-  const minLift = options.minLift ?? 3;
-  if (n < length) return [];
-
   const L = Float32Array.from(levels, (v) => (Number.isFinite(v) ? Math.max(-100, v) : -100));
   // ふだん（前後 5 分）と、近く（前後 20 秒）の両方より大きい所だけを盛り上がりとする。
   // 前後 5 分だけだと、ゲームの音が数分大きくなった境目（中央値が追いつかない所）まで盛り上がりに見える。
@@ -120,6 +114,22 @@ export function findHighlights(levels: Float32Array, options: HighlightOptions =
     }
     lift[i] = sum / cnt;
   }
+  return lift;
+}
+
+/**
+ * 見どころの候補。`levels` は 1 秒ごとの音の大きさ（dBFS）。点数の高い順。
+ * 盛り上がる所が無い（ずっと同じ調子の）録画では、空になる。
+ */
+export function findHighlights(levels: Float32Array, options: HighlightOptions = {}): Highlight[] {
+  const n = levels.length;
+  const length = Math.max(5, Math.round(options.length ?? 45));
+  const count = Math.max(1, options.count ?? 5);
+  const minLift = options.minLift ?? 3;
+  if (n < length) return [];
+
+  const L = Float32Array.from(levels, (v) => (Number.isFinite(v) ? Math.max(-100, v) : -100));
+  const lift = loudnessLift(L);
   const floor = percentile(L, 0.1);
   const loud = percentile(L, 0.9);
   const soundingLine = floor + 0.35 * (loud - floor);

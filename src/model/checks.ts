@@ -15,6 +15,9 @@ import type { Clip, Sequence } from './types';
 export type CheckKind =
   | 'captionFast'
   | 'captionsStacked'
+  | 'captionCrushed'
+  | 'captionSmall'
+  | 'speakerUnsure'
   | 'faceCovered'
   | 'safeZone'
   | 'offscreen'
@@ -56,6 +59,21 @@ export type MeasureText = (clip: Clip) => Box | null;
  */
 export const CAPTION_CHARS_PER_SECOND = 9;
 export const CAPTION_MIN_SECONDS = 0.6;
+
+/**
+ * 縁が太すぎて文字が潰れる境目。縁（内側＋外側）の太さ ÷ 文字の大きさ。
+ * 縁は文字の輪郭の外へ広がるので、字の中の隙間（「日」の中や、画どうしの間）を両側から埋める。
+ * 手本にしているテレビ風（0.20）・色文字＋白黒フチ（0.18）は読めるので、それより太いものを知らせる。
+ * 字を詰めている（字間がマイナス）と隣の字ともつながるので、そのぶん早めに知らせる。
+ */
+export const STROKE_CRUSH_RATIO = 0.22;
+/** スマホで読める文字の大きさの下限。画面の短い辺に対する割合（1080 幅なら 38px）。 */
+export const CAPTION_MIN_SIZE_RATIO = 0.035;
+
+/** 縁の太さ ÷ 文字の大きさ。 */
+export function strokeRatio(text: { fontSize: number; strokeWidth: number; strokeWidth2?: number }): number {
+  return text.fontSize > 0 ? (Math.max(0, text.strokeWidth) + Math.max(0, text.strokeWidth2 ?? 0)) / text.fontSize : 0;
+}
 
 /**
  * 縦長（9:16）の各サービス（TikTok・Shorts・Reels）で、ボタンや説明文が上に重なる所（画面に対する割合）。
@@ -201,6 +219,44 @@ export function timelineChecks(sequence: Sequence, measure: MeasureText): CheckI
           hint: `${format(need)}以上出すか、言葉を短くしてください`,
         });
       }
+    }
+
+    // 縁が太すぎて潰れている・小さすぎて読めない（どちらも、スマホの実寸で読めるかの話）。
+    const text = clip.text!;
+    const size = text.fontSize * (clip.scale || 1);
+    const ratio = strokeRatio(text);
+    const tight = text.letterSpacing < 0 ? 0.03 : 0;
+    if (ratio > STROKE_CRUSH_RATIO - tight) {
+      const total = text.strokeWidth + (text.strokeWidth2 ?? 0);
+      items.push({
+        kind: 'captionCrushed',
+        level: 'warn',
+        time: middle,
+        clipId: clip.id,
+        message: `縁が太すぎて、文字が潰れて見えます（大きさ ${Math.round(text.fontSize)} に縁 ${Math.round(total)}）`,
+        hint: `縁を ${Math.max(1, Math.floor(text.fontSize * 0.14))} くらいまで細くするか、文字を大きくしてください`,
+      });
+    }
+    // 「縮めて合わせる」文字は、幅に合わせて大きさが決まるので、ここでは見ない。
+    if ((text.fit ?? 'wrap') === 'wrap' && size < Math.min(W, H) * CAPTION_MIN_SIZE_RATIO) {
+      items.push({
+        kind: 'captionSmall',
+        level: 'info',
+        time: middle,
+        clipId: clip.id,
+        message: `文字が小さく、スマホでは読みにくい大きさです（${Math.round(size)}）`,
+        hint: `${Math.ceil(Math.min(W, H) * 0.05)} 以上にすると読みやすくなります`,
+      });
+    }
+    if (isCaption(clip) && text.speakerGuess) {
+      items.push({
+        kind: 'speakerUnsure',
+        level: 'warn',
+        time: clip.start,
+        clipId: clip.id,
+        message: 'だれの声か決めきれず、色を付けていない字幕です',
+        hint: '字幕を選び、「話者」でどちらの人か決めてください',
+      });
     }
 
     const box = boxOf(clip);
