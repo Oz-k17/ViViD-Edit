@@ -223,14 +223,24 @@ export function TextDemo({ text, still = false }: { text: TextProps; still?: boo
  * 見本の絵にかけた結果。左半分が元、右半分がかけた後。
  * 絵は、選んでいるクリップのサムネイル（無ければ色の帯）。
  */
-export function EffectDemo({ effects, thumbnail }: { effects: Pick<Effect, 'type' | 'intensity'>[]; thumbnail?: string }) {
+export function EffectDemo({
+  effects,
+  thumbnail,
+  motion,
+}: {
+  effects: Pick<Effect, 'type' | 'intensity'>[];
+  thumbnail?: string;
+  /** 動きのエフェクトの見本。動かし方は CSS（styles.css の demo-fx-move-*）。 */
+  motion?: string;
+}) {
   const filter = effectFilter(effects as Effect[], 216 / 1080);
   const image = thumbnail ? { backgroundImage: `url(${thumbnail})` } : undefined;
   return (
     <div className={`demo-fx${thumbnail ? '' : ' sample'}`} aria-hidden>
       <span className="demo-fx-pic" style={image} />
       <span className="demo-fx-after">
-        <span className="demo-fx-pic" style={{ ...image, filter: filter === 'none' ? undefined : filter }} />
+        <span className={`demo-fx-pic${motion ? ` move-${motion}` : ''}`} style={{ ...image, filter: filter === 'none' ? undefined : filter }} />
+        {motion === 'vignette' && <span className="demo-fx-vignette" />}
       </span>
       <span className="demo-fx-label left">元</span>
       <span className="demo-fx-label right">かけた後</span>

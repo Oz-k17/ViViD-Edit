@@ -41,7 +41,14 @@ export type EffectType =
   | 'sepia'
   | 'hueRotate'
   | 'blur'
-  | 'invert';
+  | 'invert'
+  // ここから下は「動き」。色ではなく、絵の大きさ・位置・周りの暗さを変える。
+  | 'zoom'
+  | 'shake'
+  | 'vignette';
+
+/** 動きのエフェクト（色のフィルタではないもの）。 */
+export const MOTION_EFFECTS: EffectType[] = ['zoom', 'shake', 'vignette'];
 
 export interface Effect {
   id: string;
@@ -144,12 +151,12 @@ export interface TextFrame {
 
 export const DEFAULT_TEXT_FRAME: TextFrame = {
   background: '#ffffff',
-  borderColor: '#9146ff',
+  borderColor: '#2f80ed',
   borderWidth: 6,
   radius: 28,
   heading: '',
-  headingColor: '#5b21b6',
-  headingBackground: '#ede9fe',
+  headingColor: '#1e4fa3',
+  headingBackground: '#e3efff',
   iconLeft: null,
   iconRight: null,
   shadow: 24,
@@ -188,6 +195,13 @@ export interface TextProps {
    * 未定義のときは影のぼかしの 1/4（＝これまでの見た目）。
    */
   shadowY?: number;
+  /** 影の色。未定義なら半透明の黒（これまでの見た目）。濃い色にしてぼかしを 0 にすると、厚みに見える。 */
+  shadowColor?: string;
+  /**
+   * 文字の下側の色。入れると、`color`（上）からこの色（下）へ縦になだらかに変わる。
+   * 1 色のべた塗りより、光が当たっているように見える。未定義なら 1 色。
+   */
+  color2?: string;
   /** 既定は 'wrap'。未定義でも同じ。 */
   fit?: TextFit;
   /** 既定は 'caption'。未定義でも同じ。 */
@@ -289,6 +303,9 @@ export const EFFECT_META: Record<EffectType, { label: string; unit: string; def:
   hueRotate: { label: '色相', unit: '°', def: 0.3 },
   blur: { label: 'ぼかし', unit: '', def: 0.2 },
   invert: { label: '反転', unit: '', def: 1 },
+  zoom: { label: '寄る（ズーム）', unit: '', def: 0.3 },
+  shake: { label: '揺らす', unit: '', def: 0.4 },
+  vignette: { label: '周りを暗く', unit: '', def: 0.6 },
 };
 
 /** `plain` は見たままを言った名前、`label` は元の呼び名。画面には両方を並べる。 */
@@ -311,6 +328,9 @@ export const EFFECT_HINTS: Record<EffectType, string> = {
   hueRotate: '色あいを回します（赤 → 緑 → 青 …）。',
   blur: '絵をぼかします。',
   invert: '色を反転します（ネガのように）。',
+  zoom: '絵を大きくして、真ん中へ寄ります。',
+  shake: '絵を細かく揺らします（驚き・ツッコミに）。',
+  vignette: '絵の周りを暗くして、真ん中に目を集めます。',
 };
 
 /** 話者の名札。いまは 2 人まで。 */

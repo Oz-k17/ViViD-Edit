@@ -6,7 +6,7 @@
 
 import { CROP_CORNERS, CROP_HANDLES, handlePoint, handleRect, handleSizeFor, selectionRect, type CropHandle } from './crop';
 import { clipAtTime, previousAdjacent } from '../model/ops';
-import { effectIntensity } from '../model/effects';
+import { effectIntensity, effectMotion } from '../model/effects';
 import {
   clipEnd,
   contentAtomCount,
@@ -105,7 +105,8 @@ export function effectFilter(
         break;
     }
   }
-  return parts.join(' ');
+  // 動きのエフェクトしか無いときは、フィルタは掛けない（空文字を渡すと無効な指定になる）。
+  return parts.length > 0 ? parts.join(' ') : 'none';
 }
 
 /** 素材を画角に収めたうえで、スケールと位置を適用した矩形。 */
@@ -250,8 +251,30 @@ function drawVisualClip(
 
     ctx.filter = effectFilter(clip.effects, dc.pixelScale, local, clip.duration);
 
+    // 動きのエフェクト（寄る・揺らす・周りを暗く）。絵の置き場を中心に拡大・ずらし、置き場からはみ出した分は切る
+    //（3 分割の帯が、隣の帯へはみ出さないように）。範囲指定中は、選ぶ絵が動くと選べないので掛けない。
+    const motion = dc.cropTarget === clip.id ? null : effectMotion(clip.effects, local, clip.duration);
+    const moving = !!motion && (motion.scale !== 1 || motion.dx !== 0 || motion.dy !== 0);
+    const place: Rect =
+      clip.crop.enabled && dc.cropTarget !== clip.id
+        ? cropDestRect(dc.sequence, clip)
+        : dc.cropTarget === clip.id
+          ? cropSourceRect(dc.sequence, clip, size)
+          : fitRect(dc.sequence, clip, size, clip.bgBlur.enabled ? 'contain' : clip.fit);
+    if (motion && moving) {
+      const short = Math.min(place.w, place.h);
+      const cx = place.x + place.w / 2;
+      const cy = place.y + place.h / 2;
+      ctx.beginPath();
+      ctx.rect(place.x, place.y, place.w, place.h);
+      ctx.clip();
+      ctx.translate(cx + motion.dx * short, cy + motion.dy * short);
+      ctx.scale(motion.scale, motion.scale);
+      ctx.translate(-cx, -cy);
+    }
+
     if (clip.crop.enabled && dc.cropTarget !== clip.id) {
-      const dest = cropDestRect(dc.sequence, clip);
+      const dest = place;
       ctx.drawImage(
         frame,
         clip.crop.sx * size.width,
@@ -264,12 +287,29 @@ function drawVisualClip(
         dest.h,
       );
     } else {
-      // 範囲指定モード中は、どこを切り抜くか見えないと選べないので必ず全体を描く。
-      const rect =
-        dc.cropTarget === clip.id
-          ? cropSourceRect(dc.sequence, clip, size)
-          : fitRect(dc.sequence, clip, size, clip.bgBlur.enabled ? 'contain' : clip.fit);
-      ctx.drawImage(frame, rect.x, rect.y, rect.w, rect.h);
+      // 範囲指定モード中は、どこを切り抜くか見えないと選べないので必ず全体を描く（place がその大きさ）。
+      ctx.drawImage(frame, place.x, place.y, place.w, place.h);
+    }
+
+    if (motion && motion.vignette > 0) {
+      // 周りを暗く。色のフィルタは絵にだけ掛けたいので、ここでは外す。拡大・ずれの影響も受けないよう、座標を戻して置き場に重ねる。
+      ctx.filter = 'none';
+      if (moving) {
+        const short = Math.min(place.w, place.h);
+        const cx = place.x + place.w / 2;
+        const cy = place.y + place.h / 2;
+        ctx.translate(cx, cy);
+        ctx.scale(1 / motion.scale, 1 / motion.scale);
+        ctx.translate(-cx - motion.dx * short, -cy - motion.dy * short);
+      }
+      const cx = place.x + place.w / 2;
+      const cy = place.y + place.h / 2;
+      const outer = Math.hypot(place.w, place.h) / 2;
+      const shade = ctx.createRadialGradient(cx, cy, outer * 0.35, cx, cy, outer);
+      shade.addColorStop(0, 'rgba(0,0,0,0)');
+      shade.addColorStop(1, `rgba(0,0,0,${(motion.vignette * 0.9).toFixed(3)})`);
+      ctx.fillStyle = shade;
+      ctx.fillRect(place.x, place.y, place.w, place.h);
     }
   } catch {
     /* デコード待ちなど。次のフレームで描ければよい。 */
@@ -640,7 +680,7 @@ function drawTextClip(
       }
       const shadowY = text.shadowY ?? text.shadow * 0.25;
       if (text.shadow > 0 || shadowY > 0) {
-        ctx.shadowColor = 'rgba(0,0,0,0.65)';
+        ctx.shadowColor = text.shadowColor ?? 'rgba(0,0,0,0.65)';
         ctx.shadowBlur = text.shadow;
         ctx.shadowOffsetY = shadowY;
       }
@@ -662,7 +702,15 @@ function drawTextClip(
       }
       ctx.shadowColor = 'transparent';
       ctx.shadowBlur = 0;
-      ctx.fillStyle = text.color;
+      if (text.color2) {
+        // 上から下へ、なだらかに色を変える（行ごとに、文字の高さに合わせて）。
+        const fill = ctx.createLinearGradient(0, y - fontSize * 0.42, 0, y + fontSize * 0.42);
+        fill.addColorStop(0, text.color);
+        fill.addColorStop(1, text.color2);
+        ctx.fillStyle = fill;
+      } else {
+        ctx.fillStyle = text.color;
+      }
       ctx.fillText(token.text, x, y);
       x += ctx.measureText(token.text).width;
     }
