@@ -3,6 +3,8 @@ import { useEditor } from '../../store/editor';
 import { Field, Slider } from '../ui';
 import { Icon } from '../Icon';
 import { TRANSITION_ICON } from './transitionIcon';
+import { Dual, Hint } from '../Hint';
+import { TransitionDemo } from '../demos';
 
 /** タイムラインの継ぎ目アイコンから開く、切り替え効果の選択ダイアログ。 */
 export function TransitionPicker({ clipId, onClose }: { clipId: string; onClose: () => void }) {
@@ -25,15 +27,16 @@ export function TransitionPicker({ clipId, onClose }: { clipId: string; onClose:
         <h2>カットの切り替え</h2>
         <div className="transition-grid">
           {(Object.keys(TRANSITION_META) as TransitionType[]).map((type) => (
-            <button
-              key={type}
-              type="button"
-              className={clip.transitionIn.type === type ? 'transition-card active' : 'transition-card'}
-              onClick={() => patch({ type })}
-            >
-              <span className="transition-icon"><Icon name={TRANSITION_ICON[type]} size={20} /></span>
-              {TRANSITION_META[type].label}
-            </button>
+            <TransitionHint key={type} type={type}>
+              <button
+                type="button"
+                className={clip.transitionIn.type === type ? 'transition-card active' : 'transition-card'}
+                onClick={() => patch({ type })}
+              >
+                <span className="transition-icon"><Icon name={TRANSITION_ICON[type]} size={20} /></span>
+                <TransitionName type={type} />
+              </button>
+            </TransitionHint>
           ))}
         </div>
         {clip.transitionIn.type !== 'none' && (
@@ -53,5 +56,26 @@ export function TransitionPicker({ clipId, onClose }: { clipId: string; onClose:
         </button>
       </div>
     </div>
+  );
+}
+
+/** 切り替えの名前（見たままの名前に、元の呼び名を添える）。 */
+export function TransitionName({ type }: { type: TransitionType }) {
+  const meta = TRANSITION_META[type];
+  return <Dual plain={meta.plain} alias={meta.plain === meta.label ? undefined : meta.label} />;
+}
+
+/** カーソルを合わせると、切り替わり方が動いて見える。 */
+export function TransitionHint({ type, children }: { type: TransitionType; children: React.ReactNode }) {
+  const meta = TRANSITION_META[type];
+  return (
+    <Hint
+      title={meta.plain}
+      alias={meta.plain === meta.label ? undefined : meta.label}
+      desc={meta.hint}
+      demo={() => <TransitionDemo type={type} />}
+    >
+      {children}
+    </Hint>
   );
 }

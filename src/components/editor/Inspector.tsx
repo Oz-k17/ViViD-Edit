@@ -34,6 +34,7 @@ import { sortSpeakers } from '../../engine/speakerSort';
 import {
   ASPECT_PRESETS,
   DEFAULT_BG_BLUR,
+  EFFECT_HINTS,
   EFFECT_META,
   DEFAULT_TEXT_FRAME,
   SPEAKERS,
@@ -66,6 +67,9 @@ import { AnalysisSection } from './AnalysisSection';
 import { LearnedNote, useCaptionLearning } from './useCaptionLearning';
 import { applyDictionary, mergeCounts } from '../../model/dictionary';
 import { TRANSITION_ICON } from './transitionIcon';
+import { TransitionHint, TransitionName } from './TransitionPicker';
+import { Hint } from '../Hint';
+import { EffectDemo, TextDemo, ThreeBandDemo, TimelineDemo } from '../demos';
 
 type TabKey = 'props' | 'effects' | 'text' | 'emoji';
 
@@ -132,7 +136,7 @@ function InspectorBody() {
         </button>
         {!easy && (
           <button type="button" className="wide ghost" onClick={() => apply((seq) => removeClips(seq, selection, true))}>
-            まとめてリップル削除
+            まとめて詰めて削除（リップル削除）
           </button>
         )}
       </Panel>
@@ -983,17 +987,31 @@ function ThreeBandSection({ clip }: { clip: Clip }) {
         <RelayoutField mode="here" />
       ) : (
         <>
-          <ButtonField label="画面構成" hint="このクリップをショート動画のスタイルに置き換えます">
+          <ButtonField label="縦 3 段に組む（3分割）" hint="横長の録画を、縦長の形にします">
             <div className="chip-row wrap">
-              <button type="button" className="chip" onClick={() => build(true)}>
-                3分割に組む（見出しつき）
-              </button>
-              <button type="button" className="chip" onClick={() => build(false)}>
-                3分割に組む
-              </button>
+              <Hint
+                title="見出しつきで 3 段に組む"
+                alias="3分割"
+                desc="このクリップを、上＝見出し、中＝本編、下＝顔のアップ の 3 段に置き換えます。見出しの文字は、あとで書き換えます。"
+                demo={() => <ThreeBandDemo title />}
+              >
+                <button type="button" className="chip" onClick={() => build(true)}>
+                  見出しつきで組む
+                </button>
+              </Hint>
+              <Hint
+                title="見出しなしで 3 段に組む"
+                alias="3分割"
+                desc="上＝ぼかした背景、中＝本編、下＝顔のアップ の 3 段に置き換えます。見出しの文字は入れません。"
+                demo={() => <ThreeBandDemo title={false} />}
+              >
+                <button type="button" className="chip" onClick={() => build(false)}>
+                  見出しなしで組む
+                </button>
+              </Hint>
             </div>
           </ButtonField>
-          <Field label="レイアウト" hint="録画の中で顔（カメラ）が映っている所を選びます">
+          <Field label="顔の位置（レイアウト）" hint="録画の中で顔が映っている所">
             <select value={layoutValue} onChange={(e) => setLayoutValue(e.target.value)}>
               {layouts.options.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -1162,17 +1180,18 @@ export function TransitionControls({ clip }: { clip: Clip }) {
   const patch = useClipPatch(clip);
   return (
     <>
-      <Field label="継ぎ目の切り替え" hint="直前のカットとの間">
+      <Field label="場面の切り替え" hint="直前のクリップとの継ぎ目">
         <div className="chip-row wrap">
           {(Object.keys(TRANSITION_META) as TransitionType[]).map((type) => (
-            <button
-              key={type}
-              type="button"
-              className={clip.transitionIn.type === type ? 'chip active' : 'chip'}
-              onClick={() => patch({ transitionIn: { ...clip.transitionIn, type } })}
-            >
-              <Icon name={TRANSITION_ICON[type]} size={16} /> {TRANSITION_META[type].label}
-            </button>
+            <TransitionHint key={type} type={type}>
+              <button
+                type="button"
+                className={clip.transitionIn.type === type ? 'chip active' : 'chip'}
+                onClick={() => patch({ transitionIn: { ...clip.transitionIn, type } })}
+              >
+                <Icon name={TRANSITION_ICON[type]} size={16} /> <TransitionName type={type} />
+              </button>
+            </TransitionHint>
           ))}
         </div>
       </Field>
@@ -1192,8 +1211,18 @@ export function TransitionControls({ clip }: { clip: Clip }) {
   );
 }
 
+/** 見本でかける強さ。既定の強さでは違いが小さいものは、分かるように強めにする。 */
+function demoIntensity(type: EffectType): number {
+  if (type === 'brightness' || type === 'contrast') return 0.8;
+  if (type === 'saturate') return 0.9;
+  if (type === 'blur') return 0.12;
+  return EFFECT_META[type].def;
+}
+
 function EffectsTab({ clip }: { clip: Clip }) {
   const patch = useClipPatch(clip);
+  // 見本は、選んでいるクリップの絵にかけて見せる（無ければ色の帯）。
+  const thumbnail = mediaRegistry.get(clip.mediaId)?.thumbnail;
 
   const add = (type: EffectType) => {
     const effect: Effect = { id: uid('fx'), type, intensity: EFFECT_META[type].def };
@@ -1202,21 +1231,31 @@ function EffectsTab({ clip }: { clip: Clip }) {
 
   return (
     <>
-      <Field label="ルック">
+      <Field label="色味のおまかせ（ルック）">
         <div className="chip-row wrap">
           {LOOK_PRESETS.map((look) => (
-            <button
+            <Hint
               key={look.key}
-              type="button"
-              className="chip"
-              onClick={() =>
-                patch({
-                  effects: look.effects.map((e) => ({ id: uid('fx'), type: e.type as EffectType, intensity: e.intensity })),
-                })
+              title={look.label}
+              desc={
+                look.effects.length === 0
+                  ? 'エフェクトをすべて外して、元の絵に戻します。'
+                  : `${look.effects.map((e) => EFFECT_META[e.type as EffectType].label).join(' と ')}を、ちょうどよい強さでかけます。`
               }
+              demo={() => <EffectDemo effects={look.effects as { type: EffectType; intensity: number }[]} thumbnail={thumbnail} />}
             >
-              {look.label}
-            </button>
+              <button
+                type="button"
+                className="chip"
+                onClick={() =>
+                  patch({
+                    effects: look.effects.map((e) => ({ id: uid('fx'), type: e.type as EffectType, intensity: e.intensity })),
+                  })
+                }
+              >
+                {look.label}
+              </button>
+            </Hint>
           ))}
         </div>
       </Field>
@@ -1224,9 +1263,16 @@ function EffectsTab({ clip }: { clip: Clip }) {
       <Field label="エフェクトを追加">
         <div className="chip-row wrap">
           {(Object.keys(EFFECT_META) as EffectType[]).map((type) => (
-            <button key={type} type="button" className="chip" onClick={() => add(type)}>
-              <Icon name="plus" size={15} />{EFFECT_META[type].label}
-            </button>
+            <Hint
+              key={type}
+              title={EFFECT_META[type].label}
+              desc={`${EFFECT_HINTS[type]}足したあと、強さをつまみで変えられます。`}
+              demo={() => <EffectDemo effects={[{ type, intensity: demoIntensity(type) }]} thumbnail={thumbnail} />}
+            >
+              <button type="button" className="chip" onClick={() => add(type)}>
+                <Icon name="plus" size={15} />{EFFECT_META[type].label}
+              </button>
+            </Hint>
           ))}
         </div>
       </Field>
@@ -1374,6 +1420,19 @@ function EffectTimingRow({
  * 選び直すたびに文字がどう入ってくるかを、再生ボタンを探さずに確かめられる。
  */
 let entrancePause: ReturnType<typeof setTimeout> | undefined;
+/** カーソルを合わせると、いまの文字がその動きで出てくる様子を見せる。 */
+function AnimationHint({ animation, text, children }: { animation: TextAnimation; text: TextProps; children: React.ReactNode }) {
+  return (
+    <Hint
+      title={TEXT_ANIMATION_LABELS[animation]}
+      desc={animation === 'none' ? '動かさずに、そのまま出します。' : 'テロップが出てくるときの動きです。いまの文字で試しています。'}
+      demo={() => <TextDemo text={{ ...text, animation, animationDuration: Math.max(0.45, text.animationDuration) }} />}
+    >
+      {children}
+    </Hint>
+  );
+}
+
 function previewEntrance(clip: Clip, animationSeconds: number) {
   clearTimeout(entrancePause);
   player.seek(clip.start);
@@ -1418,9 +1477,16 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
       <Field label="スタイル">
         <div className="chip-row wrap">
           {TEXT_PRESETS.map((preset) => (
-            <button key={preset.key} type="button" className="chip" onClick={() => set({ ...preset.text, content: text.content })}>
-              {preset.label}
-            </button>
+            <Hint
+              key={preset.key}
+              title={preset.label}
+              desc="いまの文字に、このスタイルを当てた見た目です。"
+              demo={() => <TextDemo still text={{ ...preset.text, content: text.content }} />}
+            >
+              <button type="button" className="chip" onClick={() => set({ ...preset.text, content: text.content })}>
+                {preset.label}
+              </button>
+            </Hint>
           ))}
         </div>
       </Field>
@@ -1516,20 +1582,21 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
         </Field>
       </div>
 
-      <Field label="入場アニメーション">
+      <Field label="出てくるときの動き（入場アニメーション）">
         <div className="chip-row wrap">
           {(Object.keys(TEXT_ANIMATION_LABELS) as TextAnimation[]).map((animation) => (
-            <button
-              key={animation}
-              type="button"
-              className={text.animation === animation ? 'chip active' : 'chip'}
-              onClick={() => {
-                set({ animation });
-                previewEntrance(clip, text.animationDuration);
-              }}
-            >
-              {TEXT_ANIMATION_LABELS[animation]}
-            </button>
+            <AnimationHint key={animation} animation={animation} text={text}>
+              <button
+                type="button"
+                className={text.animation === animation ? 'chip active' : 'chip'}
+                onClick={() => {
+                  set({ animation });
+                  previewEntrance(clip, text.animationDuration);
+                }}
+              >
+                {TEXT_ANIMATION_LABELS[animation]}
+              </button>
+            </AnimationHint>
           ))}
           <button
             type="button"
@@ -1647,17 +1714,18 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
           <Slider value={text.bgOpacity} min={0} max={1} onChange={(bgOpacity) => set({ bgOpacity }, 'bgo')} format={(v) => `${Math.round(v * 100)}%`} />
         </Field>
           </div>
-      <Field label="入場アニメーション">
+      <Field label="出てくるときの動き（入場アニメーション）">
         <div className="chip-row wrap">
           {(Object.keys(TEXT_ANIMATION_LABELS) as TextAnimation[]).map((animation) => (
-            <button
-              key={animation}
-              type="button"
-              className={text.animation === animation ? 'chip active' : 'chip'}
-              onClick={() => set({ animation })}
-            >
-              {TEXT_ANIMATION_LABELS[animation]}
-            </button>
+            <AnimationHint key={animation} animation={animation} text={text}>
+              <button
+                type="button"
+                className={text.animation === animation ? 'chip active' : 'chip'}
+                onClick={() => set({ animation })}
+              >
+                {TEXT_ANIMATION_LABELS[animation]}
+              </button>
+            </AnimationHint>
           ))}
         </div>
       </Field>
@@ -2093,13 +2161,20 @@ function TempoSection({ clip }: { clip: Clip }) {
   return (
     <>
       <hr />
-      <ButtonField label="テンポ（間を詰める）" hint="しゃべりの間（音の無い所）を詰めます">
+      <ButtonField label="間を詰める（テンポ）" hint="しゃべりの間（音の無い所）を詰めます">
         {done ? (
           <p className="muted small">{done}</p>
         ) : !ready ? (
-          <button type="button" className="wide" onClick={measure} disabled={state === 'measuring'}>
-            {state === 'measuring' ? '音を調べています…' : '間を調べる'}
-          </button>
+          <Hint
+            title="間を詰める"
+            alias="テンポ"
+            desc="しゃべっていない所（音の無い間）を探して切り取り、前後を詰めます。まず間を調べ、どれだけ詰めるかはつまみで決めます。"
+            demo={() => <TimelineDemo kind="tempo" />}
+          >
+            <button type="button" className="wide" onClick={measure} disabled={state === 'measuring'}>
+              {state === 'measuring' ? '音を調べています…' : '間を調べる'}
+            </button>
+          </Hint>
         ) : (
           <>
             <Slider
@@ -2155,7 +2230,7 @@ function SaveKitButton({ kit }: { kit: NonNullable<ReturnType<typeof captureKit>
       <p className="muted small">
         {saved
           ? `「${saved}」として保存しました。名前はテンプレートのページで変えられます。`
-          : 'いまの切り抜き位置と見出しの体裁を取っておき、次から「3分割に組む」で同じように組めます。'}
+          : 'いまの切り抜き位置と見出しの体裁を取っておき、次から「縦 3 段に組む」で同じように組めます。'}
       </p>
     </>
   );

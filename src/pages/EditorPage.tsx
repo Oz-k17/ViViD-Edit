@@ -27,6 +27,8 @@ import {
 } from '../store/app';
 import { useEditor } from '../store/editor';
 import { Icon } from '../components/Icon';
+import { Hint } from '../components/Hint';
+import { TimelineDemo } from '../components/demos';
 
 /**
  * 編集画面の本体。パネルは置き場（左 / 右 / 下）の中身として描き、
@@ -139,9 +141,16 @@ function TimelinePanel({
             <button type="button" onClick={onAddText} title={`再生位置にテロップを追加${hint('addText')}`}>
               <Icon name="plus" />テロップ
             </button>
-            <button type="button" onClick={onSplit} title={`再生位置で分割${hint('split')}`}>
-              <Icon name="scissors" />分割
-            </button>
+            <Hint
+              title="分割"
+              keys={hint('split').slice(1, -1)}
+              desc="再生位置で、クリップを 2 つに切ります。選んでいるクリップがあれば、それだけを切ります。"
+              demo={() => <TimelineDemo kind="split" />}
+            >
+              <button type="button" onClick={onSplit}>
+                <Icon name="scissors" />分割
+              </button>
+            </Hint>
           </div>
           {grip && !grip.grouped && (
             <button type="button" className="panel-close" aria-label="タイムラインを仕舞う" onClick={grip.hide}>

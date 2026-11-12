@@ -19,12 +19,16 @@ import { clipEnd, type Clip, type Sequence } from './types';
 
 export type EditMode = 'normal' | 'ripple' | 'roll' | 'slip' | 'slide';
 
-export const EDIT_MODES: ReadonlyArray<{ key: EditMode; label: string; hint: string }> = [
-  { key: 'normal', label: '通常', hint: '端をドラッグでトリム、クリップをドラッグで移動' },
-  { key: 'ripple', label: 'リップル', hint: '端をドラッグすると、後ろのクリップも一緒に動く' },
-  { key: 'roll', label: 'ロール', hint: '端をドラッグすると、隣のクリップとの境目だけが動く' },
-  { key: 'slip', label: 'スリップ', hint: 'クリップをドラッグすると、位置と尺はそのまま、使う場面だけがずれる' },
-  { key: 'slide', label: 'スライド', hint: 'クリップをドラッグすると、位置が動き、前後のクリップが伸び縮みして埋める' },
+/**
+ * `plain` は何が起きるかで言い直した名前、`label` は元の専門用語（Premiere と同じ呼び名）。
+ * 画面には両方を並べて出す（`plain（label）`）。
+ */
+export const EDIT_MODES: ReadonlyArray<{ key: EditMode; plain: string; label: string; hint: string }> = [
+  { key: 'normal', plain: '通常', label: '通常', hint: '端をドラッグすると長さが変わり、空いた所はそのまま残ります。クリップをドラッグすると移動します。' },
+  { key: 'ripple', plain: '詰めて伸縮', label: 'リップル', hint: '端をドラッグして長さを変えると、後ろのクリップも一緒に寄ります。隙間ができません。' },
+  { key: 'roll', plain: '境目を動かす', label: 'ロール', hint: '端をドラッグすると、隣のクリップとの境目だけが動きます。全体の長さは変わりません。' },
+  { key: 'slip', plain: '中身をずらす', label: 'スリップ', hint: 'クリップをドラッグすると、位置と長さはそのままで、使う場面だけがずれます。' },
+  { key: 'slide', plain: '位置をずらす', label: 'スライド', hint: 'クリップをドラッグすると位置が動き、前後のクリップが伸び縮みして隙間を埋めます。' },
 ];
 
 /** 素材の長さ（秒）を返す。分からなければ undefined（＝制限なし）。 */
