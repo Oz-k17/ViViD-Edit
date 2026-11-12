@@ -296,7 +296,11 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           setBatchSaved([...savedNames]);
         }
         // 完成品の置き場からも、投稿メモをコピーできるようにしておく。
-        for (const id of shelved) outputsStore.update(id, { postNote: text });
+        // 前回の分（続きから再開したとき）にも付ける。ファイル名で見分ける。
+        const names = new Set(record.steps.map((step) => step.filename).filter(Boolean));
+        for (const item of outputsStore.all()) {
+          if (shelved.includes(item.id) || names.has(item.filename)) outputsStore.update(item.id, { postNote: text });
+        }
         record = markDone(record, 'note');
       }
       // 全部終わったので、途中の記録は要らない。

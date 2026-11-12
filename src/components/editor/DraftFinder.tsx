@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { analyzeLoudness } from '../../analysis/audio/loudness';
 import { planJetCut } from '../../analysis/audio/silence';
 import { ScanCancelled, cachedScan, scanAudio, type ScanResult } from '../../engine/highlightScan';
@@ -24,6 +24,8 @@ import {
 } from '../../model/candidates';
 import { parseTranscript } from '../../model/transcript';
 import { scopedKey } from '../../store/profile';
+import { WHISPER_MODELS, checkWhisper, toMono16k, transcribe, type WhisperSupport } from '../../engine/transcribe';
+import { saveBlob } from '../../engine/exporter';
 import { tempoOptions, type TimeRange } from '../../model/tempo';
 import { TEXT_PRESETS } from '../../presets';
 import { useApp } from '../../store/app';
@@ -34,6 +36,14 @@ const LENGTHS = [30, 45, 60];
 
 /** おまかせ下書きを出す長さ（秒）。これより短い素材は、そのまま使えばよい。 */
 export const DRAFT_MIN_SECONDS = 90;
+
+/**
+ * 全編を軽いモデルで起こすときの、1 回に渡す長さ（秒）。
+ * 長い録画を丸ごと渡すとメモリが足りなくなるので、区切って渡す。短くしすぎると、区切りのたびにモデルを組み立て直して遅い。
+ */
+const ROUGH_CHUNK_SECONDS = 20 * 60;
+/** 候補探し用の軽いモデル（いちばん軽いもの）。字幕にするときは、選んだ場面だけを良いモデルで起こし直す。 */
+const ROUGH_MODEL = WHISPER_MODELS[WHISPER_MODELS.length - 1].id;
 
 /** 候補への「良い / 違う」の評価の置き場（この端末の中だけ）。 */
 const RATINGS_KEY = scopedKey('vivid.candidateRatings');
@@ -68,11 +78,63 @@ export function DraftFinder({ asset }: { asset: MediaAsset }) {
   const levels = scanned?.levels ?? null;
   /** チャットの発言の時刻・文字起こし（どちらも、ファイルを足したときだけ）。 */
   const [chat, setChat] = useState<number[] | null>(null);
-  const [cues, setCues] = useState<{ start: number; text: string }[] | null>(null);
+  const [cues, setCues] = useState<{ start: number; end?: number; text: string }[] | null>(null);
   const [fileNote, setFileNote] = useState<string | null>(null);
   /** 重なりが見つからないとき、音の大きさだけで探すか。 */
   const [loudOnly, setLoudOnly] = useState(false);
   const [ratings, setRatings] = useState<Rating[]>(loadRatings);
+  // ---- 2 段構えの 1 段目: 全編を軽いモデルで起こして、盛り上がる言葉の信号にする ----
+  const [whisper, setWhisper] = useState<WhisperSupport | null>(null);
+  const [rough, setRough] = useState<{ done: number; total: number } | null>(null);
+  const [roughNote, setRoughNote] = useState<string | null>(null);
+  const roughCancel = useRef(false);
+  useEffect(() => {
+    void checkWhisper().then(setWhisper);
+  }, []);
+
+  const transcribeRough = async () => {
+    if (!whisper?.installed || rough) return;
+    roughCancel.current = false;
+    const total = Math.max(1, Math.ceil(asset.duration / ROUGH_CHUNK_SECONDS));
+    const collected: { start: number; end: number; text: string }[] = [];
+    setRoughNote(null);
+    try {
+      for (let i = 0; i < total; i++) {
+        if (roughCancel.current) break;
+        setRough({ done: i, total });
+        const from = i * ROUGH_CHUNK_SECONDS;
+        const decoded = await decodeAssetAudioRange(asset.id, from, Math.min(asset.duration, from + ROUGH_CHUNK_SECONDS));
+        if (!decoded) continue;
+        const audio = await toMono16k(decoded.buffer);
+        const result = await transcribe(audio, {
+          modelId: ROUGH_MODEL,
+          device: whisper.webgpu ? 'webgpu' : 'wasm',
+          beams: 1,
+          localLibrary: whisper.localLibrary,
+        });
+        for (const cue of result.cues) collected.push({ start: cue.start + decoded.start, end: cue.end + decoded.start, text: cue.text });
+        // 区切りごとに信号へ足す（全部終わるのを待たずに、候補が良くなっていく）。
+        setCues([...collected]);
+      }
+      setRoughNote(
+        collected.length > 0
+          ? `${roughCancel.current ? '途中まで' : '全編を'}起こしました（${collected.length} 行）。盛り上がる言葉を、信号に足しています。`
+          : '言葉を起こせませんでした。',
+      );
+    } catch (e) {
+      setRoughNote(`文字起こしが止まりました: ${e instanceof Error ? e.message : String(e)}${collected.length > 0 ? `（${collected.length} 行までは使います）` : ''}`);
+    } finally {
+      setRough(null);
+    }
+  };
+
+  /** 起こした文字を、ファイルに取っておく。次は「文字起こしのファイルを足す」で読めば、起こし直さなくて済む。 */
+  const saveRough = async () => {
+    if (!cues) return;
+    const body = JSON.stringify({ segments: cues.map((c) => ({ start: c.start, end: (c as { end?: number }).end ?? c.start + 2, text: c.text })) });
+    const base = asset.name.replace(/\.[^.]+$/, '').replace(/[^\w-]+/g, '_') || 'recording';
+    await saveBlob(new Blob([body], { type: 'application/json' }), `${base}_rough.json`);
+  };
   const assetKey = ratingAssetKey(asset);
   const [progress, setProgress] = useState<number | null>(null);
   const [failed, setFailed] = useState(false);
@@ -122,7 +184,7 @@ export function DraftFinder({ asset }: { asset: MediaAsset }) {
       setChat(times.length > 0 ? times : null);
       setFileNote(times.length > 0 ? `チャット ${times.length} 件を読みました。` : 'チャットのファイルを読めませんでした（発言の時刻が見つかりません）。');
     } else {
-      const parsed = parseTranscript(text).map((c) => ({ start: c.start, text: c.text }));
+      const parsed = parseTranscript(text).map((c) => ({ start: c.start, end: c.end, text: c.text }));
       setCues(parsed.length > 0 ? parsed : null);
       setFileNote(parsed.length > 0 ? `文字起こし ${parsed.length} 行を読みました。` : '文字起こしのファイルを読めませんでした。');
     }
@@ -244,6 +306,37 @@ export function DraftFinder({ asset }: { asset: MediaAsset }) {
             </label>
           </div>
           {fileNote && <span className="muted small">{fileNote}</span>}
+          {whisper?.installed && (
+            <div className="draft-rough">
+              {rough ? (
+                <>
+                  <div className="progress running">
+                    <span style={{ width: `${Math.round((rough.done / rough.total) * 100)}%` }} />
+                  </div>
+                  <span className="muted small">
+                    軽いモデルで全編を起こしています… {rough.done + 1} / {rough.total} 区切り（1 区切り 20 分ぶん。終わった所から候補に効きます）
+                  </span>
+                  <button type="button" className="ghost" onClick={() => (roughCancel.current = true)}>
+                    この区切りで止める
+                  </button>
+                </>
+              ) : (
+                <button type="button" className="ghost" onClick={() => void transcribeRough()}>
+                  軽いモデルで全編を起こして、言葉の信号を足す
+                </button>
+              )}
+              {roughNote && <span className="muted small">{roughNote}</span>}
+              {cues && !rough && (
+                <button type="button" className="ghost" onClick={() => void saveRough()}>
+                  起こした文字をファイルに取っておく
+                </button>
+              )}
+              <span className="muted small">
+                2 段構え: 候補探しには軽いモデル（速いが粗い）を使い、字幕にするときは、選んだ場面だけを「字幕」の欄で良いモデルで起こし直します。
+                長い録画では時間がかかります（3 時間で、GPU があれば数十分、無ければ数時間）。
+              </span>
+            </div>
+          )}
           {!chat && !cues && (
             <span className="muted small">
               チャットや文字起こしが無くても、音の 2 つの信号で探します。あれば足すと、選び方が確かになります。

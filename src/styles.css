@@ -4659,3 +4659,11 @@ html.tl-zooming .tl-clip {
 :root[data-layout='mobile'] .output-actions {
   justify-content: flex-start;
 }
+
+.draft-rough {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 0.5px solid var(--ios-separator);
+}
