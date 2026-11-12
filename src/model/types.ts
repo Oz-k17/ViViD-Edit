@@ -213,6 +213,11 @@ export interface TextProps {
    *（色は `color` に入る）。手本として印を付けた行も、これで覚えておく。
    */
   speaker?: string | null;
+  /**
+   * 声で振り分けたとき、どちらの人か決めきれなかった行の「たぶんこちら」。
+   * 入っている行は、色を付けずに置いてある（推測で色を付けない）。人が話者を決めたら消す。
+   */
+  speakerGuess?: string | null;
 }
 
 /**

@@ -4390,3 +4390,84 @@ html.tl-zooming .tl-clip {
   height: 108px;
   background: radial-gradient(ellipse at center, transparent 35%, rgba(0, 0, 0, 0.75) 100%);
 }
+
+/* ---------- 話者の要確認リスト ---------- */
+
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 159, 10, 0.1);
+  border: 0.5px solid rgba(255, 159, 10, 0.45);
+}
+
+.review-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.review-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.review-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.review-row {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+
+.review-time {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+.review-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.review-pick {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+}
+
+.review-pick .chip {
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* 「たぶんこちら」。決めてはいないので、塗らずに点線で示す。 */
+.review-pick .chip.guess {
+  outline: 1.5px dashed var(--ios-orange);
+  outline-offset: -2px;
+}

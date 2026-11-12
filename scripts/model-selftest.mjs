@@ -1940,6 +1940,32 @@ eq('空文字', wrap('', 10), ['']);
   check('空のグループは無い', TEXT_PRESET_GROUPS.every((g) => TEXT_PRESETS.some((p) => p.group === g.key)));
 }
 
+// ---- 字幕が潰れていないか・小さすぎないか・話者が決まっているか ----
+{
+  const { timelineChecks, strokeRatio, STROKE_CRUSH_RATIO } = await import('../src/model/checks.ts');
+  const { createSequence, baseClip, textClip } = await import('../src/model/factory.ts');
+  const { TEXT_PRESETS } = await import('../src/presets.ts');
+  const sequence = createSequence();
+  const vt = sequence.tracks.find((t) => t.kind === 'video');
+  const tt = sequence.tracks.find((t) => t.kind === 'text');
+  const video = { ...baseClip('video', vt.id), mediaId: 'm', start: 0, duration: 10 };
+  const caption = (text) => textClip(tt.id, 1, 3, { content: 'こんにちは', role: 'caption', ...text });
+  const measure = () => ({ x: 240, y: 900, w: 600, h: 120 });
+  const kinds = (clip) => timelineChecks({ ...sequence, clips: [video, clip] }, measure).map((i) => i.kind);
+
+  check('縁が太すぎる字幕を知らせる（大きさ 56 に縁 16）', kinds(caption({ fontSize: 56, strokeWidth: 16 })).includes('captionCrushed'));
+  check('手本の単層字幕（大きさ 56・縁 6）は知らせない', !kinds(caption({ fontSize: 56, strokeWidth: 6, letterSpacing: 2 })).includes('captionCrushed'));
+  check('外側の縁も合わせて数える', kinds(caption({ fontSize: 60, strokeWidth: 8, strokeWidth2: 8 })).includes('captionCrushed'));
+  check('字を詰めていると、早めに知らせる', kinds(caption({ fontSize: 100, strokeWidth: 20, letterSpacing: -2 })).includes('captionCrushed') && !kinds(caption({ fontSize: 100, strokeWidth: 20, letterSpacing: 0 })).includes('captionCrushed'));
+  check('用意してあるスタイルは、どれも潰れない', TEXT_PRESETS.every((p) => strokeRatio(p.text) <= STROKE_CRUSH_RATIO - (p.text.letterSpacing < 0 ? 0.03 : 0)), TEXT_PRESETS.filter((p) => strokeRatio(p.text) > 0.19).map((p) => `${p.key}:${strokeRatio(p.text).toFixed(3)}`).join(' '));
+  check('小さすぎる文字を知らせる', kinds(caption({ fontSize: 30, strokeWidth: 3 })).includes('captionSmall'));
+  check('ふつうの大きさは知らせない', !kinds(caption({ fontSize: 56, strokeWidth: 6 })).includes('captionSmall'));
+  check('拡大してあれば、小さいとは言わない', !kinds({ ...caption({ fontSize: 30, strokeWidth: 3 }), scale: 2 }).includes('captionSmall'));
+  check('縮めて合わせる文字は、大きさを見ない', !kinds(caption({ fontSize: 30, strokeWidth: 3, fit: 'shrink' })).includes('captionSmall'));
+  check('話者を決めきれなかった字幕を知らせる', kinds(caption({ speakerGuess: '2' })).includes('speakerUnsure'));
+  check('話者を決めたら知らせない', !kinds(caption({ speaker: '2', speakerGuess: null })).includes('speakerUnsure'));
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;
