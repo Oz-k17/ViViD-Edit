@@ -4471,3 +4471,47 @@ html.tl-zooming .tl-clip {
   outline: 1.5px dashed var(--ios-orange);
   outline-offset: -2px;
 }
+
+/* ---------- おまかせ下書き: 信号・理由・評価 ---------- */
+
+.draft-signals,
+.draft-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.draft-reason {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.draft-why {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.draft-rate {
+  display: flex;
+  gap: 4px;
+}
+
+.draft-rate .chip {
+  min-height: 28px;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.draft-rate .chip.active.bad {
+  background: var(--danger-soft);
+  color: var(--danger);
+}

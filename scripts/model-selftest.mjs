@@ -1966,6 +1966,71 @@ eq('空文字', wrap('', 10), ['']);
   check('話者を決めたら知らせない', !kinds(caption({ speaker: '2', speakerGuess: null })).includes('speakerUnsure'));
 }
 
+// ---- 複数の信号で候補を選ぶ・評価 ----
+{
+  const C = await import('../src/model/candidates.ts');
+  const n = 1200;
+  const flat = () => new Float32Array(n).fill(-30);
+  const bump = (arr, at, width, value) => { for (let i = at; i < at + width && i < arr.length; i++) arr[i] = value; return arr; };
+  const sig = (key, at, width = 4, value = 2) => ({ key, strength: bump(new Float32Array(n), at, width, value) });
+  const levels = flat();
+
+  const both = C.findCandidates(levels, [sig('loud', 300), sig('chat', 310)], { length: 45 });
+  check('2 つの信号が 30 秒以内に重なった所を候補にする', both.length === 1 && both[0].start <= 300 && both[0].end > 310 && both[0].signals.length === 2, JSON.stringify(both));
+  check('理由が 1 行で分かる', both[0].reason === '音が大きくなった ＋ チャットが盛り上がった' || both[0].reason === 'チャットが盛り上がった ＋ 音が大きくなった', both[0].reason);
+  check('1 つの信号だけの所は候補にしない', C.findCandidates(levels, [sig('loud', 300), sig('chat', 900)], { length: 45 }).length === 0);
+  check('離れすぎた 2 つは重なりにしない（40 秒）', C.findCandidates(levels, [sig('loud', 300), sig('chat', 340)], { length: 45 }).length === 0);
+  check('信号が弱い（1 未満）なら数えない', C.findCandidates(levels, [sig('loud', 300, 4, 0.8), sig('chat', 305)], { length: 45 }).length === 0);
+  const three = C.findCandidates(levels, [sig('loud', 300), sig('chat', 305), sig('loud', 800), sig('chat', 805), sig('words', 802)].reduce((acc, s) => {
+    const have = acc.find((x) => x.key === s.key);
+    if (have) { for (let i = 0; i < n; i++) have.strength[i] = Math.max(have.strength[i], s.strength[i]); } else acc.push(s);
+    return acc;
+  }, []), { length: 45 });
+  check('重なった信号が多い所を上に出す', three.length === 2 && three[0].signals.length === 3 && three[0].peak >= 780 && three[0].peak <= 830, JSON.stringify(three.map((c) => [c.peak, c.signals])));
+  check('信号が 1 種類しか無ければ、候補は出ない（単一信号では出さない）', C.findCandidates(levels, [sig('loud', 300)], { length: 45 }).length === 0);
+
+  // 信号を作る
+  const quiet = flat();
+  bump(quiet, 500, 6, -12);
+  const loud = C.loudSignal(quiet);
+  check('音が大きくなった所で、音の信号が立つ', loud.strength[502] >= 1 && loud.strength[100] < 1, `${loud.strength[502]}`);
+  const bright = new Float32Array(n).fill(-20);
+  bump(bright, 500, 6, -10);
+  check('声が高まった所で、声の信号が立つ（鳴っている秒だけ）', C.voiceSignal(bright, quiet).strength[502] >= 1 && C.voiceSignal(bright, flat()).strength[502] === 0);
+  const chat = C.chatSignal([...Array.from({ length: 60 }, (_, i) => i * 20), 700, 700.5, 701, 701.2, 702, 703, 703.5, 704], n);
+  check('チャットが急に流れた所で、チャットの信号が立つ', chat.strength[702] >= 1 && chat.strength[200] < 1, `${chat.strength[702]} ${chat.strength[200]}`);
+  const words = C.wordsSignal([{ start: 100, text: 'そうですね' }, { start: 400, text: 'うわやばい！まじで勝った' }, { start: 402, text: 'すごい' }], n);
+  check('盛り上がる言葉が続いた所で、言葉の信号が立つ', words.strength[401] >= 1 && words.strength[100] < 1, `${words.strength[401]}`);
+  check('盛り上がる言葉を数える', C.hypeCount('やばい、まじで勝った') === 3 && C.hypeCount('今日はいい天気ですね') === 0);
+
+  // チャットのファイル
+  eq('チャット: TwitchDownloader の JSON', C.parseChatTimes(JSON.stringify({ comments: [{ content_offset_seconds: 12.5 }, { content_offset_seconds: 3 }] })), [3, 12.5]);
+  eq('チャット: chat-downloader の JSON', C.parseChatTimes(JSON.stringify([{ time_in_seconds: 5 }, { time_in_seconds: 61.2 }])), [5, 61.2]);
+  eq('チャット: テキスト（[時:分:秒]）', C.parseChatTimes('[0:01:05] a: こんにちは\n[1:02:03] b: 草\n関係ない行'), [65, 3723]);
+  eq('チャット: 読めないものは空', C.parseChatTimes('なにもない'), []);
+
+  // 評価
+  const asset = C.ratingAssetKey({ name: 'rec.mp4', duration: 1200.4 });
+  const r = (start, good, signals, at = 1) => ({ asset, start, end: start + 45, good, signals, at });
+  let ratings = C.rate([], r(300, true, ['loud', 'chat']));
+  check('評価を付けられる', C.ratingFor(ratings, asset, { start: 305, end: 350 })?.good === true);
+  ratings = C.rate(ratings, r(300, false, ['loud', 'chat'], 2));
+  check('付け直すと置き換わる', ratings.length === 1 && ratings[0].good === false);
+  check('同じ評価をもう一度付けると、取り消す', C.rate(ratings, r(300, false, ['loud', 'chat'], 3)).length === 0);
+  check('別の録画の評価は当てない', C.ratingFor(ratings, 'other|10', { start: 300, end: 345 }) === null);
+  const many = [r(0, true, ['loud', 'chat']), r(100, true, ['chat', 'words']), r(200, true, ['chat']), r(300, false, ['loud', 'voice']), r(400, false, ['loud', 'voice']), r(500, false, ['voice'])];
+  const pref = C.signalPreference(many);
+  check('良いと言われた候補に多い信号ほど、好みが高い', pref.chat > 0.7 && pref.voice < 0.3 && pref.loud < pref.chat, JSON.stringify(pref));
+  const cands = [
+    { start: 600, end: 645, peak: 630, lift: 5, talk: 0.8, score: 4, signals: ['loud', 'voice'], reason: '' },
+    { start: 700, end: 745, peak: 730, lift: 5, talk: 0.8, score: 3.6, signals: ['chat', 'words'], reason: '' },
+  ];
+  check('評価が少ないうちは、順番を変えない', C.applyRatings(cands, many.slice(0, 3), asset)[0].start === 600);
+  check('評価が溜まると、好みの信号の候補が上に来る', C.applyRatings(cands, many, asset)[0].start === 700);
+  const marked = C.applyRatings(cands, [...many, r(600, false, ['loud', 'voice'], 9)], asset);
+  check('「違う」と言った候補は後ろへ回し、印を付ける', marked[marked.length - 1].start === 600 && marked[marked.length - 1].rated === 'bad' && marked[0].rated === null);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;
