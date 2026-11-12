@@ -85,7 +85,7 @@
 <td>下の「iPhone で使う」</td>
 </tr>
 </tbody></table></div>
-<!-- version -->いまの版: **2026-11-12 10:52（日本時間）** に組み立てたもの<!-- /version -->
+<!-- version -->いまの版: **2026-11-12 10:54（日本時間）** に組み立てたもの<!-- /version -->
 
 <p><strong>この説明書は、ZIP を展開した <code>ViViD-Edit</code> フォルダの「使い方.html」でも読めます</strong>（パソコン版・iPad 版とも。ネットにつながっていなくても開けます）。</p>
 <ul>
@@ -349,8 +349,8 @@
 </ul>
 <h3 id="編集ツールくわしく表示">編集ツール（くわしく表示）</h3>
 <p>タイムライン上部の「編集ツール」の行で、ドラッグしたときの動き方を切り替えます（Premiere と同じ考え方です）。</p>
-<p>ボタンの名前は、<strong>何が起きるかで言った名前に、元の専門用語を小さく添えて</strong>あります（例: 「詰めて伸縮（リップル）」）。
-<strong>ボタンにカーソルを合わせると、クリップがどう動くかの動く図と、ひとことの説明、ショートカットキーが出ます。</strong></p>
+<p>ボタンの名前は専門用語（Premiere と同じ呼び名）です。<strong>ボタンにカーソルを合わせると、何が起きるかを言ったやさしい名前（「詰めて伸縮」など）と、
+クリップがどう動くかの動く図、ひとことの説明、ショートカットキーが出ます。</strong></p>
 <div class="table"><table>
 <thead>
 <tr>
@@ -365,32 +365,32 @@
 <td>移動</td>
 </tr>
 <tr>
-<td>詰めて伸縮（リップル・<code>B</code>）</td>
+<td>リップル（詰めて伸縮・<code>B</code>）</td>
 <td>長さを変える＋<strong>後ろのクリップも一緒に動く</strong></td>
 <td>移動</td>
 </tr>
 <tr>
-<td>境目を動かす（ロール・<code>N</code>）</td>
+<td>ロール（境目を動かす・<code>N</code>）</td>
 <td><strong>隣のクリップとの境目だけ</strong>が動く（全体の長さは変わらない）</td>
 <td>移動</td>
 </tr>
 <tr>
-<td>中身をずらす（スリップ・<code>Y</code>）</td>
+<td>スリップ（中身をずらす・<code>Y</code>）</td>
 <td>長さを変える</td>
 <td><strong>位置と長さはそのまま、使う場面だけをずらす</strong></td>
 </tr>
 <tr>
-<td>位置をずらす（スライド・<code>U</code>）</td>
+<td>スライド（位置をずらす・<code>U</code>）</td>
 <td>長さを変える</td>
 <td><strong>位置を動かし、前後のクリップが伸び縮みして埋める</strong></td>
 </tr>
 </tbody></table></div>
 <ul>
 <li><strong>押している間だけ切り替え</strong>: 端は <code>Alt</code> でリップル・<code>Ctrl/⌘</code> でロール、クリップ本体は <code>Alt</code> でスリップ・<code>Ctrl/⌘</code> でスライド</li>
-<li><strong>割り込ませて置く</strong>（挿入配置・<code>J</code>）: オンの間、素材を置くと上書きせず、後ろへ送って差し込みます</li>
-<li><strong>範囲の始め / 終わり</strong>（In / Out・<code>I</code> / <code>O</code>）を決めて、<strong>範囲を消す</strong>（リフト・<code>;</code>: 隙間を残す）か<strong>範囲を消して詰める</strong>（抽出・<code>&#39;</code>）。範囲を取り消すのは <code>Ctrl/⌘+Shift+X</code></li>
-<li><strong>隙間を詰める</strong>（<code>Alt+Delete</code>）、<strong>全部の段を分割</strong>（全トラック分割・<code>Ctrl/⌘+K</code>）</li>
-<li><strong>ぴったり合わせる</strong>（スナップ）: 動かしたクリップが、他のクリップの端や再生位置に吸い付きます。<strong>再生に合わせて送る</strong>（追従）: 再生中、タイムラインが自動で先へ送られます</li>
+<li><strong>挿入配置</strong>（割り込ませて置く・<code>J</code>）: オンの間、素材を置くと上書きせず、後ろへ送って差し込みます</li>
+<li><strong>In / Out</strong>（範囲の始め / 終わり・<code>I</code> / <code>O</code>）を決めて、<strong>リフト</strong>（範囲を消す・<code>;</code>: 隙間を残す）か<strong>抽出</strong>（範囲を消して詰める・<code>&#39;</code>）。範囲を取り消すのは <code>Ctrl/⌘+Shift+X</code></li>
+<li><strong>隙間を詰める</strong>（<code>Alt+Delete</code>）、<strong>全トラック分割</strong>（全部の段を分割・<code>Ctrl/⌘+K</code>）</li>
+<li><strong>スナップ</strong>（ぴったり合わせる）: 動かしたクリップが、他のクリップの端や再生位置に吸い付きます。<strong>追従</strong>（再生に合わせて送る）: 再生中、タイムラインが自動で先へ送られます</li>
 <li><strong>前後の編集点へ移動</strong>（<code>↑</code> <code>↓</code>）、<strong>少しずつ動かす</strong>（<code>Alt+←</code> <code>Alt+→</code> で 1 コマ、<code>Shift</code> で 5 コマ）</li>
 <li>スマホ表示では、ツールの行が横にスクロールします</li>
 </ul>

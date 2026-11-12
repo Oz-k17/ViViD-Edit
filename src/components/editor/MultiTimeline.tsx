@@ -23,6 +23,7 @@ import { TRANSITION_ICON } from './transitionIcon';
 import { hasClipboard, useTimelineActions } from './timelineActions';
 import { ContextMenu, type MenuItem } from '../ContextMenu';
 import { Dual, Hint } from '../Hint';
+import type { ComponentProps } from 'react';
 import { TimelineDemo } from '../demos';
 
 export const MEDIA_DND_TYPE = 'application/x-vivid-media';
@@ -58,6 +59,24 @@ const MODE_SHORTCUT = {
   slip: 'modeSlip',
   slide: 'modeSlide',
 } as const;
+
+/**
+ * タイムラインの道具の名前。
+ * 「かんたん」では、何が起きるかで言った名前に元の専門用語を添える。
+ * 「くわしく」では、専門用語だけ（Premiere などと同じ呼び名で、列も短く収まる）。
+ */
+const EasyNames = createContext(false);
+
+function Name({ plain, alias }: { plain: string; alias?: string }) {
+  const easy = useContext(EasyNames);
+  return easy || !alias ? <Dual plain={plain} alias={alias} /> : <>{alias}</>;
+}
+
+/** 説明カード。「くわしく」では見出しを専門用語にし、やさしい言い方を横に添える（ボタンの名前と揃える）。 */
+function TlHint({ title, alias, ...rest }: ComponentProps<typeof Hint>) {
+  const easy = useContext(EasyNames);
+  return easy || !alias ? <Hint title={title} alias={alias} {...rest} /> : <Hint title={alias} alias={title} {...rest} />;
+}
 
 /** 指で長押ししてメニューを出すまでの時間と、その間に許す指のぶれ。 */
 const LONG_PRESS_MS = 520;
@@ -371,7 +390,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
     ];
     if (clip?.kind === 'nest') items.push('separator', { label: '中身を編集する', onSelect: () => enterNest(clip.id) });
     items.push('separator', { label: '削除', hint: key('delete'), onSelect: actions.remove, disabled: none, danger: true });
-    if (!easy) items.push({ label: '詰めて削除（リップル削除）', hint: key('rippleDelete'), onSelect: actions.rippleRemove, disabled: none, danger: true });
+    if (!easy) items.push({ label: 'リップル削除', hint: key('rippleDelete'), onSelect: actions.rippleRemove, disabled: none, danger: true });
     return items;
   };
 
@@ -393,8 +412,9 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           <span className="muted small">まとめたクリップの中を編集しています。プレビューは中身だけを映します。</span>
         </div>
       )}
+      <EasyNames.Provider value={easy}>
       <div className="tl-toolbar">
-        <Hint
+        <TlHint
           title="削除"
           keys={key('delete')}
           desc={easy ? '選んだクリップを消して、後ろのクリップを前へ詰めます。' : '選んだクリップを消します。空いた所はそのまま残ります。'}
@@ -403,8 +423,8 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           <button type="button" onClick={actions.remove} disabled={!selection.length}>
             削除
           </button>
-        </Hint>
-        <Hint
+        </TlHint>
+        <TlHint
           title="複製"
           keys={key('duplicate')}
           desc="選んだクリップを、すぐ後ろへもう 1 本置きます。後ろのクリップは送るので、何も上書きしません。"
@@ -413,7 +433,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           <button type="button" onClick={actions.duplicate} disabled={!selection.length}>
             複製
           </button>
-        </Hint>
+        </TlHint>
         {(touch || compact) && (
           <button
             type="button"
@@ -426,7 +446,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           </button>
         )}
         {!easy && (
-          <Hint
+          <TlHint
             title="詰めて削除"
             alias="リップル削除"
             keys={key('rippleDelete')}
@@ -435,15 +455,15 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           >
             <button type="button" onClick={actions.rippleRemove} disabled={!selection.length}>
               <Icon name="ripple-delete" />
-              <Dual plain="詰めて削除" alias="リップル削除" />
+              <Name plain="詰めて削除" alias="リップル削除" />
             </button>
-          </Hint>
+          </TlHint>
         )}
         <span className="tl-count">{selection.length > 0 ? `${selection.length} 個選択中` : ''}</span>
         <span className="spacer" />
         {!easy && (
           <>
-            <Hint
+            <TlHint
               title="ぴったり合わせる"
               alias="スナップ"
               desc="オンの間、動かしたクリップが、他のクリップの端や再生位置に吸い付きます。細かくずらしたいときはオフに。"
@@ -451,10 +471,10 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
             >
               <button type="button" className={settings.snap ? 'active' : ''} aria-pressed={settings.snap} onClick={() => updateSettings({ snap: !settings.snap })}>
                 <Icon name="magnet" />
-                <Dual plain="ぴったり合わせる" alias="スナップ" />
+                <Name plain="ぴったり合わせる" alias="スナップ" />
               </button>
-            </Hint>
-            <Hint
+            </TlHint>
+            <TlHint
               title="再生に合わせて送る"
               alias="追従"
               desc="オンの間、再生位置が画面の端まで来ると、タイムラインが自動で先へ送られます（再生中だけ）。"
@@ -462,9 +482,9 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
             >
               <button type="button" className={follow ? 'active' : ''} aria-pressed={follow} onClick={() => setFollow((f) => !f)}>
                 <Icon name="link" />
-                <Dual plain="再生に合わせて送る" alias="追従" />
+                <Name plain="再生に合わせて送る" alias="追従" />
               </button>
-            </Hint>
+            </TlHint>
           </>
         )}
         <div className="zoom" role="group" aria-label="横（時間）の拡大縮小">
@@ -501,7 +521,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
       <div className="tl-tools" role="toolbar" aria-label="編集ツール">
         <div className="tl-modes" role="radiogroup" aria-label="編集モード（ドラッグしたときの動き方）">
           {EDIT_MODES.map((m) => (
-            <Hint
+            <TlHint
               key={m.key}
               title={m.plain}
               alias={m.plain === m.label ? undefined : m.label}
@@ -516,12 +536,12 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
                 className={editMode === m.key ? 'active' : ''}
                 onClick={() => setEditMode(m.key)}
               >
-                <Dual plain={m.plain} alias={m.plain === m.label ? undefined : m.label} />
+                <Name plain={m.plain} alias={m.plain === m.label ? undefined : m.label} />
               </button>
-            </Hint>
+            </TlHint>
           ))}
         </div>
-        <Hint
+        <TlHint
           title="割り込ませて置く"
           alias="挿入配置"
           keys={key('toggleInsert')}
@@ -529,33 +549,33 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           demo={() => <TimelineDemo kind="insert" />}
         >
           <button type="button" className={insertMode ? 'active' : ''} aria-pressed={insertMode} onClick={() => setInsertMode(!insertMode)}>
-            <Dual plain="割り込ませて置く" alias="挿入" />
+            <Name plain="割り込ませて置く" alias="挿入配置" />
           </button>
-        </Hint>
+        </TlHint>
         <span className="tl-sep" />
-        <Hint
+        <TlHint
           title="範囲の始め"
-          alias="In 点"
+          alias="In"
           keys={key('markIn')}
           desc="いまの再生位置を、範囲の始めにします。「範囲の終わり」と組みにして、その間をまとめて消せます。"
           demo={() => <TimelineDemo kind="range" />}
         >
           <button type="button" onClick={actions.markIn}>
-            <Dual plain="範囲の始め" alias="In" />
+            <Name plain="範囲の始め" alias="In" />
           </button>
-        </Hint>
-        <Hint
+        </TlHint>
+        <TlHint
           title="範囲の終わり"
-          alias="Out 点"
+          alias="Out"
           keys={key('markOut')}
           desc="いまの再生位置を、範囲の終わりにします。"
           demo={() => <TimelineDemo kind="range" />}
         >
           <button type="button" onClick={actions.markOut}>
-            <Dual plain="範囲の終わり" alias="Out" />
+            <Name plain="範囲の終わり" alias="Out" />
           </button>
-        </Hint>
-        <Hint
+        </TlHint>
+        <TlHint
           title="範囲を消す"
           alias="リフト"
           keys={key('lift')}
@@ -563,10 +583,10 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           demo={() => <TimelineDemo kind="lift" />}
         >
           <button type="button" onClick={actions.lift} disabled={!actions.hasRange}>
-            <Dual plain="範囲を消す" alias="リフト" />
+            <Name plain="範囲を消す" alias="リフト" />
           </button>
-        </Hint>
-        <Hint
+        </TlHint>
+        <TlHint
           title="範囲を消して詰める"
           alias="抽出"
           keys={key('extract')}
@@ -574,9 +594,9 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           demo={() => <TimelineDemo kind="extract" />}
         >
           <button type="button" onClick={actions.extract} disabled={!actions.hasRange}>
-            <Dual plain="範囲を消して詰める" alias="抽出" />
+            <Name plain="範囲を消して詰める" alias="抽出" />
           </button>
-        </Hint>
+        </TlHint>
         <button
           type="button"
           onClick={actions.clearMarks}
@@ -586,7 +606,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           <Icon name="xmark" size={13} label="範囲を取り消す" />
         </button>
         <span className="tl-sep" />
-        <Hint
+        <TlHint
           title="隙間を詰める"
           keys={key('closeGap')}
           desc="再生位置にある隙間を、後ろのクリップを前へ寄せて埋めます。"
@@ -595,8 +615,8 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           <button type="button" onClick={actions.closeGap}>
             隙間を詰める
           </button>
-        </Hint>
-        <Hint
+        </TlHint>
+        <TlHint
           title="全部の段を分割"
           alias="全トラック分割"
           keys={key('addEditAll')}
@@ -604,9 +624,9 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           demo={() => <TimelineDemo kind="splitAll" />}
         >
           <button type="button" onClick={actions.addEditAll}>
-            全部の段を分割
+            <Name plain="全部の段を分割" alias="全トラック分割" />
           </button>
-        </Hint>
+        </TlHint>
         <button type="button" onClick={actions.prevEdit} title={`前の切れ目へ${hint('prevEdit')}`}>
           <Icon name="step-back" size={14} label="前の切れ目へ" />
         </button>
@@ -616,6 +636,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
       </div>
       )}
 
+      </EasyNames.Provider>
       <RowScaleContext.Provider value={rowScale}>
       <div className="tl-body">
         <div className="tl-heads">
