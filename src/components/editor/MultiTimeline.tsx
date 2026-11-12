@@ -182,10 +182,6 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
   const rowScale = settings.timelineRowScale ?? DEFAULT_ROW_SCALE;
   noteClips(sequence.clips);
   const easy = settings.uiMode === 'easy';
-  // 「かんたん」では編集モードの切り替えを隠す。前に選んだモードが残って、見えないまま効かないよう通常へ戻す。
-  useEffect(() => {
-    if (easy && editMode !== 'normal') setEditMode('normal');
-  }, [easy, editMode, setEditMode]);
   const actions = useTimelineActions();
   const key = (action: Parameters<typeof hint>[0]) => shortcutLabel(settings.shortcuts[action]);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -461,8 +457,6 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
         )}
         <span className="tl-count">{selection.length > 0 ? `${selection.length} 個選択中` : ''}</span>
         <span className="spacer" />
-        {!easy && (
-          <>
             <TlHint
               title="ぴったり合わせる"
               alias="スナップ"
@@ -485,8 +479,6 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
                 <Name plain="再生に合わせて送る" alias="追従" />
               </button>
             </TlHint>
-          </>
-        )}
         <div className="zoom" role="group" aria-label="横（時間）の拡大縮小">
           <span className="zoom-label" aria-hidden="true">横</span>
           <button type="button" onClick={() => setPps((p) => Math.max(MIN_PPS, p / 1.4))} title={`横を縮小（長い時間を見る）${hint('zoomOut')}・Ctrl/⌘+ホイールでも`}>
@@ -517,7 +509,6 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
         </div>
       </div>
 
-      {!easy && (
       <div className="tl-tools" role="toolbar" aria-label="編集ツール">
         <div className="tl-modes" role="radiogroup" aria-label="編集モード（ドラッグしたときの動き方）">
           {EDIT_MODES.map((m) => (
@@ -634,7 +625,6 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           <Icon name="step-forward" size={14} label="次の切れ目へ" />
         </button>
       </div>
-      )}
 
       </EasyNames.Provider>
       <RowScaleContext.Provider value={rowScale}>

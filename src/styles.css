@@ -4294,3 +4294,10 @@ html.tl-zooming .tl-clip {
     transition: none;
   }
 }
+
+/* 長押しで説明カードを出すボタンは、端末の長押しメニューや文字の選択を出さない。 */
+.hint-wrap > * {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
