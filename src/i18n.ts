@@ -14,6 +14,7 @@ const EN: Record<string, string> = {
   設定: 'Settings',
   テンプレート: 'Templates',
   テンプレート集: 'Templates',
+  完成品: 'Outputs',
   保存: 'Save',
   適用: 'Apply',
   削除: 'Delete',

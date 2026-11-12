@@ -2031,6 +2031,41 @@ eq('空文字', wrap('', 10), ['']);
   check('「違う」と言った候補は後ろへ回し、印を付ける', marked[marked.length - 1].start === 600 && marked[marked.length - 1].rated === 'bad' && marked[0].rated === null);
 }
 
+// ---- まとめ書き出しの続き・完成品の置き場 ----
+{
+  const P = await import('../src/model/exportProgress.ts');
+  const id = P.batchId({ clips: [1, 2] }, { quality: 1080 });
+  check('同じ中身・同じ設定なら、同じ印', id === P.batchId({ clips: [1, 2] }, { quality: 1080 }));
+  check('中身が変われば、印が変わる', id !== P.batchId({ clips: [1, 3] }, { quality: 1080 }));
+  check('設定が変われば、印が変わる', id !== P.batchId({ clips: [1, 2] }, { quality: 720 }));
+  let rec = P.startBatch(id, '作品', [{ key: 'captions', label: '字幕あり' }, { key: 'clean', label: '字幕なし' }, { key: 'note', label: '投稿メモ' }], 1);
+  check('始めたばかりは「続きから」にしない', !P.isResumable(rec, id));
+  rec = P.markDone(rec, 'captions', 'a_sub.mp4');
+  check('1 本終わっていれば、続きから再開できる', P.isResumable(rec, id));
+  eq('残りは、終わっていないものだけ', P.remainingSteps(rec).map((s) => s.key), ['clean', 'note']);
+  check('作品や設定が変わっていたら、再開しない', !P.isResumable(rec, 'other'));
+  rec = P.markDone(P.markDone(rec, 'clean', 'a_nosub.mp4'), 'note');
+  check('全部終わったら、再開するものは無い', !P.isResumable(rec, id) && P.remainingSteps(rec).length === 0);
+  check('保存した記録を読み戻せる', P.sanitizeBatch(JSON.parse(JSON.stringify(rec)))?.steps.length === 3);
+  check('壊れた記録は捨てる', P.sanitizeBatch({ id: 1 }) === null && P.sanitizeBatch(null) === null && P.sanitizeBatch({ id: 'a', name: 'b', steps: [] }) === null);
+
+  const O = await import('../src/model/outputs.ts');
+  const item = (n, at, project = '作品') => ({ id: `o${n}`, project, filename: `f${n}.mp4`, variant: '字幕あり', aspect: '9:16', quality: 1080, duration: 55, bytes: 1000, at, status: 'check', memo: '' });
+  let list = O.addOutput(O.addOutput([], item(1, 1000)), item(2, 2000));
+  eq('新しいものが先頭', list.map((i) => i.id), ['o2', 'o1']);
+  eq('確認待ち → 確認済み → 投稿済み', [O.nextStatus('check'), O.nextStatus('ok'), O.nextStatus('posted')], ['ok', 'posted', null]);
+  list = O.updateOutput(list, 'o1', { status: 'ok', memo: 'あ'.repeat(600) });
+  check('状態とメモを変えられる（メモは 500 文字まで）', list.find((i) => i.id === 'o1').status === 'ok' && list.find((i) => i.id === 'o1').memo.length === 500);
+  eq('状態ごとの件数', O.outputCounts(list), { check: 1, ok: 1, posted: 0 });
+  check('一覧から外せる', O.removeOutput(list, 'o2').length === 1);
+  const groups = O.groupOutputs([item(1, 0), item(2, 60000), item(3, 5 * 3600000), item(4, 5 * 3600000 + 1000, '別の作品')]);
+  eq('同じ回に書き出したものを 1 組にする', groups.map((g) => g.map((i) => i.id)), [['o4'], ['o3'], ['o2', 'o1']]);
+  check('壊れた行は捨て、足りない所は埋める', O.sanitizeOutputs([{ id: 'a', filename: 'x.mp4', status: 'weird' }, { nope: 1 }, null]).length === 1 && O.sanitizeOutputs([{ id: 'a', filename: 'x.mp4', status: 'weird' }])[0].status === 'check');
+  let many = [];
+  for (let i = 0; i < O.OUTPUT_LIMIT + 5; i++) many = O.addOutput(many, item(i, i));
+  check('覚える数に上限がある（古いものから捨てる）', many.length === O.OUTPUT_LIMIT && many[0].id === `o${O.OUTPUT_LIMIT + 4}`);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;
