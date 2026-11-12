@@ -9,6 +9,8 @@
  * 判断は `src/analysis/` にあり、ここは押す・待つ・結果を言う、だけ。
  */
 
+import { Dual } from '../Hint';
+import { SceneSplitHint } from './NestSceneSplit';
 import { useEffect, useRef, useState } from 'react';
 import { frameToImage, exportName, decodeFramesAt } from '../../analysis/cover-export';
 import { decodeFramesAtViaElement } from '../../analysis/decode-element';
@@ -116,11 +118,13 @@ export function AnalysisSection({ clip }: { clip: Clip }) {
 
   return (
     <>
-      <Field label="自動解析（試験的）" hint="押したあとは Undo で戻せます">
+      <Field label="自動で分ける・切り出す（試験的）" hint="押したあとは「戻す」で戻せます">
         <div className="chip-row wrap">
-          <button type="button" className="chip" disabled={!!job} onClick={() => void splitScenes()}>
-            シーンで分割
-          </button>
+          <SceneSplitHint>
+            <button type="button" className="chip" disabled={!!job} onClick={() => void splitScenes()}>
+              <Dual plain="場面の変わり目で分割" alias="シーン分割" />
+            </button>
+          </SceneSplitHint>
           <button type="button" className="chip" disabled={!!job} onClick={() => void reframe()}>
             被写体を追って切り出す
           </button>

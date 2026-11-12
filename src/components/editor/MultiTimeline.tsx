@@ -22,6 +22,9 @@ import { Icon } from '../Icon';
 import { TRANSITION_ICON } from './transitionIcon';
 import { hasClipboard, useTimelineActions } from './timelineActions';
 import { ContextMenu, type MenuItem } from '../ContextMenu';
+import { Dual, Hint } from '../Hint';
+import type { ComponentProps } from 'react';
+import { TimelineDemo } from '../demos';
 
 export const MEDIA_DND_TYPE = 'application/x-vivid-media';
 /** 複数の素材をまとめてドラッグするときの id の配列（JSON）。単体の `MEDIA_DND_TYPE` も併せて入れる。 */
@@ -48,6 +51,33 @@ function effectiveMode(mode: EditMode, event: { altKey: boolean; ctrlKey: boolea
 const MIN_PPS = 6;
 const MAX_PPS = 400;
 const SNAP_PX = 8;
+/** 編集モードごとのショートカット。 */
+const MODE_SHORTCUT = {
+  normal: 'modeNormal',
+  ripple: 'modeRipple',
+  roll: 'modeRoll',
+  slip: 'modeSlip',
+  slide: 'modeSlide',
+} as const;
+
+/**
+ * タイムラインの道具の名前。
+ * 「かんたん」では、何が起きるかで言った名前に元の専門用語を添える。
+ * 「くわしく」では、専門用語だけ（Premiere などと同じ呼び名で、列も短く収まる）。
+ */
+const EasyNames = createContext(false);
+
+function Name({ plain, alias }: { plain: string; alias?: string }) {
+  const easy = useContext(EasyNames);
+  return easy || !alias ? <Dual plain={plain} alias={alias} /> : <>{alias}</>;
+}
+
+/** 説明カード。「くわしく」では見出しを専門用語にし、やさしい言い方を横に添える（ボタンの名前と揃える）。 */
+function TlHint({ title, alias, ...rest }: ComponentProps<typeof Hint>) {
+  const easy = useContext(EasyNames);
+  return easy || !alias ? <Hint title={title} alias={alias} {...rest} /> : <Hint title={alias} alias={title} {...rest} />;
+}
+
 /** 指で長押ししてメニューを出すまでの時間と、その間に許す指のぶれ。 */
 const LONG_PRESS_MS = 520;
 const TOUCH_SLOP_PX = 7;
@@ -360,7 +390,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
     ];
     if (clip?.kind === 'nest') items.push('separator', { label: '中身を編集する', onSelect: () => enterNest(clip.id) });
     items.push('separator', { label: '削除', hint: key('delete'), onSelect: actions.remove, disabled: none, danger: true });
-    if (!easy) items.push({ label: '後ろを詰めて削除', hint: key('rippleDelete'), onSelect: actions.rippleRemove, disabled: none, danger: true });
+    if (!easy) items.push({ label: 'リップル削除', hint: key('rippleDelete'), onSelect: actions.rippleRemove, disabled: none, danger: true });
     return items;
   };
 
@@ -382,13 +412,28 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           <span className="muted small">まとめたクリップの中を編集しています。プレビューは中身だけを映します。</span>
         </div>
       )}
+      <EasyNames.Provider value={easy}>
       <div className="tl-toolbar">
-        <button type="button" onClick={actions.remove} disabled={!selection.length} title={`${easy ? '削除（後ろのクリップを前へ詰めます）' : '削除'}${hint('delete')}`}>
-          削除
-        </button>
-        <button type="button" onClick={actions.duplicate} disabled={!selection.length} title={`選んだクリップを、すぐ後ろへ複製${hint('duplicate')}`}>
-          複製
-        </button>
+        <TlHint
+          title="削除"
+          keys={key('delete')}
+          desc={easy ? '選んだクリップを消して、後ろのクリップを前へ詰めます。' : '選んだクリップを消します。空いた所はそのまま残ります。'}
+          demo={() => <TimelineDemo kind={easy ? 'rippleDelete' : 'delete'} />}
+        >
+          <button type="button" onClick={actions.remove} disabled={!selection.length}>
+            削除
+          </button>
+        </TlHint>
+        <TlHint
+          title="複製"
+          keys={key('duplicate')}
+          desc="選んだクリップを、すぐ後ろへもう 1 本置きます。後ろのクリップは送るので、何も上書きしません。"
+          demo={() => <TimelineDemo kind="duplicate" />}
+        >
+          <button type="button" onClick={actions.duplicate} disabled={!selection.length}>
+            複製
+          </button>
+        </TlHint>
         {(touch || compact) && (
           <button
             type="button"
@@ -401,30 +446,45 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           </button>
         )}
         {!easy && (
-          <button
-            type="button"
-            onClick={actions.rippleRemove}
-            disabled={!selection.length}
-            title={`後続のクリップを詰めて削除${hint('rippleDelete')}`}
+          <TlHint
+            title="詰めて削除"
+            alias="リップル削除"
+            keys={key('rippleDelete')}
+            desc="選んだクリップを消して、後ろのクリップを前へ詰めます。隙間が残りません。"
+            demo={() => <TimelineDemo kind="rippleDelete" />}
           >
-            <Icon name="ripple-delete" />リップル削除
-          </button>
+            <button type="button" onClick={actions.rippleRemove} disabled={!selection.length}>
+              <Icon name="ripple-delete" />
+              <Name plain="詰めて削除" alias="リップル削除" />
+            </button>
+          </TlHint>
         )}
         <span className="tl-count">{selection.length > 0 ? `${selection.length} 個選択中` : ''}</span>
         <span className="spacer" />
         {!easy && (
           <>
-            <button
-              type="button"
-              className={settings.snap ? 'active' : ''}
-              onClick={() => updateSettings({ snap: !settings.snap })}
-              title="クリップの端に吸着"
+            <TlHint
+              title="ぴったり合わせる"
+              alias="スナップ"
+              desc="オンの間、動かしたクリップが、他のクリップの端や再生位置に吸い付きます。細かくずらしたいときはオフに。"
+              demo={() => <TimelineDemo kind="snap" />}
             >
-              <Icon name="magnet" />スナップ
-            </button>
-            <button type="button" className={follow ? 'active' : ''} onClick={() => setFollow((f) => !f)} title="再生中だけ、再生ヘッドに合わせてスクロール">
-              <Icon name="link" />追従
-            </button>
+              <button type="button" className={settings.snap ? 'active' : ''} aria-pressed={settings.snap} onClick={() => updateSettings({ snap: !settings.snap })}>
+                <Icon name="magnet" />
+                <Name plain="ぴったり合わせる" alias="スナップ" />
+              </button>
+            </TlHint>
+            <TlHint
+              title="再生に合わせて送る"
+              alias="追従"
+              desc="オンの間、再生位置が画面の端まで来ると、タイムラインが自動で先へ送られます（再生中だけ）。"
+              demo={() => <TimelineDemo kind="follow" />}
+            >
+              <button type="button" className={follow ? 'active' : ''} aria-pressed={follow} onClick={() => setFollow((f) => !f)}>
+                <Icon name="link" />
+                <Name plain="再生に合わせて送る" alias="追従" />
+              </button>
+            </TlHint>
           </>
         )}
         <div className="zoom" role="group" aria-label="横（時間）の拡大縮小">
@@ -459,67 +519,124 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
 
       {!easy && (
       <div className="tl-tools" role="toolbar" aria-label="編集ツール">
-        <div className="tl-modes" role="radiogroup" aria-label="編集モード">
+        <div className="tl-modes" role="radiogroup" aria-label="編集モード（ドラッグしたときの動き方）">
           {EDIT_MODES.map((m) => (
-            <button
+            <TlHint
               key={m.key}
-              type="button"
-              role="radio"
-              aria-checked={editMode === m.key}
-              className={editMode === m.key ? 'active' : ''}
-              title={m.hint}
-              onClick={() => setEditMode(m.key)}
+              title={m.plain}
+              alias={m.plain === m.label ? undefined : m.label}
+              keys={key(MODE_SHORTCUT[m.key])}
+              desc={m.hint}
+              demo={() => <TimelineDemo kind={m.key} />}
             >
-              {m.label}
-            </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={editMode === m.key}
+                className={editMode === m.key ? 'active' : ''}
+                onClick={() => setEditMode(m.key)}
+              >
+                <Name plain={m.plain} alias={m.plain === m.label ? undefined : m.label} />
+              </button>
+            </TlHint>
           ))}
         </div>
-        <button
-          type="button"
-          className={insertMode ? 'active' : ''}
-          aria-pressed={insertMode}
-          onClick={() => setInsertMode(!insertMode)}
-          title="素材を置くとき、既存のクリップを上書きせず、後ろへ送って挿入する"
+        <TlHint
+          title="割り込ませて置く"
+          alias="挿入配置"
+          keys={key('toggleInsert')}
+          desc="オンの間、素材を置いたり貼り付けたりすると、そこにあるクリップを上書きせず、後ろへ送って割り込ませます。"
+          demo={() => <TimelineDemo kind="insert" />}
         >
-          挿入配置
-        </button>
+          <button type="button" className={insertMode ? 'active' : ''} aria-pressed={insertMode} onClick={() => setInsertMode(!insertMode)}>
+            <Name plain="割り込ませて置く" alias="挿入配置" />
+          </button>
+        </TlHint>
         <span className="tl-sep" />
-        <button type="button" onClick={actions.markIn} title="再生ヘッドに In 点を打つ（I）">
-          In
-        </button>
-        <button type="button" onClick={actions.markOut} title="再生ヘッドに Out 点を打つ（O）">
-          Out
-        </button>
-        <button type="button" onClick={actions.lift} disabled={!actions.hasRange} title="In〜Out を取り除く（隙間が残る）">
-          リフト
-        </button>
-        <button type="button" onClick={actions.extract} disabled={!actions.hasRange} title="In〜Out を取り除いて詰める">
-          抽出
-        </button>
+        <TlHint
+          title="範囲の始め"
+          alias="In"
+          keys={key('markIn')}
+          desc="いまの再生位置を、範囲の始めにします。「範囲の終わり」と組みにして、その間をまとめて消せます。"
+          demo={() => <TimelineDemo kind="range" />}
+        >
+          <button type="button" onClick={actions.markIn}>
+            <Name plain="範囲の始め" alias="In" />
+          </button>
+        </TlHint>
+        <TlHint
+          title="範囲の終わり"
+          alias="Out"
+          keys={key('markOut')}
+          desc="いまの再生位置を、範囲の終わりにします。"
+          demo={() => <TimelineDemo kind="range" />}
+        >
+          <button type="button" onClick={actions.markOut}>
+            <Name plain="範囲の終わり" alias="Out" />
+          </button>
+        </TlHint>
+        <TlHint
+          title="範囲を消す"
+          alias="リフト"
+          keys={key('lift')}
+          desc="決めた範囲の中身を消します。空いた所はそのまま残り、後ろのクリップは動きません。"
+          demo={() => <TimelineDemo kind="lift" />}
+        >
+          <button type="button" onClick={actions.lift} disabled={!actions.hasRange}>
+            <Name plain="範囲を消す" alias="リフト" />
+          </button>
+        </TlHint>
+        <TlHint
+          title="範囲を消して詰める"
+          alias="抽出"
+          keys={key('extract')}
+          desc="決めた範囲の中身を消して、後ろのクリップを前へ詰めます。"
+          demo={() => <TimelineDemo kind="extract" />}
+        >
+          <button type="button" onClick={actions.extract} disabled={!actions.hasRange}>
+            <Name plain="範囲を消して詰める" alias="抽出" />
+          </button>
+        </TlHint>
         <button
           type="button"
           onClick={actions.clearMarks}
           disabled={markIn === null && markOut === null}
-          title="In / Out を消す"
+          title={`範囲を取り消す${hint('clearMarks')}`}
         >
-          <Icon name="xmark" size={13} label="In / Out を消す" />
+          <Icon name="xmark" size={13} label="範囲を取り消す" />
         </button>
         <span className="tl-sep" />
-        <button type="button" onClick={actions.closeGap} title="再生ヘッド位置の隙間を詰める">
-          隙間を詰める
+        <TlHint
+          title="隙間を詰める"
+          keys={key('closeGap')}
+          desc="再生位置にある隙間を、後ろのクリップを前へ寄せて埋めます。"
+          demo={() => <TimelineDemo kind="closeGap" />}
+        >
+          <button type="button" onClick={actions.closeGap}>
+            隙間を詰める
+          </button>
+        </TlHint>
+        <TlHint
+          title="全部の段を分割"
+          alias="全トラック分割"
+          keys={key('addEditAll')}
+          desc="再生位置で、映像・テロップ・音のすべての段をまとめて切ります。"
+          demo={() => <TimelineDemo kind="splitAll" />}
+        >
+          <button type="button" onClick={actions.addEditAll}>
+            <Name plain="全部の段を分割" alias="全トラック分割" />
+          </button>
+        </TlHint>
+        <button type="button" onClick={actions.prevEdit} title={`前の切れ目へ${hint('prevEdit')}`}>
+          <Icon name="step-back" size={14} label="前の切れ目へ" />
         </button>
-        <button type="button" onClick={actions.addEditAll} title="全トラックの再生ヘッド位置で分割（編集点を追加）">
-          全トラック分割
-        </button>
-        <button type="button" onClick={actions.prevEdit} title="前の編集点へ（↑）">
-          <Icon name="step-back" size={14} label="前の編集点へ" />
-        </button>
-        <button type="button" onClick={actions.nextEdit} title="次の編集点へ（↓）">
-          <Icon name="step-forward" size={14} label="次の編集点へ" />
+        <button type="button" onClick={actions.nextEdit} title={`次の切れ目へ${hint('nextEdit')}`}>
+          <Icon name="step-forward" size={14} label="次の切れ目へ" />
         </button>
       </div>
       )}
 
+      </EasyNames.Provider>
       <RowScaleContext.Provider value={rowScale}>
       <div className="tl-body">
         <div className="tl-heads">

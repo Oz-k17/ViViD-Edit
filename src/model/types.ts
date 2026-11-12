@@ -291,13 +291,26 @@ export const EFFECT_META: Record<EffectType, { label: string; unit: string; def:
   invert: { label: '反転', unit: '', def: 1 },
 };
 
-export const TRANSITION_META: Record<TransitionType, { label: string }> = {
-  none: { label: 'なし' },
-  dissolve: { label: 'ディゾルブ' },
-  fade: { label: 'フェード' },
-  slide: { label: 'スライド' },
-  wipe: { label: 'ワイプ' },
-  flash: { label: 'フラッシュ' },
+/** `plain` は見たままを言った名前、`label` は元の呼び名。画面には両方を並べる。 */
+export const TRANSITION_META: Record<TransitionType, { label: string; plain: string; hint: string }> = {
+  none: { label: 'なし', plain: 'なし', hint: 'そのまま次の場面に切り替わります。' },
+  dissolve: { label: 'ディゾルブ', plain: '重ねて切り替え', hint: '前の場面に次の場面が重なりながら、ゆっくり入れ替わります。' },
+  fade: { label: 'フェード', plain: '暗転して切り替え', hint: '一度暗くなってから、次の場面が出てきます。' },
+  slide: { label: 'スライド', plain: '横へ押し出す', hint: '次の場面が右から入ってきて、前の場面を左へ押し出します。' },
+  wipe: { label: 'ワイプ', plain: '端から拭き取る', hint: '左から右へ線が走るように、次の場面に替わります。' },
+  flash: { label: 'フラッシュ', plain: '白く光って切り替え', hint: '一瞬白く光って、次の場面に替わります。' },
+};
+
+/** エフェクトが何をするか、ひとことで。 */
+export const EFFECT_HINTS: Record<EffectType, string> = {
+  brightness: '絵を明るく、または暗くします。',
+  contrast: '明るい所と暗い所の差を、強く、または弱くします。',
+  saturate: '色を鮮やかに、または淡くします。',
+  grayscale: '白黒にします。',
+  sepia: '古い写真のような茶色の色味にします。',
+  hueRotate: '色あいを回します（赤 → 緑 → 青 …）。',
+  blur: '絵をぼかします。',
+  invert: '色を反転します（ネガのように）。',
 };
 
 /** 話者の名札。いまは 2 人まで。 */

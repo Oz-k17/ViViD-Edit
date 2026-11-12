@@ -3855,3 +3855,442 @@ html.tl-zooming .tl-clip {
     opacity: 0.35;
   }
 }
+
+/* ---------- 名前の横に小さく添える、元の専門用語 ---------- */
+
+.alias {
+  margin-left: 1px;
+  font-size: 0.82em;
+  font-weight: 400;
+  opacity: 0.6;
+}
+
+/* ---------- カーソルを合わせると出る説明カード ---------- */
+
+.hint-wrap {
+  display: contents;
+}
+
+.hint-card {
+  position: fixed;
+  z-index: 500;
+  width: max-content;
+  max-width: 264px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 0.5px solid var(--ios-separator);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev, #1f2228);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  animation: hint-in 0.14s ease-out;
+}
+
+@keyframes hint-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.hint-demo {
+  display: flex;
+  justify-content: center;
+  border-radius: 7px;
+  overflow: hidden;
+  background: #101114;
+}
+
+.hint-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.hint-alias {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.hint-title kbd {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+.hint-text p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+/* ---- 見本: タイムラインの帯 ---- */
+
+.demo-tl {
+  position: relative;
+  height: 34px;
+  margin: 8px 12px;
+  overflow: hidden;
+}
+
+.demo-tl.rows-2 {
+  height: 60px;
+}
+
+.demo-bar {
+  position: absolute;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  /* 斜めの縞は「素材の中身」。中身をずらす（スリップ）で、縞だけが流れる。 */
+  background-image: repeating-linear-gradient(115deg, rgba(255, 255, 255, 0.16) 0 6px, transparent 6px 16px);
+  transition: left 0.5s ease, width 0.5s ease, opacity 0.35s ease, background-position-x 0.5s ease;
+}
+
+.demo-bar.tone-a {
+  background-color: #4a6fa5;
+}
+
+.demo-bar.tone-b {
+  background-color: #b0763a;
+}
+
+.demo-bar.tone-c {
+  background-color: #4f8f6b;
+}
+
+.demo-bar.tone-new {
+  background-color: #a05a9c;
+}
+
+.demo-bar.tone-quiet {
+  background-color: #3a3d44;
+  background-image: none;
+  border-style: dashed;
+}
+
+.demo-bar.hot {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35);
+}
+
+.demo-bar.gone {
+  opacity: 0;
+}
+
+.demo-head {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+  transition: left 0.5s ease;
+}
+
+.demo-snap {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed #ffd60a;
+  opacity: 0;
+  transition: opacity 0.2s ease 0.3s;
+}
+
+.demo-tl.phase-1 .demo-snap {
+  opacity: 1;
+}
+
+.demo-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 2px solid #ffd60a;
+  border-right: 2px solid #ffd60a;
+  background: rgba(255, 214, 10, 0.16);
+  transition: left 0.5s ease, width 0.5s ease;
+}
+
+.demo-phase {
+  position: absolute;
+  right: 2px;
+  bottom: 0;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.55);
+  font-size: 9px;
+  color: var(--text-dim);
+}
+
+/* ---- 見本: 場面の切り替え ---- */
+
+.demo-tr {
+  position: relative;
+  width: 132px;
+  height: 78px;
+  margin: 8px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: #000;
+}
+
+.demo-tr span {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 26px;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.demo-tr-a {
+  background: linear-gradient(135deg, #2f6fd6, #6aa6ff);
+}
+
+.demo-tr-b {
+  background: linear-gradient(135deg, #d6642f, #ffb36a);
+}
+
+.demo-tr-b,
+.demo-tr-a,
+.demo-tr-flash {
+  animation-duration: 2.4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+.demo-tr-flash {
+  background: #fff;
+  opacity: 0;
+}
+
+/* 0〜30% は A、30〜60% で切り替わり、60〜100% は B。 */
+.demo-tr.type-none .demo-tr-b {
+  animation-name: demo-tr-cut;
+}
+
+@keyframes demo-tr-cut {
+  0%, 44.9% { opacity: 0; }
+  45%, 100% { opacity: 1; }
+}
+
+.demo-tr.type-dissolve .demo-tr-b,
+.demo-tr.type-flash .demo-tr-b {
+  animation-name: demo-tr-dissolve;
+}
+
+@keyframes demo-tr-dissolve {
+  0%, 30% { opacity: 0; }
+  60%, 100% { opacity: 1; }
+}
+
+.demo-tr.type-fade .demo-tr-a {
+  animation-name: demo-tr-fade-a;
+}
+
+.demo-tr.type-fade .demo-tr-b {
+  animation-name: demo-tr-fade-b;
+}
+
+@keyframes demo-tr-fade-a {
+  0%, 30% { opacity: 1; }
+  45%, 100% { opacity: 0; }
+}
+
+@keyframes demo-tr-fade-b {
+  0%, 45% { opacity: 0; }
+  60%, 100% { opacity: 1; }
+}
+
+.demo-tr.type-slide .demo-tr-a {
+  animation-name: demo-tr-slide-a;
+}
+
+.demo-tr.type-slide .demo-tr-b {
+  animation-name: demo-tr-slide-b;
+}
+
+@keyframes demo-tr-slide-a {
+  0%, 30% { transform: translateX(0); }
+  60%, 100% { transform: translateX(-100%); }
+}
+
+@keyframes demo-tr-slide-b {
+  0%, 30% { transform: translateX(100%); }
+  60%, 100% { transform: translateX(0); }
+}
+
+.demo-tr.type-wipe .demo-tr-b {
+  animation-name: demo-tr-wipe;
+}
+
+@keyframes demo-tr-wipe {
+  0%, 30% { clip-path: inset(0 100% 0 0); }
+  60%, 100% { clip-path: inset(0 0 0 0); }
+}
+
+.demo-tr.type-flash .demo-tr-flash {
+  animation-name: demo-tr-flash;
+}
+
+@keyframes demo-tr-flash {
+  0%, 30% { opacity: 0; }
+  45% { opacity: 0.85; }
+  60%, 100% { opacity: 0; }
+}
+
+/* ---- 見本: テロップ ---- */
+
+.demo-text {
+  display: block;
+  width: 216px;
+  height: 92px;
+}
+
+/* ---- 見本: エフェクト・色味 ---- */
+
+.demo-fx {
+  position: relative;
+  width: 216px;
+  height: 108px;
+  overflow: hidden;
+}
+
+.demo-fx-pic {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 216px;
+  height: 108px;
+  background-size: cover;
+  background-position: center;
+}
+
+/* クリップの絵が無いときの見本（色の帯と、肌色・空・緑）。 */
+.demo-fx.sample .demo-fx-pic {
+  background-image: radial-gradient(circle at 28% 62%, #f1c9a5 0 13%, transparent 14%),
+    linear-gradient(180deg, #5aa9ff 0 46%, #3f9a55 46% 100%),
+    linear-gradient(90deg, #ff3b30, #ffcc00, #34c759, #5ac8fa, #af52de);
+  background-blend-mode: normal;
+}
+
+.demo-fx-after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  right: 0;
+  overflow: hidden;
+  border-left: 1px solid #fff;
+}
+
+.demo-fx-after .demo-fx-pic {
+  left: -108px;
+}
+
+.demo-fx-label {
+  position: absolute;
+  bottom: 4px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.6);
+  font-size: 9px;
+  color: #fff;
+}
+
+.demo-fx-label.left {
+  left: 4px;
+}
+
+.demo-fx-label.right {
+  right: 4px;
+}
+
+/* ---- 見本: 3 段（3 分割） ---- */
+
+.demo-3b {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  font-size: 9px;
+  color: #fff;
+}
+
+.demo-3b span {
+  display: grid;
+  place-items: center;
+}
+
+.demo-3b-src {
+  position: relative;
+  width: 104px;
+  height: 58px;
+  border-radius: 3px;
+  background: #4a6fa5;
+}
+
+.demo-3b-src .demo-3b-main {
+  position: absolute;
+  inset: 0;
+}
+
+.demo-3b-face {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 30px;
+  height: 22px;
+  border-radius: 2px;
+  background: #b0763a;
+}
+
+.demo-3b-arrow {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+.demo-3b-out {
+  display: flex;
+  flex-direction: column;
+  width: 54px;
+  height: 96px;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.demo-3b-top {
+  flex: 0 0 24%;
+  background: #2a3442;
+  font-weight: 700;
+}
+
+.demo-3b-mid {
+  flex: 0 0 38%;
+  background: #4a6fa5;
+}
+
+.demo-3b-bot {
+  flex: 1;
+  background: #b0763a;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .demo-bar,
+  .demo-head,
+  .demo-range {
+    transition: none;
+  }
+}

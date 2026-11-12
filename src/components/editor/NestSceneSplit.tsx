@@ -1,3 +1,5 @@
+import { Dual, Hint } from '../Hint';
+import { TimelineDemo } from '../demos';
 import { useState } from 'react';
 import { AnalysisError, detectScenes } from '../../engine/analyze';
 import { nestSceneClips, nestSceneTimes, splitClipAtTimes } from '../../model/analysisEdits';
@@ -52,12 +54,28 @@ export function NestSceneSplit({ clip }: { clip: Clip }) {
 
   return (
     <>
-      <ButtonField label="自動解析（試験的）" hint="押したあとは「戻す」で戻せます">
-        <button type="button" className="wide" disabled={busy} onClick={() => void run()}>
-          {busy ? `カットの切り替わりを探しています… ${Math.round(ratio * 100)}%` : 'シーンで分割'}
-        </button>
+      <ButtonField label="自動で分ける（試験的）" hint="押したあとは「戻す」で戻せます">
+        <SceneSplitHint>
+          <button type="button" className="wide" disabled={busy} onClick={() => void run()}>
+            {busy ? `場面の変わり目を探しています… ${Math.round(ratio * 100)}%` : <Dual plain="場面の変わり目で分割" alias="シーン分割" />}
+          </button>
+        </SceneSplitHint>
       </ButtonField>
       {note && <p className="muted small">{note}</p>}
     </>
+  );
+}
+
+/** カーソルを合わせると、長い 1 本が場面ごとに分かれる図を出す。 */
+export function SceneSplitHint({ children }: { children: React.ReactNode }) {
+  return (
+    <Hint
+      title="場面の変わり目で分割"
+      alias="シーン分割"
+      desc="映像が切り替わる所（カメラや画面が変わる所）を自動で探して、そこでクリップを切ります。"
+      demo={() => <TimelineDemo kind="scene" />}
+    >
+      {children}
+    </Hint>
   );
 }
