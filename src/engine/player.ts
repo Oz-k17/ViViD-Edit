@@ -206,6 +206,12 @@ export class Player {
    */
   private voiceOf = new Map<string, Clip>();
   private voicedBy = new Set<string>();
+  /**
+   * 絵を借りるクリップ（借りる側 → 貸す側の id）。3 分割の帯のように、同じ素材・同じ位置・長さ・イン点・速度の
+   * 映像は、1 本の要素の絵を使い回す。iPad は動画をハードウェアで読み解き、同時に持てる数に限りがあるので、
+   * 同じコマを 3 本で読み解くのは無駄が大きい（README の「メモリ対策」）。借りる側は自分の要素を持たない。
+   */
+  private sharedFrom = new Map<string, string>();
   private raf = 0;
   private lastNow = 0;
   private timeListeners = new Set<Listener>();
@@ -325,10 +331,24 @@ export class Player {
       this.voicedBy.add(clip.id);
     }
 
+    // 同じ素材・同じ時間の映像（3 分割の帯など）は、1 本の要素の絵を使い回す。
+    // 貸す側は、音を鳴らすもの（つないだ音がある・ミュートでない）を先に選ぶ。借りる側は音を鳴らさないものだけ。
+    this.sharedFrom.clear();
+    const leaders = new Map<string, Clip>();
+    const videos = sequence.clips.filter((c) => c.kind === 'video' && c.mediaId && !c.loop);
+    const speaks = (c: Clip) => this.voiceOf.has(c.id) || !c.muted;
+    const ordered = [...videos.filter(speaks), ...videos.filter((c) => !speaks(c))];
+    for (const clip of ordered) {
+      const key = `${clip.mediaId}|${clip.start.toFixed(3)}|${clip.duration.toFixed(3)}|${clip.sourceIn.toFixed(3)}|${clip.speed || 1}`;
+      const leader = leaders.get(key);
+      if (!leader) leaders.set(key, clip);
+      else if (!speaks(clip)) this.sharedFrom.set(clip.id, leader.id);
+    }
+
     // 要素はここでは作らない。sync() が、いま必要なクリップの分だけ作る。
     const live = new Set<string>();
     for (const clip of sequence.clips) {
-      if ((clip.kind === 'video' || clip.kind === 'audio') && !this.voicedBy.has(clip.id)) live.add(clip.id);
+      if ((clip.kind === 'video' || clip.kind === 'audio') && !this.voicedBy.has(clip.id) && !this.sharedFrom.has(clip.id)) live.add(clip.id);
     }
     for (const key of mediaRegistry.activeKeys()) {
       if (!live.has(key)) {
@@ -510,8 +530,8 @@ export class Player {
         if (track.kind !== kind) continue;
         const clip = clipAtTime(sequence, track.id, this.time);
         if (!clip || (clip.kind !== 'video' && clip.kind !== 'audio')) continue;
-        // 映像の要素から鳴らしている音のクリップには、要素が無い（基準は映像の側がなる）。
-        if (this.voicedBy.has(clip.id)) continue;
+        // 映像の要素から鳴らしている音のクリップ・絵を借りているクリップには、要素が無い。
+        if (this.voicedBy.has(clip.id) || this.sharedFrom.has(clip.id)) continue;
         // 読み込みに失敗した要素は時計にならない（止まったまま進まない）。
         if ((this.retryAt.get(clip.id) ?? 0) > performance.now()) continue;
         // ループ指定のクリップは currentTime が巻き戻るので基準にできない。
@@ -577,7 +597,7 @@ export class Player {
   private readyToAdvance(): boolean {
     for (const entry of this.activeClips()) {
       if (entry.clip.kind !== 'video' && entry.clip.kind !== 'audio') continue;
-      if (this.voicedBy.has(entry.clip.id)) continue;
+      if (this.voicedBy.has(entry.clip.id) || this.sharedFrom.has(entry.clip.id)) continue;
       // 読み込みに失敗した・作り直しを待っているクリップは待たない（待つといつまでも始まらない）。
       if ((this.retryAt.get(entry.clip.id) ?? 0) > performance.now()) continue;
       const el = mediaRegistry.mediaElement(entry.clip.id, entry.clip.mediaId, entry.clip.kind === 'audio' ? 'audio' : 'video');
@@ -652,9 +672,11 @@ export class Player {
    * 時間を飛ばすたびにプレビューが黒くなる。シーク中・読み込み中は、下見の絵か、最後に映せた絵を出す。
    */
   private frameOf(clip: Clip): CanvasImageSource | null {
+    // 絵を借りるクリップは、貸す側の要素・最後の絵を使う（同じ素材・同じ時間なので、同じコマ）。
+    const id = this.sharedFrom.get(clip.id) ?? clip.id;
     // 作り直しを待っているあいだは、要素を作らずに最後の絵を出す。
-    if ((this.retryAt.get(clip.id) ?? 0) > performance.now()) return this.lastFrames.get(clip.id) ?? null;
-    const el = mediaRegistry.mediaElement(clip.id, clip.mediaId);
+    if ((this.retryAt.get(id) ?? 0) > performance.now()) return this.lastFrames.get(id) ?? null;
+    const el = mediaRegistry.mediaElement(id, clip.mediaId);
     const video = el instanceof HTMLVideoElement ? el : null;
     const seeking = !!video?.seeking;
     if (hasStrip(clip.mediaId)) {
@@ -667,7 +689,7 @@ export class Player {
       }
     }
     if (video && video.readyState >= 2 && !seeking) return video;
-    return this.lastFrames.get(clip.id) ?? null;
+    return this.lastFrames.get(id) ?? null;
   }
 
   /** いま映すべき動画が、シーク中・読み込み中か（プレビューに「読み込み中」を出すため）。 */
@@ -678,7 +700,7 @@ export class Player {
       if (track.kind !== 'video' || track.hidden) continue;
       const clip = clipAtTime(sequence, track.id, this.time);
       if (clip?.kind !== 'video' || !mediaRegistry.get(clip.mediaId)) continue;
-      const el = mediaRegistry.peekElement(clip.id);
+      const el = mediaRegistry.peekElement(this.sharedFrom.get(clip.id) ?? clip.id);
       if (!el || el.seeking || el.readyState < 2) return true;
     }
     return false;
@@ -762,7 +784,8 @@ export class Player {
     for (const clip of sequence.clips) {
       if (clip.kind === 'text' || clip.kind === 'image') continue;
       // 映像の要素から鳴らしているので、音の側には要素を作らない。
-      if (this.voicedBy.has(clip.id)) {
+      // 絵を借りているクリップも、自分の要素を持たない（貸す側を動かせば、絵はそろって動く）。
+      if (this.voicedBy.has(clip.id) || this.sharedFrom.has(clip.id)) {
         if (mediaRegistry.peekElement(clip.id)) mediaRegistry.releaseElement(clip.id);
         continue;
       }
