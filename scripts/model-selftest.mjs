@@ -1905,6 +1905,41 @@ eq('空文字', wrap('', 10), ['']);
   check('相手を置けないときは、つなぎを外す', alone.ids.length === 1 && !alone.sequence.clips[0].linkId);
 }
 
+// ---- 動きのエフェクト（寄る・揺らす・周りを暗く） ----
+{
+  const { effectMotion, SLOW_IN_TIMING } = await import('../src/model/effects.ts');
+  const fx = (type, intensity, timing) => ({ id: type, type, intensity, timing });
+  const near = (x, y) => Math.abs(x - y) < 1e-6;
+  const none = effectMotion([fx('brightness', 1)], 1, 4);
+  check('色のエフェクトだけなら動かない', none.scale === 1 && none.dx === 0 && none.dy === 0 && none.vignette === 0);
+  check('寄る: 強さ 0.5 で 1.3 倍', near(effectMotion([fx('zoom', 0.5)], 1, 4).scale, 1.3));
+  check('寄る: 強さ 0 なら等倍', effectMotion([fx('zoom', 0)], 1, 4).scale === 1);
+  const slow = [fx('zoom', 0.5, { ...SLOW_IN_TIMING, attack: 4 })];
+  const s0 = effectMotion(slow, 0.01, 4).scale;
+  const s2 = effectMotion(slow, 2, 4).scale;
+  const s4 = effectMotion(slow, 3.99, 4).scale;
+  check('じわっと寄る: 頭は等倍に近く、だんだん寄って、終わりでいっぱい', s0 < 1.01 && s0 < s2 && s2 < s4 && s4 > 1.29, `${s0} ${s2} ${s4}`);
+  const punch = [fx('zoom', 0.5, { start: 0, duration: 0.3, attack: 0.05, release: 0.22 })];
+  check('一瞬寄る: 効かせる時間を過ぎたら等倍に戻る', effectMotion(punch, 0.1, 4).scale > 1.2 && effectMotion(punch, 0.5, 4).scale === 1);
+  const sh = effectMotion([fx('shake', 1)], 0.37, 4);
+  check('揺らす: ずれは小さく（短い辺の 3.5% まで）、端が見えない分だけ寄せる', Math.abs(sh.dx) <= 0.0351 && Math.abs(sh.dy) <= 0.0351 && sh.scale >= 1 + 2 * Math.max(Math.abs(sh.dx), Math.abs(sh.dy)), JSON.stringify(sh));
+  const again = effectMotion([fx('shake', 1)], 0.37, 4);
+  check('揺れは時刻だけで決まる（プレビューと書き出しが同じ絵）', again.dx === sh.dx && again.dy === sh.dy);
+  check('揺れは時刻で変わる', effectMotion([fx('shake', 1)], 0.4, 4).dx !== sh.dx);
+  check('周りを暗く: 強さがそのまま出る', near(effectMotion([fx('vignette', 0.6)], 1, 4).vignette, 0.6));
+  check('寄ると揺らすは重ねられる', effectMotion([fx('zoom', 0.5), fx('shake', 0.5)], 0.37, 4).scale > 1.3);
+}
+
+// ---- テロップのスタイルの並び ----
+{
+  const { TEXT_PRESETS, TEXT_PRESET_GROUPS } = await import('../src/presets.ts');
+  const keys = TEXT_PRESETS.map((p) => p.key);
+  check('スタイルの名前（保存用）は重ならない', new Set(keys).size === keys.length);
+  check('前からあるスタイルは、同じ名前（保存用）で残っている', ['caption', 'headline', 'box', 'neon', 'mono', 'triple', 'tv', 'zabuton', 'solid', 'title', 'card', 'pop'].every((k) => keys.includes(k)));
+  check('どのスタイルも、どれかのグループに入っている', TEXT_PRESETS.every((p) => TEXT_PRESET_GROUPS.some((g) => g.key === p.group)));
+  check('空のグループは無い', TEXT_PRESET_GROUPS.every((g) => TEXT_PRESETS.some((p) => p.group === g.key)));
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

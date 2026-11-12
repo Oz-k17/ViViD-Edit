@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type MutableRefObject, type Synth
 import { EMOJI_FOLDER, formatTime, mediaRegistry } from '../../engine/media';
 import { player } from '../../engine/player';
 import { defaultCrop } from '../../engine/renderer';
-import { FONT_OPTIONS, LOOK_PRESETS, SPEED_PRESETS, TEXT_PRESETS } from '../../presets';
+import { FONT_OPTIONS, LOOK_PRESETS, SPEED_PRESETS, TEXT_PRESETS, TEXT_PRESET_GROUPS } from '../../presets';
 import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
 import { buildThreeBand, relayoutThreeBand } from '../../model/threeBand';
@@ -18,7 +18,7 @@ import { planJetCut } from '../../analysis/audio/silence';
 import { partnerOf, separateSound, unlinkClips } from '../../model/links';
 import { canJoin, flattenNests, joinClips, nestClips, nestedLength, unnestClip } from '../../model/nest';
 import { clipsOnTrack } from '../../model/ops';
-import { DEFAULT_EFFECT_TIMING, EFFECT_SHAPES, type EffectTiming } from '../../model/effects';
+import { DEFAULT_EFFECT_TIMING, EFFECT_SHAPES, SLOW_IN_TIMING, type EffectTiming } from '../../model/effects';
 import {
   buildCaptionClips,
   cuesByPart,
@@ -36,6 +36,7 @@ import {
   DEFAULT_BG_BLUR,
   EFFECT_HINTS,
   EFFECT_META,
+  MOTION_EFFECTS,
   DEFAULT_TEXT_FRAME,
   SPEAKERS,
   TEXT_ANIMATION_LABELS,
@@ -326,10 +327,14 @@ function TranscriptSection() {
       <div className="two-col">
         <Field label="体裁">
           <select value={preset} onChange={(e) => setPreset(e.target.value)}>
-            {TEXT_PRESETS.map((p) => (
-              <option key={p.key} value={p.key}>
-                {p.label}
-              </option>
+            {TEXT_PRESET_GROUPS.map((group) => (
+              <optgroup key={group.key} label={group.label}>
+                {TEXT_PRESETS.filter((p) => p.group === group.key).map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.label}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
         </Field>
@@ -1211,6 +1216,27 @@ export function TransitionControls({ clip }: { clip: Clip }) {
   );
 }
 
+/**
+ * 動きのエフェクトの、押すだけで足せる形。
+ * 同じ「寄る」でも、いつ効かせるかで使いどころが変わるので、よく使う 3 つを分けて置く。
+ */
+const MOTION_PRESETS: {
+  key: string;
+  label: string;
+  hint: string;
+  type: EffectType;
+  intensity: number;
+  timing: EffectTiming | null;
+  demo: 'zoom-slow' | 'zoom-punch' | 'zoom-hold' | 'shake' | 'shake-once' | 'vignette';
+}[] = [
+  { key: 'zoom-slow', label: 'じわっと寄る', hint: 'クリップの頭から終わりまでかけて、ゆっくり寄っていきます。話に引き込みたい所に。', type: 'zoom', intensity: 0.3, timing: SLOW_IN_TIMING, demo: 'zoom-slow' },
+  { key: 'zoom-punch', label: '一瞬寄る', hint: 'クリップの頭で、ぐっと寄ってすぐ戻ります。カットの切り替わりや決めの一言に。', type: 'zoom', intensity: 0.3, timing: { start: 0, duration: 0.3, attack: 0.05, release: 0.22 }, demo: 'zoom-punch' },
+  { key: 'zoom-hold', label: '寄ったまま（ズーム）', hint: 'クリップのあいだ、ずっと大きく映します。強さで寄り具合を決めます。', type: 'zoom', intensity: 0.35, timing: null, demo: 'zoom-hold' },
+  { key: 'shake-once', label: '一瞬揺らす', hint: 'クリップの頭で、短く揺らします。驚き・ツッコミ・衝撃に。', type: 'shake', intensity: 0.6, timing: { start: 0, duration: 0.4, attack: 0, release: 0.3 }, demo: 'shake-once' },
+  { key: 'shake', label: '揺らし続ける', hint: 'クリップのあいだ、ずっと細かく揺らします。', type: 'shake', intensity: 0.3, timing: null, demo: 'shake' },
+  { key: 'vignette', label: '周りを暗く', hint: '絵の周りを暗くして、真ん中に目を集めます。', type: 'vignette', intensity: 0.6, timing: null, demo: 'vignette' },
+];
+
 /** 見本でかける強さ。既定の強さでは違いが小さいものは、分かるように強めにする。 */
 function demoIntensity(type: EffectType): number {
   if (type === 'brightness' || type === 'contrast') return 0.8;
@@ -1260,9 +1286,43 @@ function EffectsTab({ clip }: { clip: Clip }) {
         </div>
       </Field>
 
-      <Field label="エフェクトを追加">
+      <ButtonField label="動きを付ける" hint="寄る・揺らす・周りを暗く">
         <div className="chip-row wrap">
-          {(Object.keys(EFFECT_META) as EffectType[]).map((type) => (
+          {MOTION_PRESETS.map((preset) => (
+            <Hint
+              key={preset.key}
+              title={preset.label}
+              desc={preset.hint}
+              demo={() => <EffectDemo effects={[{ type: preset.type, intensity: preset.intensity }]} thumbnail={thumbnail} motion={preset.demo} />}
+            >
+              <button
+                type="button"
+                className="chip"
+                onClick={() =>
+                  patch({
+                    effects: [
+                      ...clip.effects,
+                      {
+                        id: uid('fx'),
+                        type: preset.type,
+                        intensity: preset.intensity,
+                        // 「じわっと」は、このクリップの長さいっぱいを使って効かせる（あとで秒数を見て直せるよう、実際の長さを入れる）。
+                        timing: preset.timing === SLOW_IN_TIMING ? { ...SLOW_IN_TIMING, attack: Number(clip.duration.toFixed(2)) } : preset.timing,
+                      },
+                    ],
+                  })
+                }
+              >
+                <Icon name="plus" size={15} />{preset.label}
+              </button>
+            </Hint>
+          ))}
+        </div>
+      </ButtonField>
+
+      <ButtonField label="色を変える" hint="明るさ・色あい・ぼかし">
+        <div className="chip-row wrap">
+          {(Object.keys(EFFECT_META) as EffectType[]).filter((type) => !MOTION_EFFECTS.includes(type)).map((type) => (
             <Hint
               key={type}
               title={EFFECT_META[type].label}
@@ -1275,7 +1335,7 @@ function EffectsTab({ clip }: { clip: Clip }) {
             </Hint>
           ))}
         </div>
-      </Field>
+      </ButtonField>
 
       {clip.effects.length === 0 ? (
         <EmptyHint>まだエフェクトはありません。上のボタンから追加します。</EmptyHint>
@@ -1474,22 +1534,31 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
       />
       <LearnedNote learned={learning.learned} forget={learning.forget} />
 
-      <Field label="スタイル">
-        <div className="chip-row wrap">
-          {TEXT_PRESETS.map((preset) => (
-            <Hint
-              key={preset.key}
-              title={preset.label}
-              desc="いまの文字に、このスタイルを当てた見た目です。"
-              demo={() => <TextDemo still text={{ ...preset.text, content: text.content }} />}
-            >
-              <button type="button" className="chip" onClick={() => set({ ...preset.text, content: text.content })}>
-                {preset.label}
-              </button>
-            </Hint>
+      <ButtonField label="スタイル" hint="使いどころで分けてあります">
+        <div className="style-groups">
+          {TEXT_PRESET_GROUPS.map((group) => (
+            <div key={group.key} className="style-group">
+              <span className="style-group-label" title={group.hint}>
+                {group.label}
+              </span>
+              <div className="chip-row wrap">
+                {TEXT_PRESETS.filter((preset) => preset.group === group.key).map((preset) => (
+                  <Hint
+                    key={preset.key}
+                    title={preset.label}
+                    desc={`${group.label}。${group.hint}。いまの文字に当てた見た目です。`}
+                    demo={() => <TextDemo still text={{ ...preset.text, content: text.content }} />}
+                  >
+                    <button type="button" className="chip" onClick={() => set({ ...preset.text, content: text.content })}>
+                      {preset.label}
+                    </button>
+                  </Hint>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
-      </Field>
+      </ButtonField>
 
       <div className="two-col">
         <Field label="サイズ">
@@ -1973,7 +2042,7 @@ function CardFrameSection({
  * 迷った行（1 番目と 2 番目の差が小さい行）は数えて伝える。黙って片方へ倒すと、
  * どこを見直せばよいか分からなくなる。
  */
-const SPEAKER_DEFAULT_COLORS: Record<string, string> = { '1': '#5cd6ff', '2': '#c084fc' };
+const SPEAKER_DEFAULT_COLORS: Record<string, string> = { '1': '#5cd6ff', '2': '#ffb347' };
 /** これより差が小さい行は「迷った」として数える。 */
 const UNSURE_MARGIN = 0.03;
 

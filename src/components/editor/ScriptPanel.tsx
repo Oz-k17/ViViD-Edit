@@ -21,7 +21,7 @@ import { EmptyHint, Panel } from '../ui';
 import { Icon } from '../Icon';
 
 /** 話者ごとの印。色そのものは体裁側にあるので、ここは目印だけ。 */
-const SPEAKER_DOT: Record<string, string> = { '1': '#5cd6ff', '2': '#c084fc' };
+const SPEAKER_DOT: Record<string, string> = { '1': '#5cd6ff', '2': '#ffb347' };
 
 export function ScriptPanel() {
   const { sequence, selection, setSelection, apply } = useEditor();

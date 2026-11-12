@@ -14,7 +14,8 @@ export const LABEL_NAMES: Record<LabelColor, string> = {
   yellow: '黄',
   green: '緑',
   blue: '青',
-  purple: '紫',
+  // 保存してある値は 'purple' のまま（前に付けた印を失わないため）。画面では桃色として出す。
+  purple: '桃',
   gray: '灰',
 };
 
@@ -25,7 +26,7 @@ export const LABEL_HEX: Record<LabelColor, string> = {
   yellow: '#fdd835',
   green: '#66bb6a',
   blue: '#42a5f5',
-  purple: '#ab7df0',
+  purple: '#f48fb1',
   gray: '#9e9e9e',
 };
 

@@ -30,6 +30,9 @@ export const EFFECT_NEUTRAL: Record<EffectType, number> = {
   hueRotate: 0,
   blur: 0,
   invert: 0,
+  zoom: 0,
+  shake: 0,
+  vignette: 0,
 };
 
 export interface EffectTiming {
@@ -88,6 +91,48 @@ export function effectIntensity(effect: Effect, local: number, clipDuration: num
   const amount = effectAmount(effect.timing, local, clipDuration);
   return neutral + (effect.intensity - neutral) * amount;
 }
+
+/** その時刻の「動き」。色のフィルタと違い、描く位置と大きさを変える。 */
+export interface EffectMotion {
+  /** 拡大率（1 で等倍）。 */
+  scale: number;
+  /** ずらす量。絵の短い辺に対する割合。 */
+  dx: number;
+  dy: number;
+  /** 周りの暗さ（0〜1）。 */
+  vignette: number;
+}
+
+/** いちばん強くしたときの値。 */
+const ZOOM_MAX = 0.6;
+const SHAKE_MAX = 0.035;
+
+/**
+ * 動きのエフェクトを、その時刻の拡大・ずれ・周りの暗さにまとめる。
+ * 揺れは時刻だけで決まる（乱数を使わない）ので、プレビューと書き出しで同じ絵になる。
+ */
+export function effectMotion(effects: Effect[], local: number, clipDuration: number): EffectMotion {
+  const motion: EffectMotion = { scale: 1, dx: 0, dy: 0, vignette: 0 };
+  for (const effect of effects) {
+    if (effect.type !== 'zoom' && effect.type !== 'shake' && effect.type !== 'vignette') continue;
+    const i = Math.max(0, Math.min(1, effectIntensity(effect, local, clipDuration)));
+    if (i <= 0) continue;
+    if (effect.type === 'zoom') motion.scale *= 1 + i * ZOOM_MAX;
+    else if (effect.type === 'vignette') motion.vignette = Math.max(motion.vignette, i);
+    else {
+      const amp = i * SHAKE_MAX;
+      // 周期の違う波を 2 つずつ重ねて、同じ動きの繰り返しに見えないようにする。
+      motion.dx += amp * (Math.sin(local * 71) * 0.6 + Math.sin(local * 113 + 1.3) * 0.4);
+      motion.dy += amp * (Math.cos(local * 83) * 0.6 + Math.sin(local * 127 + 0.7) * 0.4);
+      // 揺らした分だけ端が見えないよう、少し寄せておく。
+      motion.scale *= 1 + amp * 2.4;
+    }
+  }
+  return motion;
+}
+
+/** じわっと寄る: 頭から終わりまでかけて、ゆっくり効かせる。 */
+export const SLOW_IN_TIMING: EffectTiming = { start: 0, duration: 0, attack: 3600, release: 0 };
 
 /** 使いどころの決まった型。押すだけで当てられるようにしておく。 */
 export const EFFECT_SHAPES: { key: string; label: string; hint: string; timing: EffectTiming }[] = [
