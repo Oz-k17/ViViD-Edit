@@ -13,7 +13,8 @@ import {
   snapCandidates,
   snapTime,
 } from '../../model/ops';
-import { clipFromAsset } from '../../model/factory';
+import { clipFromAsset, uid } from '../../model/factory';
+import { nestClips, unnestClips } from '../../model/nest';
 import { clipEnd, previewText, type Clip, type Sequence, type Track } from '../../model/types';
 import { shortcutLabel, useApp, useShortcutHint } from '../../store/app';
 import { useEditor } from '../../store/editor';
@@ -177,7 +178,7 @@ interface Props {
 }
 
 export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }: Props) {
-  const { sequence, rootSequence, nestPath, enterNest, exitNest, selection, setSelection, editMode, setEditMode, insertMode, setInsertMode, markIn, markOut } = useEditor();
+  const { sequence, rootSequence, nestPath, enterNest, exitNest, apply, selection, setSelection, editMode, setEditMode, insertMode, setInsertMode, markIn, markOut } = useEditor();
   const { settings, updateSettings } = useApp();
   const rowScale = settings.timelineRowScale ?? DEFAULT_ROW_SCALE;
   noteClips(sequence.clips);
@@ -384,7 +385,33 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
       { label: '切り取り', hint: key('cut'), onSelect: actions.cut, disabled: none },
       paste,
     ];
-    if (clip?.kind === 'nest') items.push('separator', { label: '中身を編集する', onSelect: () => enterNest(clip.id) });
+    // まとめる・解く。選んだ中にまとめたクリップがあれば、全部まとめて解ける。
+    const nests = selection.filter((id) => sequence.clips.find((c) => c.id === id)?.kind === 'nest');
+    if (clip?.kind === 'nest' && !nests.includes(clip.id)) nests.push(clip.id);
+    if (clip?.kind === 'nest' || nests.length > 0 || selection.length >= 2) items.push('separator');
+    if (clip?.kind === 'nest') items.push({ label: '中身を編集する', onSelect: () => enterNest(clip.id) });
+    if (nests.length > 0) {
+      items.push({
+        label: nests.length > 1 ? `まとめを解く（${nests.length} 本）` : 'まとめを解く',
+        onSelect: () => {
+          const before = new Set(sequence.clips.map((c) => c.id));
+          const after = unnestClips(sequence, nests);
+          apply((seq) => unnestClips(seq, nests));
+          setSelection(after.clips.filter((c) => !before.has(c.id)).map((c) => c.id));
+        },
+      });
+    }
+    if (selection.length >= 2) {
+      items.push({
+        label: `1 つにまとめる（${selection.length} 本）`,
+        onSelect: () => {
+          const id = uid('cl');
+          const picked = [...selection];
+          apply((seq) => nestClips(seq, picked, 'まとめたクリップ', id).sequence);
+          setSelection([id]);
+        },
+      });
+    }
     items.push('separator', { label: '削除', hint: key('delete'), onSelect: actions.remove, disabled: none, danger: true });
     if (!easy) items.push({ label: 'リップル削除', hint: key('rippleDelete'), onSelect: actions.rippleRemove, disabled: none, danger: true });
     return items;

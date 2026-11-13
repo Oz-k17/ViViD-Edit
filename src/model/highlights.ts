@@ -19,11 +19,11 @@ import { buildThreeBand } from './threeBand';
 import { clipFromAsset, textClip } from './factory';
 import { goldenBands } from './layout';
 import { placeWithSound, reconcileLinks } from './links';
-import { nestClips } from './nest';
+import { flattenNests, nestClips } from './nest';
 import { tracksOf } from './ops';
 import { cutRanges, removeRanges, type TimeRange } from './tempo';
 import type { Kit } from './kit';
-import type { Sequence, TextProps } from './types';
+import type { Clip, Sequence, TextProps } from './types';
 
 export interface Highlight {
   /** 素材の秒。 */
@@ -224,3 +224,85 @@ export function buildDraft(
   }
   return seq;
 }
+
+/**
+ * まとめたクリップ（3 分割など）の中身で、1 秒ごとの音の大きさ（と声の高まりの目安）の列を作る（まとめたクリップの頭からの秒）。
+ * 中で鳴っている音のクリップ（つないだ音・ミュートしていない映像）ごとに、その素材を測った列（`scanOf`）を写してくる。
+ * 同じ時刻に何本も鳴っていれば、大きいほう。音を丸ごと混ぜ直さないので、長い録画でもメモリを食わない。
+ */
+export function nestScan(
+  nest: Clip,
+  scanOf: (mediaId: string) => { levels: Float32Array; bright?: Float32Array } | null,
+): { levels: Float32Array; bright: Float32Array } {
+  const seconds = Math.max(0, Math.floor(nest.duration));
+  const levels = new Float32Array(seconds).fill(-100);
+  const bright = new Float32Array(seconds).fill(-100);
+  if (!nest.nested) return { levels, bright };
+  const inner = flattenNests({ ...nest.nested, clips: [{ ...nest, start: 0 }] } as Sequence);
+  const linked = new Set(inner.clips.filter((c) => c.kind === 'audio' && c.linkId).map((c) => c.linkId));
+  const audible = inner.clips.filter(
+    (c) => c.mediaId && !c.muted && (c.kind === 'audio' || (c.kind === 'video' && !(c.linkId && linked.has(c.linkId)))),
+  );
+  for (const clip of audible) {
+    const scan = scanOf(clip.mediaId!);
+    if (!scan) continue;
+    const from = Math.max(0, Math.floor(clip.start));
+    const to = Math.min(seconds, Math.ceil(clip.start + clip.duration));
+    for (let t = from; t < to; t++) {
+      const source = Math.floor(clip.sourceIn + (t + 0.5 - clip.start) * (clip.speed || 1));
+      const v = scan.levels[source];
+      if (v !== undefined && v > levels[t]) {
+        levels[t] = v;
+        bright[t] = scan.bright?.[source] ?? -100;
+      }
+    }
+  }
+  return { levels, bright };
+}
+
+/** 1 秒ごとの音の大きさだけ（`nestScan` の levels）。 */
+export function nestLevels(nest: Clip, levelsOf: (mediaId: string) => Float32Array | null): Float32Array {
+  return nestScan(nest, (id) => {
+    const levels = levelsOf(id);
+    return levels ? { levels } : null;
+  }).levels;
+}
+
+/** 音の大きさを測る必要のある素材（まとめたクリップの中で鳴っているもの）。 */
+export function nestAudibleMedia(nest: Clip): string[] {
+  if (!nest.nested) return [];
+  const inner = flattenNests({ ...nest.nested, clips: [{ ...nest, start: 0 }] } as Sequence);
+  return [...new Set(inner.clips.filter((c) => (c.kind === 'audio' || c.kind === 'video') && c.mediaId && !c.muted).map((c) => c.mediaId!))];
+}
+
+/**
+ * まとめたクリップを、見どころの範囲（まとめたクリップの頭からの秒）だけにする。位置はそのまま。
+ * 中身は、外で詰めたときと同じく見えている所だけになる（store の bakeNests）。
+ */
+export function keepNestRange(sequence: Sequence, nestId: string, range: { start: number; end: number }): Sequence {
+  return {
+    ...sequence,
+    clips: sequence.clips.map((c) =>
+      c.id === nestId && c.kind === 'nest'
+        ? { ...c, sourceIn: c.sourceIn + range.start, duration: Math.max(0.1, Math.min(c.duration, range.end) - range.start) }
+        : c,
+    ),
+  };
+}
+
+/** まとめたクリップの見どころの範囲を、写しにしてタイムラインのいちばん後ろへ足す（何本も作れるように）。 */
+export function appendNestRange(sequence: Sequence, nestId: string, range: { start: number; end: number }, newId: string): Sequence {
+  const nest = sequence.clips.find((c) => c.id === nestId && c.kind === 'nest');
+  if (!nest) return sequence;
+  const end = sequence.clips.reduce((m, c) => Math.max(m, c.start + c.duration), 0);
+  const copy: Clip = {
+    ...structuredClone(nest),
+    id: newId,
+    start: end,
+    sourceIn: nest.sourceIn + range.start,
+    duration: Math.max(0.1, Math.min(nest.duration, range.end) - range.start),
+    name: `${nest.name || 'まとめたクリップ'}（見どころ）`,
+  };
+  return { ...sequence, clips: [...sequence.clips, copy] };
+}
+

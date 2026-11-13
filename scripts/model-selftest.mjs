@@ -680,6 +680,52 @@ eq('空文字', wrap('', 10), ['']);
   check('映像の無いまとめでは調べない', nestSceneClips(empty).length === 0);
 }
 
+// ---- まとめたクリップで見どころを探す・まとめを解く ----
+{
+  const { nestScan, nestAudibleMedia, keepNestRange, appendNestRange, findHighlights } = await import('../src/model/highlights.ts');
+  const { nestClips, unnestClips, bakeNests, nestedLength } = await import('../src/model/nest.ts');
+  const { buildThreeBand } = await import('../src/model/threeBand.ts');
+  const { removeRangesInNest } = await import('../src/model/tempo.ts');
+  const { placeWithSound, reconcileLinks } = await import('../src/model/links.ts');
+  const { createSequence, clipFromAsset } = await import('../src/model/factory.ts');
+  const { tracksOf } = await import('../src/model/ops.ts');
+
+  // 20 分の録画の 5 分目から 10 分を 3 分割にしてまとめる。録画の 9 分目（まとめの 4 分目）に大笑い
+  const base = createSequence();
+  const v1 = tracksOf(base, 'video')[0];
+  let seq = placeWithSound(base, [{ ...clipFromAsset({ id: 'rec', kind: 'video', duration: 1200 }, v1.id, 0), sourceIn: 300, duration: 600 }], false, () => true);
+  seq = buildThreeBand(seq, seq.clips.find((c) => c.kind === 'video'), { width: 1920, height: 1080 });
+  seq = nestClips(seq, seq.clips.map((c) => c.id), '3分割', 'n1').sequence;
+  const levels = new Float32Array(1200).map((_, i) => (i % 13 < 2 ? -55 : -30) + ((i * 7919) % 5) * 0.4);
+  for (let i = 540; i < 548; i++) levels[i] = -17;
+  const bright = new Float32Array(1200).fill(-20);
+  const scanOf = (id) => (id === 'rec' ? { levels, bright } : null);
+  const nest = seq.clips.find((c) => c.id === 'n1');
+  check('鳴っている素材は録画 1 本（3 本の帯の映像は数えない）', JSON.stringify(nestAudibleMedia(nest)) === JSON.stringify(['rec']), JSON.stringify(nestAudibleMedia(nest)));
+  const mapped = nestScan(nest, scanOf);
+  check('まとめの秒に写す（まとめの 240 秒目＝録画の 540 秒目）', mapped.levels.length === 600 && mapped.levels[240] === -17 && mapped.levels[239] !== -17, `${mapped.levels[240]} ${mapped.levels[239]}`);
+  const found = findHighlights(mapped.levels, { length: 45, count: 3 });
+  check('まとめの中で見どころが見つかる（4 分目）', found.length > 0 && found[0].start <= 240 && found[0].end > 247, JSON.stringify(found[0]));
+  // 間を詰めたまとめでも、詰めた後の秒に正しく写る（120〜180 秒を詰める）
+  const cut = removeRangesInNest(seq, 'n1', [{ start: 120, end: 180 }]).sequence;
+  const cutNest = cut.clips.find((c) => c.id === 'n1');
+  const cutMapped = nestScan(cutNest, scanOf);
+  check('詰めたまとめでは 60 秒前へずれる', cutMapped.levels.length === 540 && cutMapped.levels[180] === -17 && cutMapped.levels[240] !== -17, `${cutMapped.levels[180]} ${cutMapped.levels[240]}`);
+  // ここだけ残す・後ろに足す
+  const kept = reconcileLinks(seq, bakeNests(keepNestRange(seq, 'n1', { start: 200, end: 245 })));
+  const k = kept.clips.find((c) => c.id === 'n1');
+  check('ここだけ残すと 45 秒・中身も 45 秒', Math.abs(k.duration - 45) < 1e-6 && Math.abs(nestedLength(k) - 45) < 1e-6 && k.start === 0);
+  check('残した中身は録画の 500 秒目から', Math.min(...k.nested.clips.filter((c) => c.kind === 'video').map((c) => c.sourceIn)) === 500);
+  const added = reconcileLinks(seq, bakeNests(appendNestRange(seq, 'n1', { start: 200, end: 245 }, 'n2')));
+  const n2 = added.clips.find((c) => c.id === 'n2');
+  check('後ろに足すと、元のまとめはそのまま・写しが後ろに 45 秒', added.clips.find((c) => c.id === 'n1').duration === 600 && n2.start === 600 && Math.abs(n2.duration - 45) < 1e-6 && Math.abs(nestedLength(n2) - 45) < 1e-6);
+  // まとめを解く（複数）
+  const both = unnestClips(added, ['n1', 'n2']);
+  check('2 本まとめて解くと、まとめたクリップが無くなる', both.clips.every((c) => c.kind !== 'nest'));
+  check('解いた中身は 3 本の帯 × 2 と音 × 2', both.clips.filter((c) => c.kind === 'video').length === 6 && both.clips.filter((c) => c.kind === 'audio').length === 2, `${both.clips.filter((c) => c.kind === 'video').length}/${both.clips.filter((c) => c.kind === 'audio').length}`);
+  check('解いた写しは 600 秒目から 45 秒', both.clips.filter((c) => c.kind === 'audio').some((c) => c.start === 600 && Math.abs(c.duration - 45) < 1e-6 && c.sourceIn === 500));
+}
+
 // ---- 映像と音のつなぎ ----
 {
   const { placeWithSound, reconcileLinks, unlinkClips, partnerOf } = await import('../src/model/links.ts');

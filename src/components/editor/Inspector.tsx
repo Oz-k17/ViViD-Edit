@@ -9,6 +9,7 @@ import { buildThreeBand, relayoutThreeBand } from '../../model/threeBand';
 import { useThreeBandLayouts } from './threeBandLayouts';
 import { useFontOptions } from '../fontOptions';
 import { NestSceneSplit } from './NestSceneSplit';
+import { NestHighlights } from './NestHighlights';
 import { captureKit } from '../../model/kit';
 import { goldenBands } from '../../model/layout';
 import { cutRanges, removeRanges, removeRangesInNest, tempoOptions, type TimeRange } from '../../model/tempo';
@@ -2394,6 +2395,13 @@ function NestInspector({ clip }: { clip: Clip }) {
   const patch = useClipPatch(clip);
   const inner = clip.nested?.clips ?? [];
   const kit = useMemo(() => captureKit(sequence, inner), [sequence, inner]);
+  // 中身を元のトラックへ戻す。戻した中身を選んでおく（すぐ直せるように）。
+  const ungroup = () => {
+    const before = new Set(sequence.clips.map((c) => c.id));
+    const after = unnestClip(sequence, clip.id);
+    apply((seq) => unnestClip(seq, clip.id));
+    setSelection(after.clips.filter((c) => !before.has(c.id)).map((c) => c.id));
+  };
   return (
     <Panel
       title="まとめたクリップ"
@@ -2401,6 +2409,9 @@ function NestInspector({ clip }: { clip: Clip }) {
         <div className="panel-actions">
           <button type="button" onClick={() => player.seek(clip.start)}>
             頭出し
+          </button>
+          <button type="button" onClick={ungroup} title="中身を元のトラックへ戻す">
+            まとめを解く
           </button>
           <button type="button" className="danger" onClick={() => apply((seq) => removeClips(seq, [clip.id], easy))}>
             削除
@@ -2422,15 +2433,9 @@ function NestInspector({ clip }: { clip: Clip }) {
       {kit && <SaveKitButton kit={kit} />}
       <TempoSection key={clip.id} clip={clip} />
       <NestSceneSplit key={`scene-${clip.id}`} clip={clip} />
+      <NestHighlights key={`hl-${clip.id}`} clip={clip} />
       <p className="muted small">タイムラインでダブルクリックしても中に入れます。外へ戻るのは、タイムラインの上の「外へ戻る」から。</p>
-      <button
-        type="button"
-        className="wide ghost"
-        onClick={() => {
-          apply((seq) => unnestClip(seq, clip.id));
-          setSelection([]);
-        }}
-      >
+      <button type="button" className="wide" onClick={ungroup}>
         まとめを解く（中身を元のトラックへ戻す）
       </button>
     </Panel>

@@ -95,6 +95,13 @@ export function nestClips(
 }
 
 /** まとめたクリップの中身を、時刻を合わせて元のシーケンスへ出す（トラックは同じ id のものへ。無ければ足す）。 */
+/** 選んだ中のまとめたクリップを、全部解く（まとめたクリップでないものは、そのまま）。 */
+export function unnestClips(sequence: Sequence, ids: string[]): Sequence {
+  let seq = sequence;
+  for (const id of ids) seq = unnestClip(seq, id);
+  return seq;
+}
+
 export function unnestClip(sequence: Sequence, id: string): Sequence {
   const nest = sequence.clips.find((c) => c.id === id && c.kind === 'nest');
   if (!nest?.nested) return sequence;
