@@ -2,6 +2,9 @@ import { useMemo, useState } from 'react';
 import {
   EMBEDDED_SAVE_LIMIT_BYTES,
   estimateExportBytes,
+  estimateQualityBitrate,
+  EXPORT_SIZE_LEVELS,
+  type ExportSizeMode,
   exporter,
   exportSize,
   isEmbeddedHost,
@@ -112,6 +115,10 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   // カメラロールは WebM を受け付けないので、iOS アプリ版では MP4 を既定にする。
   const [format, setFormat] = useState(isNativeHost() ? 'mp4' : settings.exportFormat);
   const [bitrate, setBitrate] = useState(8);
+  // ファイルの大きさ。既定は「おすすめ」（画質で決めて、要らない所は小さく）。選んだものは次も使う。
+  const [sizeMode, setSizeMode] = useState<ExportSizeMode>(settings.exportSize ?? 'balanced');
+  const videoQualityOf = (mode: ExportSizeMode) => (mode === 'bitrate' ? undefined : EXPORT_SIZE_LEVELS[mode]);
+  const videoQuality = videoQualityOf(sizeMode);
   const [fps, setFps] = useState(sequence.fps || 30);
   const [finishAudio, setFinishAudio] = useState(false);
   const [fast, setFast] = useState(false);
@@ -140,7 +147,14 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const size = exportSize(aspect, quality);
   const running = progress !== null;
 
-  const estimatedBytes = useMemo(() => estimateExportBytes(duration, bitrate * 1_000_000), [duration, bitrate]);
+  const estimatedBytes = useMemo(
+    () =>
+      estimateExportBytes(
+        duration,
+        videoQuality !== undefined ? estimateQualityBitrate(size.width, size.height, videoQuality) : bitrate * 1_000_000,
+      ),
+    [duration, bitrate, videoQuality, size.width, size.height],
+  );
   const likelyTooLarge = embedded && estimatedBytes > EMBEDDED_SAVE_LIMIT_BYTES;
 
   /** 保存は viewer 側で断られることがあるので、結果をそのまま伝える。 */
@@ -162,15 +176,16 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
    * quality/bitrate を直接読まず引数で受け取る。retrySmaller から呼ぶとき、
    * setState 直後の値をこの関数のクロージャ越しに読むと 1 テンポ古い値を掴んでしまうため。
    */
-  const run = async (overrides?: { quality?: number; bitrate?: number }) => {
+  const run = async (overrides?: { quality?: number; bitrate?: number; sizeMode?: ExportSizeMode }) => {
     const effectiveQuality = overrides?.quality ?? quality;
     const effectiveBitrate = overrides?.bitrate ?? bitrate;
+    const effectiveSize = overrides?.sizeMode ?? sizeMode;
     setErrorCode(null);
     setErrorMessage(null);
     setResult(null);
     setSaved(false);
     setProgress(0);
-    updateSettings({ exportAspect: aspect, exportQuality: effectiveQuality, exportFormat: format });
+    updateSettings({ exportAspect: aspect, exportQuality: effectiveQuality, exportFormat: format, exportSize: effectiveSize });
     try {
       const output = await exporter.run(
         withoutCaption ? `${project.name}_字幕なし` : project.name,
@@ -181,6 +196,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           quality: effectiveQuality,
           fps,
           bitrate: effectiveBitrate,
+          videoQuality: videoQualityOf(effectiveSize),
           format,
           finishAudio: frameAccurate && finishAudio,
           fast,
@@ -228,9 +244,9 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   // 作品の中身か設定が変われば別の書き出しなので、印（batchKey）が同じときだけ「続きから」を出す。
   const batchSteps = [...batchVariants.map((v) => ({ key: v.key as string, label: v.label })), ...(wantNote ? [{ key: 'note', label: '投稿メモ' }] : [])];
   const batchKey = useMemo(
-    () => batchId(sequence, { aspect, quality, fps, bitrate, format, finishAudio, fast, tags: tagInput, steps: batchSteps.map((s) => s.key) }),
+    () => batchId(sequence, { aspect, quality, fps, bitrate, sizeMode, format, finishAudio, fast, tags: tagInput, steps: batchSteps.map((s) => s.key) }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sequence, aspect, quality, fps, bitrate, format, finishAudio, fast, tagInput, batchSteps.map((s) => s.key).join(',')],
+    [sequence, aspect, quality, fps, bitrate, sizeMode, format, finishAudio, fast, tagInput, batchSteps.map((s) => s.key).join(',')],
   );
   const [batchRecord, setBatchRecord] = useState<BatchRecord | null>(loadBatchRecord);
   const resumable = isResumable(batchRecord, batchKey) ? batchRecord : null;
@@ -269,7 +285,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           project.name,
           variantSequence(sequence, variant.key),
           player,
-          { aspect, quality, fps, bitrate, format, finishAudio: frameAccurate && finishAudio, fast, tag: variant.tag },
+          { aspect, quality, fps, bitrate, videoQuality, format, finishAudio: frameAccurate && finishAudio, fast, tag: variant.tag },
           setProgress,
         );
         await saveBlob(output.blob, output.filename);
@@ -329,10 +345,16 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   };
 
   /** 画質・ビットレートともに下限まで下げきっていて、これ以上自動では縮められない状態。 */
-  const atSmallestSettings = quality <= 480 && bitrate <= BITRATE_FLOOR;
+  const atSmallestSettings = quality <= 480 && (sizeMode === 'bitrate' ? bitrate <= BITRATE_FLOOR : sizeMode === 'small');
 
   /** too_large のときだけ表示: 画質とビットレートを一段下げて、丸ごと書き出し直す。 */
   const retrySmaller = () => {
+    // 画質で決めているなら、まず「小さく」へ（画質の下げ幅が小さい順に試す）。
+    if (sizeMode === 'quality' || sizeMode === 'balanced') {
+      setSizeMode('small');
+      void run({ sizeMode: 'small' });
+      return;
+    }
     const nextQuality = quality > 480 ? (quality === 1080 ? 720 : 480) : quality;
     const nextBitrate = Math.max(BITRATE_FLOOR, Math.round(bitrate / 2));
     setQuality(nextQuality);
@@ -414,9 +436,11 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           />
         </Field>
 
+        {sizeMode === 'bitrate' && (
         <Field label="ビットレート" hint={`${bitrate} Mbps`}>
           <input type="range" min={2} max={20} step={1} value={bitrate} disabled={running} onChange={(e) => setBitrate(Number(e.target.value))} />
         </Field>
+        )}
 
           </details>
         ) : (
@@ -459,12 +483,26 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           />
         </Field>
 
+        {sizeMode === 'bitrate' && (
         <Field label="ビットレート" hint={`${bitrate} Mbps`}>
           <input type="range" min={2} max={20} step={1} value={bitrate} disabled={running} onChange={(e) => setBitrate(Number(e.target.value))} />
         </Field>
+        )}
 
           </>
         )}
+        <Field label="ファイルの大きさ" hint={sizeMode === 'bitrate' ? 'ビットレートで決める' : '画質で決めて、動きの少ない所は小さく'}>
+          <Segmented
+            value={sizeMode}
+            options={[
+              { value: 'quality', label: 'きれい優先' },
+              { value: 'balanced', label: 'おすすめ' },
+              { value: 'small', label: '小さく' },
+              ...(easy ? [] : [{ value: 'bitrate', label: '数値で' }]),
+            ]}
+            onChange={(value) => !running && setSizeMode(value as ExportSizeMode)}
+          />
+        </Field>
         {(!easy || captions > 0) && (
         <Field label="テロップ" hint={captions > 0 ? `字幕は ${captions} 本` : '字幕はまだ無い'}>
           <Toggle

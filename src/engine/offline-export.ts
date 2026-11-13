@@ -56,8 +56,13 @@ export interface FrameExportOptions {
   sequence: Sequence;
   duration: number;
   fps: number;
-  /** 映像のビットレート（bps）。 */
+  /** 映像のビットレート（bps）。`videoQuality` を渡したときは、品質を指定できない環境での代わりと、上限の目安。 */
   bitrate: number;
+  /**
+   * 画質で決める（0〜1。ffmpeg の CRF のように、コマごとに要るだけ使う）。渡さなければ、ビットレートで決める（以前のまま）。
+   * 動きの少ない所・止まった絵の多い所は小さくなり、動きの多い所はちゃんと使う。
+   */
+  videoQuality?: number;
   format: 'auto' | 'mp4' | 'webm';
   /** 書き出す音に音量仕上げ（-14 LUFS・-1 dBTP）を当てる（試験的）。 */
   finishAudio?: boolean;
@@ -708,7 +713,10 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
   const realtime = fast && picked.videoCodec !== 'avc' && picked.videoCodec !== 'hevc';
   const videoSource = new CanvasSource(canvas, {
     codec: picked.videoCodec,
-    quality: new Quality({ bitrate: options.bitrate }),
+    quality:
+      options.videoQuality !== undefined
+        ? new Quality({ quality: options.videoQuality })
+        : new Quality({ bitrate: options.bitrate }),
     keyFrameInterval: 2,
     latencyMode: realtime ? 'realtime' : 'quality',
     // 出力に入ったコマを数えておく（高速モードで落とされていないかの確認用）。

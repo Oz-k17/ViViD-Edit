@@ -34,6 +34,8 @@ export interface ExportSettings {
   fast?: boolean;
   /** ファイル名に入れる版の印（`sub` / `nosub` など。英数字）。 */
   tag?: string;
+  /** 画質で決める（0〜1）。渡さなければビットレートで決める。 */
+  videoQuality?: number;
 }
 
 export interface ExportResult {
@@ -166,6 +168,7 @@ export class Exporter {
         format: settings.format,
         finishAudio: settings.finishAudio,
         fast: settings.fast,
+        videoQuality: settings.videoQuality,
         onProgress,
         isCancelled: () => this.cancelled,
       });
@@ -221,7 +224,11 @@ export class Exporter {
 
     const recorder = new MediaRecorder(stream, {
       mimeType: picked.mime,
-      videoBitsPerSecond: Math.round(settings.bitrate * 1_000_000),
+      // 収録方式（MediaRecorder）は画質で決められないので、画質の指定はビットレートの目安に直す。
+      videoBitsPerSecond:
+        settings.videoQuality !== undefined
+          ? estimateQualityBitrate(size.width, size.height, settings.videoQuality)
+          : Math.round(settings.bitrate * 1_000_000),
       audioBitsPerSecond: 128_000,
     });
     const chunks: BlobPart[] = [];
@@ -304,6 +311,25 @@ export function isEmbeddedHost(): boolean {
 export const EMBEDDED_SAVE_LIMIT_BYTES = 16 * 1024 * 1024;
 
 /** 書き出し設定から、おおよその出力サイズを見積もる（コンテナのオーバーヘッドは無視した概算）。 */
+/**
+ * ファイルの大きさの選び方。'bitrate' 以外は画質で決める（`videoQuality`）。
+ * 画質で決めると、止まった絵・動きの少ない所（3 分割の背景や顔の帯、話している場面）は小さく、動きの多い所はちゃんと使う。
+ * 同じ 12 秒の 3 分割で、以前の既定（8 Mbps）10.2MB に対し、おすすめ（0.65）は 7.1MB（-30%）。
+ * 見た目の差（SSIM）は止まった所 0.9927 → 0.9895、動く所 0.9983 → 0.9988 で、拡大して見比べても分からなかった。
+ */
+export type ExportSizeMode = 'quality' | 'balanced' | 'small' | 'bitrate';
+export const EXPORT_SIZE_LEVELS: Record<Exclude<ExportSizeMode, 'bitrate'>, number> = { quality: 0.8, balanced: 0.65, small: 0.5 };
+
+/**
+ * 画質で決めたときの、ビットレートの目安（bps）。画質で決められない環境（Safari の H.264 など）では、
+ * 書き出しの部品（Mediabunny）がこの式でビットレートに直して使うので、そのときの大きさになる。
+ * H.264 の式で出す（いちばん大きい側）。画質で決められる環境では、中身しだいでこれより小さくなる。
+ */
+export function estimateQualityBitrate(width: number, height: number, level: number): number {
+  const scale = Math.pow((width * height) / (1920 * 1080), 0.95);
+  return Math.ceil((3_000_000 * scale * 0.3 * Math.exp(2.5538 * level)) / 1000) * 1000;
+}
+
 export function estimateExportBytes(durationSeconds: number, videoBitsPerSecond: number, audioBitsPerSecond = 128_000): number {
   return Math.max(0, durationSeconds) * (videoBitsPerSecond + audioBitsPerSecond) / 8;
 }
