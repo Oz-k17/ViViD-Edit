@@ -74,7 +74,7 @@ import { TransitionHint, TransitionName } from './TransitionPicker';
 import { Hint } from '../Hint';
 import { EffectDemo, TextDemo, ThreeBandDemo, TimelineDemo } from '../demos';
 
-type TabKey = 'props' | 'effects' | 'text' | 'emoji';
+type TabKey = 'props' | 'effects' | 'text' | 'emoji' | 'auto';
 
 /** テロップのテキストエリアで最後にカーソルがあった位置（絵文字タブから挿入する先）。 */
 type CursorRef = MutableRefObject<{ clipId: string; pos: number } | null>;
@@ -147,11 +147,12 @@ function InspectorBody() {
   }
 
   const clip = clips[0];
-  if (clip.kind === 'nest') return <NestInspector clip={clip} />;
+  if (clip.kind === 'nest') return <NestInspector clip={clip} tab={tab} setTab={setTab} />;
   const tabs: { value: TabKey; label: string }[] = [
     { value: 'props', label: 'プロパティ' },
     ...(clip.kind === 'text' ? [{ value: 'text' as TabKey, label: 'テキスト' }, { value: 'emoji' as TabKey, label: '絵文字' }] : []),
     ...(clip.kind !== 'audio' ? [{ value: 'effects' as TabKey, label: 'エフェクト' }] : []),
+    ...(hasAutoTab(clip) ? [{ value: 'auto' as TabKey, label: '自動' }] : []),
   ];
   const active = tabs.some((t) => t.value === tab) ? tab : 'props';
 
@@ -172,6 +173,7 @@ function InspectorBody() {
       <Tabs value={active} options={tabs} onChange={setTab} />
       {active === 'props' && <PropsTab clip={clip} />}
       {active === 'effects' && <EffectsTab clip={clip} />}
+      {active === 'auto' && <AutoTab clip={clip} />}
       {active === 'text' && clip.text && <TextTab clip={clip} text={clip.text} cursorRef={cursorRef} />}
       {active === 'emoji' && clip.text && <EmojiTab clip={clip} text={clip.text} cursorRef={cursorRef} />}
     </Panel>
@@ -615,6 +617,29 @@ function SourceFpsHint() {
   );
 }
 
+/** 間を詰める・場面で分けるなどの自動の機能があるクリップか（説明が長いので、別のタブにまとめる）。 */
+function hasAutoTab(clip: Clip): boolean {
+  if (clip.kind === 'video') return true;
+  return clip.kind === 'audio' && !!clip.mediaId && mediaRegistry.get(clip.mediaId)?.hasAudio !== false;
+}
+
+/** 「自動」タブ: 間を詰める（テンポ）・場面で分ける・顔の位置・表紙など、押すと自動で直す機能。 */
+function AutoTab({ clip }: { clip: Clip }) {
+  const asset = mediaRegistry.get(clip.mediaId);
+  const tempo = (clip.kind === 'video' || clip.kind === 'audio') && !!clip.mediaId && asset?.hasAudio !== false;
+  return (
+    <>
+      {tempo && <TempoSection key={clip.id} clip={clip} />}
+      {clip.kind === 'video' && (
+        <>
+          {tempo && <hr />}
+          <AnalysisSection clip={clip} />
+        </>
+      )}
+    </>
+  );
+}
+
 function PropsTab({ clip }: { clip: Clip }) {
   const patch = useClipPatch(clip);
   const easy = useEasy();
@@ -691,9 +716,6 @@ function PropsTab({ clip }: { clip: Clip }) {
               </button>
             )
           )}
-          {(clip.kind === 'video' || clip.kind === 'audio') && clip.mediaId && asset?.hasAudio !== false && (
-            <TempoSection key={clip.id} clip={clip} />
-          )}
         </>
       )}
 
@@ -756,7 +778,7 @@ function PropsTab({ clip }: { clip: Clip }) {
 
       {easy ? (
         <details className="more-settings">
-          <summary>くわしい設定（自動カット・透明度・回転・切り抜きなど）</summary>
+          <summary>くわしい設定（透明度・回転・切り抜きなど）</summary>
       <Field label="濃さ（下げると透ける）">
         <Slider
           value={clip.opacity}
@@ -830,13 +852,6 @@ function PropsTab({ clip }: { clip: Clip }) {
 
           <hr />
           <CropSection clip={clip} />
-
-          {clip.kind === 'video' && (
-            <>
-              <hr />
-              <AnalysisSection clip={clip} />
-            </>
-          )}
 
           <hr />
           <TransitionControls clip={clip} />
@@ -918,13 +933,6 @@ function PropsTab({ clip }: { clip: Clip }) {
 
           <hr />
           <CropSection clip={clip} />
-
-          {clip.kind === 'video' && (
-            <>
-              <hr />
-              <AnalysisSection clip={clip} />
-            </>
-          )}
 
           <hr />
           <TransitionControls clip={clip} />
@@ -2312,7 +2320,6 @@ function TempoSection({ clip }: { clip: Clip }) {
 
   return (
     <>
-      <hr />
       <ButtonField label="間を詰める（テンポ）" hint="しゃべりの間（音の無い所）を詰めます">
         {done ? (
           <p className="muted small">{done}</p>
@@ -2389,7 +2396,7 @@ function SaveKitButton({ kit }: { kit: NonNullable<ReturnType<typeof captureKit>
 }
 
 /** まとめたクリップ。中身を編集する入口と、まとめを解く。 */
-function NestInspector({ clip }: { clip: Clip }) {
+function NestInspector({ clip, tab, setTab }: { clip: Clip; tab: TabKey; setTab: (tab: TabKey) => void }) {
   const { sequence, apply, enterNest, setSelection } = useEditor();
   const easy = useEasy();
   const patch = useClipPatch(clip);
@@ -2410,15 +2417,29 @@ function NestInspector({ clip }: { clip: Clip }) {
           <button type="button" onClick={() => player.seek(clip.start)}>
             頭出し
           </button>
-          <button type="button" onClick={ungroup} title="中身を元のトラックへ戻す">
-            まとめを解く
-          </button>
           <button type="button" className="danger" onClick={() => apply((seq) => removeClips(seq, [clip.id], easy))}>
             削除
           </button>
         </div>
       }
     >
+      <Tabs<TabKey>
+        value={tab === 'auto' ? 'auto' : 'props'}
+        options={[
+          { value: 'props', label: 'プロパティ' },
+          { value: 'auto', label: '自動' },
+        ]}
+        onChange={setTab}
+      />
+      {tab === 'auto' ? (
+        <>
+          <TempoSection key={clip.id} clip={clip} />
+          <hr />
+          <NestSceneSplit key={`scene-${clip.id}`} clip={clip} />
+          <NestHighlights key={`hl-${clip.id}`} clip={clip} />
+        </>
+      ) : (
+        <>
       <Field label="名前">
         <input type="text" value={clip.name ?? ''} onChange={(e) => patch({ name: e.target.value }, 'nestName')} />
       </Field>
@@ -2429,15 +2450,14 @@ function NestInspector({ clip }: { clip: Clip }) {
       <button type="button" className="wide primary" onClick={() => enterNest(clip.id)}>
         中身を編集する
       </button>
+      <button type="button" className="wide" onClick={ungroup} title="中身を元のトラックへ戻します。右クリック（長押し）のメニューからもできます">
+        まとめを解く
+      </button>
       {kit && <RelayoutField mode="nest" nestId={clip.id} />}
       {kit && <SaveKitButton kit={kit} />}
-      <TempoSection key={clip.id} clip={clip} />
-      <NestSceneSplit key={`scene-${clip.id}`} clip={clip} />
-      <NestHighlights key={`hl-${clip.id}`} clip={clip} />
-      <p className="muted small">タイムラインでダブルクリックしても中に入れます。外へ戻るのは、タイムラインの上の「外へ戻る」から。</p>
-      <button type="button" className="wide" onClick={ungroup}>
-        まとめを解く（中身を元のトラックへ戻す）
-      </button>
+      <p className="muted small">間を詰める・場面で分ける・見どころを探すは「自動」タブにあります。タイムラインでダブルクリックしても中に入れます。</p>
+        </>
+      )}
     </Panel>
   );
 }
