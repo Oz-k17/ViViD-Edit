@@ -957,3 +957,9 @@ export class Player {
 }
 
 export const player = new Player();
+
+// 音の文脈を作り直したら（iPad で長く裏にいたあとなど）、再生要素も作り直す。
+// 古い文脈につながったままの要素は、新しい文脈へつなぎ直せず、鳴らないため。
+audioGraph.onReset(() => {
+  for (const key of mediaRegistry.activeKeys()) mediaRegistry.releaseElement(key);
+});

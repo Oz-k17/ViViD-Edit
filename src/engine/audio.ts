@@ -16,15 +16,77 @@ export class AudioGraph {
   private monitor: GainNode | null = null;
   private recordDest: MediaStreamAudioDestinationNode | null = null;
 
+  private resetListeners = new Set<() => void>();
+  private woken = false;
+
+  /**
+   * 音の文脈を作り直したときに呼ばれる。つないでいた再生要素は古い文脈につながったままで、
+   * 新しい文脈へはつなぎ直せない（`createMediaElementSource` は 1 つの要素に 1 度だけ）ので、
+   * 呼ばれた側は要素を手放して作り直すこと。
+   */
+  onReset(fn: () => void): () => void {
+    this.resetListeners.add(fn);
+    return () => this.resetListeners.delete(fn);
+  }
+
+  /**
+   * 止まった音を起こす。iPad（Safari・WKWebView）の音の文脈は、電話・ほかのアプリの音・画面ロックのあと
+   * `interrupted`（Safari だけの状態）になり、長く裏にいると `closed` になることもある。
+   * 以前は `suspended` のときしか起こしていなかったので、戻ってきて再生しても無音のままになりえた。
+   * `running` 以外なら起こし、`closed` なら作り直す。
+   */
+  private wake() {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const state = ctx.state as string;
+    if (state === 'closed') {
+      this.rebuild();
+      return;
+    }
+    if (state !== 'running') void ctx.resume().catch(() => undefined);
+  }
+
+  private rebuild() {
+    this.ctx = null;
+    this.master = null;
+    this.monitor = null;
+    this.recordDest = null;
+    this.channels.clear();
+    this.create();
+    for (const fn of this.resetListeners) fn();
+  }
+
+  /**
+   * 次に触ったとき・アプリへ戻ってきたときにも起こす。iOS は、音の文脈を起こせるのを
+   * 利用者の操作の中に限るので、再生ボタン以外を触ったときにも試しておく（起こせなければ何もしない）。
+   */
+  private listenForWake() {
+    if (this.woken || typeof document === 'undefined') return;
+    this.woken = true;
+    const wake = () => this.wake();
+    document.addEventListener('pointerdown', wake, true);
+    document.addEventListener('keydown', wake, true);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') wake();
+    });
+    window.addEventListener('pageshow', wake);
+    window.addEventListener('focus', wake);
+  }
+
   /** ユーザー操作の中で呼ぶこと（自動再生ポリシー対策）。 */
   ensure(): AudioContext | null {
     if (this.ctx) {
-      if (this.ctx.state === 'suspended') void this.ctx.resume();
+      this.wake();
       return this.ctx;
     }
+    return this.create();
+  }
+
+  private create(): AudioContext | null {
     const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!Ctor) return null;
     const ctx = new Ctor();
+    this.listenForWake();
     this.ctx = ctx;
     this.master = ctx.createGain();
     this.monitor = ctx.createGain();
