@@ -7,6 +7,7 @@ const LINKS = [
   { to: '/', label: 'エディタ', short: 'エディタ', end: true },
   { to: '/media-library', label: '素材管理', short: '素材', end: false },
   { to: '/templates', label: 'テンプレート集', short: 'テンプレ', end: false },
+  { to: '/text-styles', label: 'テキストスタイル', short: '文字', end: false },
   { to: '/outputs', label: '完成品', short: '完成品', end: false },
   { to: '/settings', label: '設定', short: '設定', end: false },
 ];

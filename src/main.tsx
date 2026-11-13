@@ -5,6 +5,7 @@ import './styles.css';
 import { mediaRegistry } from './engine/media';
 import { player } from './engine/player';
 import { audioGraph } from './engine/audio';
+import { fontRegistry } from './engine/fonts';
 import * as thumbstrip from './engine/thumbstrip';
 import { installMemoryGuards } from './engine/memory';
 import * as factory from './model/factory';
@@ -13,10 +14,12 @@ import { withWebmDuration } from './engine/webm';
 // 開発サーバーのときと、速さを測る組み立て（perf/bench.mjs が VITE_BENCH=1 で組む）のときだけ、
 // 動作テストからアプリと同じ実体を見られるようにする（ふつうの配布物には入らない）。
 if (import.meta.env.DEV || import.meta.env.VITE_BENCH === '1') {
-  (window as unknown as Record<string, unknown>).__vivid = { player, mediaRegistry, thumbstrip, factory, withWebmDuration, audioGraph };
+  (window as unknown as Record<string, unknown>).__vivid = { player, mediaRegistry, thumbstrip, factory, withWebmDuration, audioGraph, fontRegistry };
 }
 
 installMemoryGuards();
+// 自分で足したフォントを、描き始める前に読み込んでおく（プレビューも書き出しも同じ字形で描けるように）。
+void fontRegistry.restore();
 
 /**
  * iPad アプリ版（WKWebView）は、メモリが足りなくなると OS に表示プロセスを終了させられ、

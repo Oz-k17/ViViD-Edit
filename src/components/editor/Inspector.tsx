@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef, useState, type MutableRefObject, type Synth
 import { EMOJI_FOLDER, formatTime, mediaRegistry } from '../../engine/media';
 import { player } from '../../engine/player';
 import { defaultCrop } from '../../engine/renderer';
-import { FONT_OPTIONS, LOOK_PRESETS, SPEED_PRESETS, TEXT_PRESETS, TEXT_PRESET_GROUPS } from '../../presets';
+import { LOOK_PRESETS, SPEED_PRESETS, TEXT_PRESETS, TEXT_PRESET_GROUPS } from '../../presets';
 import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
 import { buildThreeBand, relayoutThreeBand } from '../../model/threeBand';
 import { useThreeBandLayouts } from './threeBandLayouts';
+import { useFontOptions } from '../fontOptions';
 import { NestSceneSplit } from './NestSceneSplit';
 import { captureKit } from '../../model/kit';
 import { goldenBands } from '../../model/layout';
@@ -1507,7 +1508,10 @@ function previewEntrance(clip: Clip, animationSeconds: number) {
 function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; cursorRef: CursorRef }) {
   const patch = useClipPatch(clip);
   const learning = useCaptionLearning();
-  const { addTemplate } = useApp();
+  const { addTemplate, templates } = useApp();
+  const fontOptions = useFontOptions(text.fontFamily);
+  const [savedStyle, setSavedStyle] = useState<string | null>(null);
+  const myStyles = templates.filter((t) => t.kind === 'text');
   const easy = useEasy();
   const set = (changes: Partial<TextProps>, key?: string) => patch({ text: { ...text, ...changes } }, key);
   // 絵文字タブから挿入するとき、テキストエリアで最後に触れていた位置に入れられるよう覚えておく。
@@ -1536,6 +1540,22 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
 
       <ButtonField label="スタイル" hint="使いどころで分けてあります">
         <div className="style-groups">
+          {myStyles.length > 0 && (
+            <div className="style-group">
+              <span className="style-group-label" title="テキストスタイルの画面で作ったもの">
+                自分のスタイル
+              </span>
+              <div className="chip-row wrap">
+                {myStyles.map((t) =>
+                  t.kind === 'text' ? (
+                    <button key={t.id} type="button" className="chip" onClick={() => set({ ...t.text, content: text.content })}>
+                      {t.name}
+                    </button>
+                  ) : null,
+                )}
+              </div>
+            </div>
+          )}
           {TEXT_PRESET_GROUPS.map((group) => (
             <div key={group.key} className="style-group">
               <span className="style-group-label" title={group.hint}>
@@ -1599,7 +1619,7 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
           <summary>くわしい設定（フォント・フチ・影・動きなど）</summary>
       <Field label="フォント">
         <select value={text.fontFamily} onChange={(e) => set({ fontFamily: e.target.value })}>
-          {FONT_OPTIONS.map((font) => (
+          {fontOptions.map((font) => (
             <option key={font.value} value={font.value}>
               {font.label}
             </option>
@@ -1721,18 +1741,22 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
         type="button"
         className="wide ghost"
         onClick={() => {
-          const name = window.prompt('テンプレート名', previewText(text.content).split('\n')[0] || 'テロップ');
-          if (name) addTemplate({ kind: 'text', name, text });
+          // window.prompt は iPad のアプリで出ないことがあるので、名前は決め打ちで付ける（テキストスタイルの画面で直せる）。
+          const { content: _content, ...style } = text;
+          const name = `スタイル ${templates.filter((t) => t.kind === 'text').length + 1}`;
+          addTemplate({ kind: 'text', name, text: { ...style, content: 'テキストを入力' } });
+          setSavedStyle(name);
         }}
       >
         このスタイルをテンプレートに保存
       </button>
+      {savedStyle && <p className="muted small">「{savedStyle}」として保存しました。名前や細かい所は「テキストスタイル」の画面で直せます。</p>}
         </details>
       ) : (
         <>
       <Field label="フォント">
         <select value={text.fontFamily} onChange={(e) => set({ fontFamily: e.target.value })}>
-          {FONT_OPTIONS.map((font) => (
+          {fontOptions.map((font) => (
             <option key={font.value} value={font.value}>
               {font.label}
             </option>
@@ -1842,12 +1866,16 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
         type="button"
         className="wide ghost"
         onClick={() => {
-          const name = window.prompt('テンプレート名', previewText(text.content).split('\n')[0] || 'テロップ');
-          if (name) addTemplate({ kind: 'text', name, text });
+          // window.prompt は iPad のアプリで出ないことがあるので、名前は決め打ちで付ける（テキストスタイルの画面で直せる）。
+          const { content: _content, ...style } = text;
+          const name = `スタイル ${templates.filter((t) => t.kind === 'text').length + 1}`;
+          addTemplate({ kind: 'text', name, text: { ...style, content: 'テキストを入力' } });
+          setSavedStyle(name);
         }}
       >
         このスタイルをテンプレートに保存
       </button>
+      {savedStyle && <p className="muted small">「{savedStyle}」として保存しました。名前や細かい所は「テキストスタイル」の画面で直せます。</p>}
         </>
       )}
     </>

@@ -5,6 +5,7 @@ import MediaLibraryPage from './pages/MediaLibraryPage';
 import SettingsPage from './pages/SettingsPage';
 import TemplatesPage from './pages/TemplatesPage';
 import OutputsPage from './pages/OutputsPage';
+import TextStylePage from './pages/TextStylePage';
 import { AppProvider } from './store/app';
 import { EditorProvider } from './store/editor';
 import { ToastHost } from './components/Toast';
@@ -20,6 +21,7 @@ export default function App() {
             '/': () => <EditorPage />,
             '/media-library': () => <MediaLibraryPage />,
             '/templates': () => <TemplatesPage />,
+            '/text-styles': () => <TextStylePage />,
             '/outputs': () => <OutputsPage />,
             '/settings': () => <SettingsPage />,
           }}

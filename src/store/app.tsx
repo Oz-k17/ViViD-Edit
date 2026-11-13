@@ -457,6 +457,8 @@ interface AppApi {
   ) => Template;
   removeTemplate: (id: string) => void;
   renameTemplate: (id: string, name: string) => void;
+  /** テロップスタイルの中身を書き換える（テキストスタイルの画面から）。 */
+  updateTextTemplate: (id: string, text: TextProps) => void;
   /** わたし辞書（字幕の直し）。model/dictionary.ts。 */
   dictionary: DictEntry[];
   /** 直しを覚える（同じ前の言葉があれば置き換える）。 */
@@ -622,6 +624,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setTemplates((prev) => prev.map((t) => (t.id === id ? { ...t, name } : t)));
   }, []);
 
+  const updateTextTemplate = useCallback((id: string, text: TextProps) => {
+    setTemplates((prev) => prev.map((t) => (t.id === id && t.kind === 'text' ? { ...t, text } : t)));
+  }, []);
+
   const personalBase = useMemo(() => personalBaseFor(mediaRoots, profile.folder), [mediaRoots, profile.folder]);
 
   const value = useMemo<AppApi>(
@@ -635,6 +641,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addTemplate,
       removeTemplate,
       renameTemplate,
+      updateTextTemplate,
       dictionary,
       learnWord,
       removeWord,
@@ -659,6 +666,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addTemplate,
       removeTemplate,
       renameTemplate,
+      updateTextTemplate,
       dictionary,
       learnWord,
       removeWord,
