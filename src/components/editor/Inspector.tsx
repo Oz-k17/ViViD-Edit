@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MutableRefObject, type SyntheticEvent } from 'react';
 import { EMOJI_FOLDER, formatTime, mediaRegistry } from '../../engine/media';
 import { player } from '../../engine/player';
-import { defaultCrop } from '../../engine/renderer';
+import { canvasFilterSupported, defaultCrop, unsupportedEffectTypes } from '../../engine/renderer';
 import { LOOK_PRESETS, SPEED_PRESETS, TEXT_PRESETS, TEXT_PRESET_GROUPS } from '../../presets';
 import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
 import { uid } from '../../model/factory';
@@ -1265,8 +1265,17 @@ function EffectsTab({ clip }: { clip: Clip }) {
     patch({ effects: [...clip.effects, effect] });
   };
 
+  const filterOk = canvasFilterSupported();
+  const missing = unsupportedEffectTypes(clip.effects);
   return (
     <>
+      {!filterOk && (
+        <p className="warn small" role="note">
+          この端末では、色のエフェクト（明るさ・白黒など）が映りません（iPadOS 17 以前の Safari は、キャンバスの色のフィルタに対応していないため）。
+          ぼかしと背景ぼかしは、簡易な描き方で代わりに映します。iPadOS 18 以降にすると、すべて使えます。
+          {missing.length > 0 && <> このクリップの「{missing.map((t) => EFFECT_META[t].label).join('・')}」は、書き出しにも入りません。</>}
+        </p>
+      )}
       <Field label="色味のおまかせ（ルック）">
         <div className="chip-row wrap">
           {LOOK_PRESETS.map((look) => (

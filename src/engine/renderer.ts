@@ -109,6 +109,17 @@ export function effectFilter(
   return parts.length > 0 ? parts.join(' ') : 'none';
 }
 
+/** フィルタが使えない端末で、ぼかしのエフェクトを代わりに描くときの半径（画角の座標）。無ければ 0。 */
+export function softBlurRadius(effects: Effect[], local: number, clipDuration: number): number {
+  let radius = 0;
+  for (const effect of effects) {
+    if (effect.type !== 'blur') continue;
+    const i = Math.max(0, Math.min(1, effectIntensity(effect, local, clipDuration)));
+    radius += i * 30;
+  }
+  return radius;
+}
+
 /** 素材を画角に収めたうえで、スケールと位置を適用した矩形。 */
 export function fitRect(
   sequence: Sequence,
@@ -153,6 +164,104 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.closePath();
 }
 
+// ---------- フィルタが使えない端末（iPadOS 17 以前の Safari） ----------
+
+/**
+ * キャンバスの `ctx.filter`（ぼかし・明るさ・白黒など）が効くか。
+ *
+ * Safari が `CanvasRenderingContext2D.filter` に対応したのは 18（iPadOS 18）から。
+ * それより前は、代入しても何も起きず（ただの飾りの値になる）、エフェクトと背景ぼかしが黙って効かない。
+ * 名前があるかだけでは分からないので、赤い 1 点を白黒のフィルタで描いて、本当に灰色になるかで確かめる。
+ */
+let filterSupport: boolean | null = null;
+
+export function canvasFilterSupported(): boolean {
+  if (filterSupport !== null) return filterSupport;
+  try {
+    const red = document.createElement('canvas');
+    red.width = red.height = 1;
+    const rctx = red.getContext('2d');
+    const out = document.createElement('canvas');
+    out.width = out.height = 1;
+    const octx = out.getContext('2d', { willReadFrequently: true });
+    if (!rctx || !octx || !('filter' in octx)) {
+      filterSupport = false;
+    } else {
+      rctx.fillStyle = '#ff0000';
+      rctx.fillRect(0, 0, 1, 1);
+      octx.filter = 'grayscale(1)';
+      octx.drawImage(red, 0, 0);
+      const [r, g] = octx.getImageData(0, 0, 1, 1).data;
+      filterSupport = Math.abs(r - g) < 40;
+    }
+  } catch {
+    filterSupport = false;
+  }
+  return filterSupport;
+}
+
+/** 試験用: フィルタが使えない端末のふりをする（null で調べ直す）。 */
+export function setCanvasFilterSupportForTest(value: boolean | null): void {
+  filterSupport = value;
+}
+
+/** フィルタが使えないとき、効かないエフェクトの種類（ぼかしは代わりの描き方があるので入れない）。 */
+export function unsupportedEffectTypes(effects: Effect[]): Effect['type'][] {
+  if (canvasFilterSupported()) return [];
+  const colorTypes: Effect['type'][] = ['brightness', 'contrast', 'saturate', 'grayscale', 'sepia', 'hueRotate', 'invert'];
+  return [...new Set(effects.map((e) => e.type).filter((t) => colorTypes.includes(t)))];
+}
+
+let softCanvas: HTMLCanvasElement | null = null;
+let softSmall: HTMLCanvasElement | null = null;
+
+/**
+ * フィルタを使わずにぼかす（縮めてから引き伸ばす）。`blurPx` は描く先の大きさでのぼかしの半径。
+ * 縮めるときに細部が消え、引き伸ばすときのなめらか補間で、ぼかしに近い見た目になる。
+ * 小さく縮めすぎるとかくかくするので、2 段で縮める。
+ */
+function softenWithoutFilter(
+  frame: CanvasImageSource,
+  src: { sx: number; sy: number; sw: number; sh: number },
+  destW: number,
+  destH: number,
+  blurPx: number,
+): HTMLCanvasElement | null {
+  if (destW < 1 || destH < 1) return null;
+  // 縮める割合: 縮めて引き伸ばすと、ぼかしの半径はおよそ割合の半分になる。少し強めに縮めて、フィルタのぼかしに見た目を寄せる。
+  const factor = Math.max(1, blurPx * 1.5);
+  // 半径が小さいときに大きな絵を作らないよう、縮めた絵は長い辺 640 までにする。
+  const cap = Math.min(1, 640 / (Math.max(destW, destH) / factor));
+  const w = Math.max(1, Math.round((destW / factor) * cap));
+  const h = Math.max(1, Math.round((destH / factor) * cap));
+  const midW = Math.max(w, Math.min(Math.round(destW), w * 4));
+  const midH = Math.max(h, Math.min(Math.round(destH), h * 4));
+  if (!softSmall) softSmall = document.createElement('canvas');
+  if (!softCanvas) softCanvas = document.createElement('canvas');
+  const small = softSmall;
+  const mid = softCanvas;
+  if (small.width !== w || small.height !== h) {
+    small.width = w;
+    small.height = h;
+  }
+  if (mid.width !== midW || mid.height !== midH) {
+    mid.width = midW;
+    mid.height = midH;
+  }
+  const sctx = small.getContext('2d');
+  const mctx = mid.getContext('2d');
+  if (!sctx || !mctx) return null;
+  sctx.imageSmoothingEnabled = true;
+  sctx.imageSmoothingQuality = 'high';
+  mctx.imageSmoothingEnabled = true;
+  mctx.imageSmoothingQuality = 'high';
+  sctx.clearRect(0, 0, w, h);
+  sctx.drawImage(frame, src.sx, src.sy, src.sw, src.sh, 0, 0, w, h);
+  mctx.clearRect(0, 0, midW, midH);
+  mctx.drawImage(small, 0, 0, midW, midH);
+  return mid;
+}
+
 // ---------- 背景ぼかし ----------
 
 /**
@@ -168,6 +277,7 @@ let backdropCanvas: HTMLCanvasElement | null = null;
 
 function blurredBackdrop(
   frame: CanvasImageSource,
+  frameSize: { width: number; height: number },
   targetWidth: number,
   targetHeight: number,
   blurPx: number,
@@ -188,6 +298,17 @@ function blurredBackdrop(
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, w, h);
+  if (!canvasFilterSupported()) {
+    // フィルタが使えない端末: 縮めて引き伸ばしたぼかしに、暗くする幕（brightness 0.6 の代わり）を重ねる。
+    const soft = softenWithoutFilter(frame, { sx: 0, sy: 0, sw: frameSize.width, sh: frameSize.height }, w, h, Math.max(1, blurPx * scale));
+    if (!soft) return null;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(soft, 0, 0, w, h);
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.fillRect(0, 0, w, h);
+    return canvas;
+  }
   ctx.filter = `blur(${Math.max(1, blurPx * scale).toFixed(2)}px) brightness(0.6) saturate(1.15)`;
   try {
     // ぼかしで端が透けないよう、少しはみ出させて描く。
@@ -243,13 +364,16 @@ function drawVisualClip(
       const zoom = clip.bgBlur.zoom || 1;
       const bw = backdrop.w * zoom;
       const bh = backdrop.h * zoom;
-      const blurred = blurredBackdrop(frame, bw, bh, dc.sequence.width * clip.bgBlur.strength);
+      const blurred = blurredBackdrop(frame, size, bw, bh, dc.sequence.width * clip.bgBlur.strength);
       if (blurred) {
         ctx.drawImage(blurred, backdrop.x - (bw - backdrop.w) / 2, backdrop.y - (bh - backdrop.h) / 2, bw, bh);
       }
     }
 
-    ctx.filter = effectFilter(clip.effects, dc.pixelScale, local, clip.duration);
+    const filterOk = canvasFilterSupported();
+    if (filterOk) ctx.filter = effectFilter(clip.effects, dc.pixelScale, local, clip.duration);
+    // フィルタが使えない端末では、ぼかしのエフェクトだけ、縮めて引き伸ばす描き方で代わりにする（色のエフェクトは効かない。インスペクタで知らせる）。
+    const blurRadius = filterOk ? 0 : softBlurRadius(clip.effects, local, clip.duration);
 
     // 動きのエフェクト（寄る・揺らす・周りを暗く）。絵の置き場を中心に拡大・ずらし、置き場からはみ出した分は切る
     //（3 分割の帯が、隣の帯へはみ出さないように）。範囲指定中は、選ぶ絵が動くと選べないので掛けない。
@@ -275,20 +399,20 @@ function drawVisualClip(
 
     if (clip.crop.enabled && dc.cropTarget !== clip.id) {
       const dest = place;
-      ctx.drawImage(
-        frame,
-        clip.crop.sx * size.width,
-        clip.crop.sy * size.height,
-        Math.max(1, clip.crop.sw * size.width),
-        Math.max(1, clip.crop.sh * size.height),
-        dest.x,
-        dest.y,
-        dest.w,
-        dest.h,
-      );
+      const src = {
+        sx: clip.crop.sx * size.width,
+        sy: clip.crop.sy * size.height,
+        sw: Math.max(1, clip.crop.sw * size.width),
+        sh: Math.max(1, clip.crop.sh * size.height),
+      };
+      const soft = blurRadius > 0 ? softenWithoutFilter(frame, src, dest.w, dest.h, blurRadius) : null;
+      if (soft) ctx.drawImage(soft, dest.x, dest.y, dest.w, dest.h);
+      else ctx.drawImage(frame, src.sx, src.sy, src.sw, src.sh, dest.x, dest.y, dest.w, dest.h);
     } else {
       // 範囲指定モード中は、どこを切り抜くか見えないと選べないので必ず全体を描く（place がその大きさ）。
-      ctx.drawImage(frame, place.x, place.y, place.w, place.h);
+      const soft =
+        blurRadius > 0 ? softenWithoutFilter(frame, { sx: 0, sy: 0, sw: size.width, sh: size.height }, place.w, place.h, blurRadius) : null;
+      ctx.drawImage(soft ?? frame, place.x, place.y, place.w, place.h);
     }
 
     if (motion && motion.vignette > 0) {

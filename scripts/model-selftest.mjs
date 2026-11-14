@@ -2112,6 +2112,26 @@ eq('空文字', wrap('', 10), ['']);
   check('覚える数に上限がある（古いものから捨てる）', many.length === O.OUTPUT_LIMIT && many[0].id === `o${O.OUTPUT_LIMIT + 4}`);
 }
 
+{
+  // フィルタが使えない端末（iPadOS 17 以前の Safari）: 効かない色のエフェクトを名前で出す・ぼかしは代わりの描き方の半径
+  const R = await import('../src/engine/renderer.ts');
+  check('画面の無い所では、フィルタは使えないとみなす', R.canvasFilterSupported() === false);
+  const fx = [
+    { id: 'a', type: 'blur', intensity: 0.2 },
+    { id: 'b', type: 'grayscale', intensity: 1 },
+    { id: 'c', type: 'grayscale', intensity: 0.5 },
+    { id: 'd', type: 'brightness', intensity: 0.7 },
+    { id: 'e', type: 'zoom', intensity: 0.5 },
+  ];
+  R.setCanvasFilterSupportForTest(false);
+  eq('使えないとき: 色のエフェクトだけを 1 度ずつ（ぼかし・動きは入れない）', R.unsupportedEffectTypes(fx), ['grayscale', 'brightness']);
+  R.setCanvasFilterSupportForTest(true);
+  eq('使えるとき: 何も出さない', R.unsupportedEffectTypes(fx), []);
+  R.setCanvasFilterSupportForTest(null);
+  check('ぼかしの半径は強さ × 30（画角の座標）', Math.abs(R.softBlurRadius(fx, 0, 5) - 6) < 1e-9);
+  check('ぼかしが 2 つなら足す・無ければ 0', Math.abs(R.softBlurRadius([fx[0], { ...fx[0], id: 'z' }], 0, 5) - 12) < 1e-9 && R.softBlurRadius(fx.slice(1), 0, 5) === 0);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;
