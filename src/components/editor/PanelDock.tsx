@@ -240,9 +240,8 @@ export function DockProvider({ children }: { children: ReactNode }) {
  * どのパネルを出しているかの一覧と、その切り替え。
  * 仕舞ったパネルを戻す道がどこかに要る（画面から消えると二度と出せなくなる）。
  */
-export function PanelMenu() {
+export function PanelChecks() {
   const { settings, updatePanels } = useApp();
-  const [open, setOpen] = useState(false);
   const hidden = new Set(settings.panels.hidden);
 
   // ここは DockProvider の外（上部バー）からも使うので、
@@ -251,36 +250,15 @@ export function PanelMenu() {
     updatePanels(hidden.has(id) ? showPanel(settings.panels, id) : hidePanel(settings.panels, id));
 
   return (
-    <div className="panel-menu">
-      <button
-        type="button"
-        className={hidden.size > 0 ? 'has-hidden' : ''}
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        title="出すパネルを選ぶ"
-      >
-        <Icon name="panels" />パネル{hidden.size > 0 ? `（${PANEL_IDS.length - hidden.size}/${PANEL_IDS.length}）` : ''}
-      </button>
-      {open && (
-        <>
-          {/* 外側を押したら閉じる。メニューの外に置いたクリック受け。 */}
-          <div className="panel-menu-scrim" onClick={() => setOpen(false)} />
-          <div className="panel-menu-list">
-            {PANEL_IDS.map((id) => (
-              <label key={id}>
-                <input
-                  type="checkbox"
-                  checked={!hidden.has(id)}
-                  onChange={() => toggle(id)}
-                />
-                {PANEL_LABELS[id]}
-              </label>
-            ))}
-            <p className="muted small">見出しを他のパネルの見出しへ落とすと、重なってタブになります。</p>
-          </div>
-        </>
-      )}
-    </div>
+    <>
+      {PANEL_IDS.map((id) => (
+        <label key={id}>
+          <input type="checkbox" checked={!hidden.has(id)} onChange={() => toggle(id)} />
+          {PANEL_LABELS[id]}
+        </label>
+      ))}
+      <p className="muted small">見出しを他のパネルの見出しへ落とすと、重なってタブになります。</p>
+    </>
   );
 }
 

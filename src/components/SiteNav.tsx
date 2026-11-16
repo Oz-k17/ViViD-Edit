@@ -33,10 +33,11 @@ export function SiteNav() {
 export function Brand() {
   return (
     <div className="brand">
-      {/* 縦型（9:16）の画面に再生マーク。このアプリが何を作る道具かを一目で示す。 */}
-      <svg className="brand-mark" width="18" height="18" viewBox="0 0 26 26" aria-hidden="true" focusable="false">
-        <rect x="7" y="2.5" width="12" height="21" rx="3.4" fill="none" stroke="currentColor" strokeWidth="1.8" />
-        <path d="M11.2 9.4v7.2l5.6-3.6-5.6-3.6Z" fill="currentColor" />
+      {/* 縦型（9:16）の画面を、斜めに 1 本カットした形。「縦型動画を切って編集する道具」を表す。
+          カットの線は上のバーの地の色で抜く。 */}
+      <svg className="brand-mark" width="24" height="24" viewBox="0 0 26 26" aria-hidden="true" focusable="false">
+        <rect x="6" y="1.5" width="14" height="23" rx="4.5" fill="currentColor" />
+        <path d="M2 17.5 24 9.5" stroke="var(--bg-raised)" strokeWidth="3" />
       </svg>
       <div>
         <strong>ViViD Edit</strong>

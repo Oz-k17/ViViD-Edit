@@ -678,11 +678,11 @@ function Transport({ guides, onToggleGuides }: { guides: boolean; onToggleGuides
           </button>
         </div>
         <div className="transport-tools">
-          <button type="button" title={`再生ヘッドで分割${hint('split')}`} onClick={() => apply((seq) => splitAt(seq, player.time, selection))}>
-            <Icon name="scissors" />分割
+          <button type="button" className="icon-btn" title={`再生ヘッドで分割${hint('split')}`} onClick={() => apply((seq) => splitAt(seq, player.time, selection))}>
+            <Icon name="scissors" label="再生ヘッドで分割" />
           </button>
-          <button type="button" className={guides ? 'active' : ''} title="SNS の UI に隠れる範囲" onClick={onToggleGuides}>
-            <Icon name="grid" />ガイド
+          <button type="button" className={`icon-btn${guides ? ' active' : ''}`} aria-pressed={guides} title="ガイド（SNS の UI に隠れる範囲）" onClick={onToggleGuides}>
+            <Icon name="grid" label="ガイド（SNS の UI に隠れる範囲）" />
           </button>
           <LoopButton />
         </div>
@@ -696,14 +696,15 @@ function LoopButton() {
   return (
     <button
       type="button"
-      className={loop ? 'active' : ''}
+      className={`icon-btn${loop ? ' active' : ''}`}
+      aria-pressed={loop}
       title="ループ再生"
       onClick={() => {
         player.setLoop(!loop);
         setLoop(!loop);
       }}
     >
-      <Icon name="loop" />ループ
+      <Icon name="loop" label="ループ再生" />
     </button>
   );
 }

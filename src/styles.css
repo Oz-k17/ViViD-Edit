@@ -5,25 +5,25 @@
      -apple-system 経由で、その端末が持っているものを使う。 */
 
   /* --- 地の色。iOS は真っ黒から始めて、手前にくるほど明るくする --- */
-  --ios-bg: #000000;              /* systemBackground */
-  --ios-bg-2: #1c1c1e;            /* secondarySystemBackground */
-  --ios-bg-3: #2c2c2e;            /* tertiarySystemBackground */
+  --ios-bg: #0c0e0e;              /* systemBackground */
+  --ios-bg-2: #141717;            /* secondarySystemBackground */
+  --ios-bg-3: #1d2121;            /* tertiarySystemBackground */
 
   /* --- 面（コントロールの下地）。iOS は不透明色ではなく半透明の塗りを重ねる --- */
-  --ios-fill-1: rgba(120, 120, 128, 0.36);
-  --ios-fill-2: rgba(120, 120, 128, 0.32);
-  --ios-fill-3: rgba(118, 118, 128, 0.24);
-  --ios-fill-4: rgba(116, 116, 128, 0.18);
+  --ios-fill-1: rgba(150, 168, 165, 0.30);
+  --ios-fill-2: rgba(150, 168, 165, 0.24);
+  --ios-fill-3: rgba(150, 168, 165, 0.16);
+  --ios-fill-4: rgba(150, 168, 165, 0.10);
 
   /* --- 文字。白からの透過で段階を作るのが iOS のやり方 --- */
-  --ios-label: #ffffff;
-  --ios-label-2: rgba(235, 235, 245, 0.6);
-  --ios-label-3: rgba(235, 235, 245, 0.3);
-  --ios-label-4: rgba(235, 235, 245, 0.18);
+  --ios-label: #eef1f0;
+  --ios-label-2: #aeb7b6;
+  --ios-label-3: #8f9897;
+  --ios-label-4: rgba(238, 241, 240, 0.18);
 
   /* --- 区切り --- */
-  --ios-separator: rgba(84, 84, 88, 0.65);
-  --ios-separator-opaque: #38383a;
+  --ios-separator: #262b2b;
+  --ios-separator-opaque: #2f3636;
 
   /* --- システムカラー（ダーク） --- */
   --ios-blue: #0a84ff;
@@ -61,30 +61,30 @@
   --bg-input: var(--ios-fill-3);
   --bg-input-hover: var(--ios-fill-2);
   --line: var(--ios-separator);
-  --line-soft: rgba(84, 84, 88, 0.35);
+  --line-soft: #1d2121;
   --text: var(--ios-label);
   --text-dim: var(--ios-label-2);
   --text-faint: var(--ios-label-3);
 
-  /* 差し色は systemBlue。iOS の既定であり、緑を当てると
-     音声トラックの色や「成功」の意味とぶつかる。 */
-  --accent: var(--ios-blue);
-  --accent-strong: #409cff;
-  --accent-soft: rgba(10, 132, 255, 0.18);
-  --accent-dim: #0a6fd4;
-  --accent-ink: #ffffff;   /* 青の上は白文字（iOS の塗りボタン） */
+  /* 差し色は黄緑ひとつ。選択・再生位置・書き出しにだけ使い、
+     画面の枠は無彩色のままにする（色はタイムラインのクリップに任せる）。 */
+  --accent: #d7f24a;
+  --accent-strong: #e4f77a;
+  --accent-soft: rgba(215, 242, 74, 0.14);
+  --accent-dim: #b5cf2f;
+  --accent-ink: #0c0e0e;   /* 黄緑の上は黒文字 */
   --danger: var(--ios-red);
   --danger-soft: rgba(255, 69, 58, 0.18);
 
   /* トラックは互いに見分けがつき、差し色ともぶつからない並びにする。 */
-  --track-video: var(--ios-teal);
-  --track-audio: var(--ios-green);
-  --track-text: var(--ios-orange);
+  --track-video: #5aa9e6;
+  --track-audio: #3fc8a4;
+  --track-text: #f2a65a;
 
   /* iOS の角丸。小さい部品ほど控えめにする。 */
-  --radius: 14px;
-  --radius-sm: 10px;
-  --radius-xs: 8px;
+  --radius: 10px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
 
   --font-ui: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Yu Gothic',
     'Noto Sans JP', system-ui, 'Segoe UI', sans-serif;
@@ -2875,7 +2875,7 @@ hr {
   top: 0;
   bottom: 0;
   z-index: 4;
-  background: rgba(10, 132, 255, 0.16);
+  background: rgba(215, 242, 74, 0.14);
   border-left: 2px solid var(--accent);
   border-right: 2px solid var(--accent);
   pointer-events: none;
@@ -3440,8 +3440,8 @@ html.tl-zooming .tl-clip {
 }
 
 @keyframes glow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(10, 132, 255, 0); }
-  50% { box-shadow: 0 0 0 6px rgba(10, 132, 255, 0.28); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(215, 242, 74, 0); }
+  50% { box-shadow: 0 0 0 6px rgba(215, 242, 74, 0.28); }
 }
 
 @keyframes toast {
@@ -4618,7 +4618,7 @@ html.tl-zooming .tl-clip {
 }
 
 .output-status.status-ok {
-  background: rgba(10, 132, 255, 0.2);
+  background: rgba(215, 242, 74, 0.16);
   color: var(--ios-blue);
 }
 
@@ -4770,4 +4770,445 @@ html.tl-zooming .tl-clip {
     position: static;
     order: -1;
   }
+}
+
+/* ==========================================================================
+   画面の作り直し（2026-11）
+   --------------------------------------------------------------------------
+   真っ黒 + 青をやめ、明るさの違う 3 段の面（作業エリア・パネル・ボタン）と
+   黄緑の差し色ひとつに揃えた。色の値は先頭の :root にある。ここは部品の形。
+   上のバーの決まりは「ひとつのボタンに、アイコンと文字を両方書かない」。
+   ========================================================================== */
+
+/* ---------- 上のバー ---------- */
+
+.topbar {
+  gap: 20px;
+  justify-content: flex-start;
+  min-height: 52px;
+  padding: 0 12px 0 16px;
+}
+
+.brand-mark {
+  width: 24px;
+  height: 24px;
+  border-radius: 0;
+  background: none;
+  color: var(--accent);
+}
+
+.brand strong {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+/* ページ移動は文字だけ。いまいるページは、塗りではなく下線で示す。 */
+.site-nav {
+  align-self: stretch;
+  gap: 2px;
+}
+
+.site-nav a {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.site-nav a:hover {
+  background: none;
+  color: var(--text);
+}
+
+.site-nav a.active {
+  background: none;
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.topbar-actions {
+  margin-left: auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.topbar-actions .ui-mode {
+  margin-right: 8px;
+}
+
+.topbar-actions button.primary {
+  margin-left: 8px;
+  padding: 0 18px;
+  font-weight: 700;
+}
+
+.topbar-sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 6px;
+  background: var(--line);
+}
+
+/* アイコンだけのボタン。地は持たず、乗せたときだけ面が出る。 */
+button.icon-btn {
+  width: 40px;
+  min-height: 40px;
+  padding: 0;
+  background: transparent;
+  color: var(--text-dim);
+}
+
+button.icon-btn:hover:not(:disabled) {
+  background: var(--ios-fill-4);
+  color: var(--text);
+}
+
+/* 仕舞ったパネルがあるときは、「その他」に小さな点を付けて知らせる。 */
+.panel-menu button.has-hidden {
+  position: relative;
+  color: var(--text);
+}
+
+.panel-menu button.has-hidden::after {
+  content: '';
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.panel-menu-list {
+  min-width: 220px;
+  background: var(--ios-bg-3);
+}
+
+.panel-menu-list label {
+  padding: 7px 8px;
+  border-radius: var(--radius-xs);
+  font-size: 13px;
+}
+
+.panel-menu-list label:hover {
+  background: var(--ios-fill-4);
+}
+
+.panel-menu-list .menu-heading {
+  padding: 4px 8px 2px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.panel-menu-list hr {
+  width: 100%;
+  margin: 6px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.panel-menu-list button.menu-item {
+  justify-content: flex-start;
+  width: 100%;
+  padding: 7px 8px;
+  background: transparent;
+  border-radius: var(--radius-xs);
+  font-size: 13px;
+}
+
+.panel-menu-list button.menu-item:hover {
+  background: var(--ios-fill-4);
+}
+
+/* かんたん / くわしく。枠の中で、選んでいるほうだけ面を持つ。 */
+.ui-mode {
+  padding: 3px;
+  background: var(--bg);
+  overflow: visible;
+}
+
+.ui-mode button {
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.ui-mode button.active {
+  background: var(--ios-fill-2);
+}
+
+/* スマホ表示の上のバー: 2 段のまま、寸法だけ詰める。 */
+.app.mobile-layout .topbar {
+  min-height: 0;
+  padding: 4px 6px;
+  gap: 4px;
+}
+
+.app.mobile-layout .site-nav a {
+  padding: 8px 6px;
+  font-size: 12px;
+}
+
+.app.mobile-layout .topbar-actions .primary {
+  padding: 0 14px;
+  font-size: 13px;
+}
+
+/* ---------- パネル: 角丸の箱を並べず、面を線で区切る ---------- */
+
+.dock-slot,
+.dock-slot.slot-bottom {
+  padding: 0;
+  gap: 0;
+  background: var(--bg-panel);
+}
+
+.dock-slot.slot-left > .dock-item + .dock-item,
+.dock-slot.slot-right > .dock-item + .dock-item {
+  border-top: 1px solid var(--line);
+}
+
+.dock-slot.slot-bottom > .dock-item + .dock-item {
+  border-left: 1px solid var(--line);
+}
+
+.dock-slot.slot-left {
+  border-right: 1px solid var(--line);
+}
+
+.dock-slot.slot-right {
+  border-left: 1px solid var(--line);
+}
+
+.dock-item {
+  background: var(--bg-panel);
+}
+
+.dock-tabs {
+  padding: 6px 8px 0;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.dock-tabs button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  border: 0;
+  border-radius: var(--radius-xs) var(--radius-xs) 0 0;
+  background: transparent;
+}
+
+.dock-tabs button.active {
+  background: var(--ios-fill-3);
+  font-weight: 600;
+}
+
+.panel {
+  border-radius: 0;
+}
+
+.panel-head {
+  min-height: 44px;
+  padding: 6px 8px 6px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-head h2 {
+  font-size: 13px;
+}
+
+.panel-head button {
+  background: transparent;
+  color: var(--text-dim);
+}
+
+.panel-head button:hover:not(:disabled) {
+  background: var(--ios-fill-4);
+  color: var(--text);
+}
+
+.panel-head button.danger {
+  color: var(--danger);
+}
+
+.segmented button,
+.tabs button {
+  padding: 0 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* つまみは小さめに。溝の上で、どこを掴むかが分かれば足りる。 */
+input[type='range']::-webkit-slider-thumb {
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  background: var(--text);
+}
+
+input[type='range']::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: var(--text);
+}
+
+/* ---------- プレビュー ---------- */
+
+.stage {
+  padding: 16px;
+  background: var(--bg);
+}
+
+.preview-stage canvas {
+  box-shadow: 0 0 0 1px var(--ios-separator-opaque);
+}
+
+.transport {
+  padding: 4px 0 0;
+  background: transparent;
+  border: 0;
+}
+
+.transport-buttons button,
+.transport-tools button {
+  background: transparent;
+  color: var(--text-dim);
+}
+
+.transport-buttons button:hover:not(:disabled),
+.transport-tools button:hover:not(:disabled) {
+  background: var(--ios-fill-4);
+  color: var(--text);
+}
+
+/* 再生は白い丸。差し色は「選択・再生位置・書き出し」に取っておく。 */
+.transport-buttons button.primary {
+  width: 40px;
+  min-height: 40px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--text);
+  color: var(--bg);
+}
+
+.transport-buttons button.primary:hover:not(:disabled) {
+  background: #ffffff;
+  color: var(--bg);
+}
+
+.transport-tools button.icon-btn {
+  width: 36px;
+  min-height: 36px;
+}
+
+.transport-tools button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ---------- タイムライン ---------- */
+
+/* 道具は地を持たない。並んだ箱の数だけ画面が重くなるので、乗せたときと「入」のときだけ面を出す。 */
+.tl-toolbar button,
+.tl-tools button {
+  background: transparent;
+  color: var(--text-dim);
+}
+
+.tl-toolbar button:hover:not(:disabled),
+.tl-tools button:hover:not(:disabled) {
+  background: var(--ios-fill-4);
+  color: var(--text);
+}
+
+.tl-toolbar button.active,
+.tl-tools button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tl-modes {
+  background: var(--bg);
+}
+
+.tl-modes button.active {
+  background: var(--ios-fill-2);
+  color: var(--text);
+}
+
+.tl-count {
+  color: var(--text-dim);
+}
+
+.tl-scroll {
+  background: #101313;
+}
+
+/* クリップは種類の色で塗る。枠の中で色を持つのはここだけ。 */
+.tl-clip {
+  border: 0;
+  border-radius: 6px;
+  background-color: #24465f;
+  box-shadow: none;
+}
+
+.tl-clip.kind-video::before,
+.tl-clip.kind-image::before {
+  filter: grayscale(0.35) brightness(0.5) contrast(0.95);
+  opacity: 0.7;
+}
+
+.tl-clip.kind-video.selected::before,
+.tl-clip.kind-image.selected::before {
+  filter: grayscale(0.35) brightness(0.56) contrast(0.95);
+}
+
+.tl-clip.kind-text {
+  background-color: #8a4a1c;
+}
+
+.tl-clip.kind-audio {
+  background-color: #1c6753;
+}
+
+.tl-clip.selected {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.tl-clip-label {
+  left: 14px;
+  right: 42px;
+  top: 4px;
+  font-size: 11px;
+  color: #ffffff;
+  text-shadow: none;
+}
+
+.tl-clip.kind-video .tl-clip-label,
+.tl-clip.kind-image .tl-clip-label {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+/* 長さは右上に置く。低い段では、左下に置くと名前と重なって読めなくなる。 */
+.tl-clip-time {
+  left: auto;
+  right: 10px;
+  top: 5px;
+  bottom: auto;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--accent);
 }

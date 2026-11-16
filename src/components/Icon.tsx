@@ -9,6 +9,7 @@ import {
   CircleQuestionMark,
   Contrast,
   Download,
+  Ellipsis,
   Eye,
   EyeOff,
   Film,
@@ -83,7 +84,7 @@ export type IconName =
   // 画面まわり
   | 'iphone' | 'display' | 'export' | 'grid' | 'folder' | 'chevron-right' | 'plus' | 'minus' | 'check'
   | 'panels' | 'loop' | 'bookmark' | 'eye' | 'eye-off' | 'sound' | 'mute'
-  | 'xmark' | 'chevron-left' | 'question'
+  | 'xmark' | 'chevron-left' | 'question' | 'more'
   // トランジション
   | 'tr-none' | 'tr-dissolve' | 'tr-fade' | 'tr-slide' | 'tr-wipe' | 'tr-flash';
 
@@ -145,6 +146,8 @@ const GLYPH: Record<IconName, LucideIcon> = {
   mute: VolumeX,
   xmark: X,
   question: CircleQuestionMark,
+  /** その他のメニュー。上のバーで使う頻度の低い操作をまとめる。 */
+  more: Ellipsis,
 
   // ---- トランジション ----
   // 一覧に並ぶので、互いの見分けがつくことを優先している。

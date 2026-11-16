@@ -477,7 +477,6 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
             demo={() => <TimelineDemo kind="rippleDelete" />}
           >
             <button type="button" onClick={actions.rippleRemove} disabled={!selection.length}>
-              <Icon name="ripple-delete" />
               <Name plain="詰めて削除" alias="リップル削除" />
             </button>
           </TlHint>
@@ -491,7 +490,6 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
               demo={() => <TimelineDemo kind="snap" />}
             >
               <button type="button" className={settings.snap ? 'active' : ''} aria-pressed={settings.snap} onClick={() => updateSettings({ snap: !settings.snap })}>
-                <Icon name="magnet" />
                 <Name plain="ぴったり合わせる" alias="スナップ" />
               </button>
             </TlHint>
@@ -502,7 +500,6 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
               demo={() => <TimelineDemo kind="follow" />}
             >
               <button type="button" className={follow ? 'active' : ''} aria-pressed={follow} onClick={() => setFollow((f) => !f)}>
-                <Icon name="link" />
                 <Name plain="再生に合わせて送る" alias="追従" />
               </button>
             </TlHint>

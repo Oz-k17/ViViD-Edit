@@ -139,7 +139,7 @@ function TimelinePanel({
         <div className="panel-head-tail">
           <div className="panel-actions">
             <button type="button" onClick={onAddText} title={`再生位置にテロップを追加${hint('addText')}`}>
-              <Icon name="plus" />テロップ
+              テロップを追加
             </button>
             <Hint
               title="分割"
@@ -148,7 +148,7 @@ function TimelinePanel({
               demo={() => <TimelineDemo kind="split" />}
             >
               <button type="button" onClick={onSplit}>
-                <Icon name="scissors" />分割
+                分割
               </button>
             </Hint>
           </div>

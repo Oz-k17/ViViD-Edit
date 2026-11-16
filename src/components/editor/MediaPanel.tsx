@@ -196,7 +196,7 @@ export function MediaPanel() {
             NAS
           </button>
           <button type="button" className="ghost" onClick={() => inputRef.current?.click()} disabled={busy}>
-            {busy ? '読込中…' : <><Icon name="plus" />追加</>}
+            {busy ? '読込中…' : '追加'}
           </button>
         </div>
       }
