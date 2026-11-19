@@ -22,6 +22,7 @@ import { bakeNests, sequenceAt, updateAt } from '../model/nest';
 import { createProject } from '../model/factory';
 import { ASPECT_PRESETS, type AspectKey, type Project, type Sequence } from '../model/types';
 import { migrateStorageKey } from './storage';
+import { hasSpareProject, loadSpareProject, saveProjectText } from './projectSave';
 import { scopedKey } from './profile';
 
 const HISTORY_LIMIT = 80;
@@ -191,18 +192,38 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   const [cropRatio, setCropRatio] = useState<number | null>(null);
   const saveTimer = useRef<number | undefined>(undefined);
 
-  // ページを移動しても戻ってこられるように、編集内容を控えておく。
+  // localStorage に入りきらず、予備の置き場（IndexedDB）へ控えた作品は、開いたあとに読み込む（projectSave.ts）。
+  // 読み終わるまでは控えない（空の作品で予備を上書きしないように）。
+  const [waitingSpare, setWaitingSpare] = useState(() => hasSpareProject(PROJECT_KEY));
   useEffect(() => {
+    if (!waitingSpare) return;
+    let alive = true;
+    void loadSpareProject(PROJECT_KEY)
+      .then((text) => {
+        if (!alive || !text) return;
+        try {
+          const parsed = JSON.parse(text) as Project;
+          if (parsed?.sequence?.tracks?.length) dispatch({ type: 'load', project: parsed });
+        } catch {
+          /* 壊れていたら、いまの作品のまま */
+        }
+      })
+      .finally(() => alive && setWaitingSpare(false));
+    return () => {
+      alive = false;
+    };
+  }, [waitingSpare]);
+
+  // ページを移動しても戻ってこられるように、編集内容を控えておく。
+  // 入りきらないときの手当てと知らせは projectSave.ts（以前は黙って諦めていた）。
+  useEffect(() => {
+    if (waitingSpare) return;
     window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
-      try {
-        localStorage.setItem(PROJECT_KEY, JSON.stringify(state.project));
-      } catch {
-        /* 容量超過は無視 */
-      }
+      void saveProjectText(PROJECT_KEY, JSON.stringify(state.project));
     }, 400);
     return () => window.clearTimeout(saveTimer.current);
-  }, [state.project]);
+  }, [state.project, waitingSpare]);
 
   const apply = useCallback((fn: (sequence: Sequence) => Sequence, key?: string) => {
     const path = pathRef.current;

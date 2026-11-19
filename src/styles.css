@@ -3476,6 +3476,16 @@ html.tl-zooming .tl-clip {
   flex: 1 1 260px;
 }
 
+/* 編集内容を控えられなかった知らせ（SaveStatusBanner）。消えると困るので、赤い縁で目立たせる。 */
+.update-banner.save-failed {
+  border-color: var(--danger);
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--bg-raised);
+}
+
+.update-banner button {
+  min-height: 40px;
+}
+
 .update-banner a.button {
   display: inline-flex;
   align-items: center;

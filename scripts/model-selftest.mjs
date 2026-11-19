@@ -2132,6 +2132,39 @@ eq('空文字', wrap('', 10), ['']);
   check('ぼかしが 2 つなら足す・無ければ 0', Math.abs(R.softBlurRadius([fx[0], { ...fx[0], id: 'z' }], 0, 5) - 12) < 1e-9 && R.softBlurRadius(fx.slice(1), 0, 5) === 0);
 }
 
+{
+  // 自動保存が入りきらないとき（projectSave.ts）: 消してよい控えを消して入れる・予備の置き場も無ければ「控えられない」
+  const store = new Map();
+  let quota = 1000;
+  const used = () => [...store].reduce((n, [k, v]) => n + k.length + v.length, 0);
+  const fake = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => {
+      const before = store.get(k);
+      store.set(k, String(v));
+      if (used() > quota) {
+        if (before === undefined) store.delete(k);
+        else store.set(k, before);
+        throw new Error('QuotaExceededError');
+      }
+    },
+    removeItem: (k) => store.delete(k),
+  };
+  const hadLocal = 'localStorage' in globalThis;
+  const prevLocal = globalThis.localStorage;
+  Object.defineProperty(globalThis, 'localStorage', { value: fake, configurable: true, writable: true });
+  const PS = await import('../src/store/projectSave.ts');
+  eq('入るときは、ふつうに控える', await PS.saveProjectText('vivid.project', 'a'.repeat(300)), 'ok');
+  store.set('vivid-edit.media-log', 'x'.repeat(500));
+  eq('入りきらないときは、消してよい控え（読み込みの記録）を消して入れる', [await PS.saveProjectText('vivid.project', 'b'.repeat(600)), store.has('vivid-edit.media-log'), store.get('vivid.project')?.length], ['ok', false, 600]);
+  eq('それでも入らず、予備の置き場も無ければ「控えられない」', [await PS.saveProjectText('vivid.project', 'c'.repeat(2000)), PS.saveState()], ['failed', 'failed']);
+  check('控えられなかったときも、前の控えは消さない', store.get('vivid.project')?.length === 600);
+  eq('また入るようになったら、知らせも消える', [await PS.saveProjectText('vivid.project', 'd'.repeat(100)), PS.saveState()], ['ok', 'ok']);
+  check('印が無ければ、予備は読まない', PS.hasSpareProject('vivid.project') === false && (await PS.loadSpareProject('vivid.project')) === null);
+  if (hadLocal) Object.defineProperty(globalThis, 'localStorage', { value: prevLocal, configurable: true, writable: true });
+  else delete globalThis.localStorage;
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

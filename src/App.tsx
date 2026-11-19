@@ -1,5 +1,6 @@
 import { Routes } from './router';
 import { UpdateBanner } from './components/UpdateBanner';
+import { SaveStatusBanner } from './components/SaveStatusBanner';
 import EditorPage from './pages/EditorPage';
 import MediaLibraryPage from './pages/MediaLibraryPage';
 import SettingsPage from './pages/SettingsPage';
@@ -15,6 +16,7 @@ export default function App() {
     <AppProvider>
       <EditorProvider>
         <UpdateBanner />
+        <SaveStatusBanner />
         {/* 静的ホスティングでも深いリンクが壊れないよう、ハッシュで切り替える（router.tsx） */}
         <Routes
           routes={{
