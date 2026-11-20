@@ -179,7 +179,7 @@ export function PreviewStage() {
         dirty = false;
         drawnAt = now;
         last = { time, seq, sel, g, crop, w, h };
-        boundsRef.current = renderFrame(ctx, seq, time, sources, { guides: g, selectedIds: sel, cropTarget: crop });
+        boundsRef.current = renderFrame(ctx, seq, time, sources, { guides: g, selectedIds: sel, cropTarget: crop, settleStart: !player.playing });
       }
     });
     return () => {

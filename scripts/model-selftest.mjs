@@ -2165,6 +2165,20 @@ eq('空文字', wrap('', 10), ['']);
   else delete globalThis.localStorage;
 }
 
+{
+  // 止まっているプレビューの頭のコマ: テロップは出きった姿で描く（出きる時刻）
+  const R = await import('../src/engine/renderer.ts');
+  const F = await import('../src/model/factory.ts');
+  const text = (over = {}) => ({ ...F.DEFAULT_TEXT, ...over });
+  const clip = (over = {}) => ({ duration: 3, fadeIn: 0, fadeOut: 0, ...over });
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
+  check('出てくる動きの長さのあと', near(R.settledTime(clip(), text({ animation: 'pop', animationDuration: 0.4 })), 0.4));
+  check('フェードインのほうが長ければ、そのあと', near(R.settledTime(clip({ fadeIn: 1 }), text({ animation: 'fade', animationDuration: 0.4 })), 1));
+  check('タイプライターは、全部の字が出たあと（7 字 × 0.045 秒）', near(R.settledTime(clip(), text({ animation: 'typewriter', animationDuration: 0.1 })), 7 * 0.045));
+  check('消えていく動き・フェードアウトには入らない', R.settledTime(clip({ duration: 1, fadeIn: 2, fadeOut: 0.5 }), text({ animationDuration: 0.4 })) < 0.5);
+  check('とても短いテロップでも、負にならない', R.settledTime(clip({ duration: 0.1, fadeOut: 0.5 }), text()) === 0);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

@@ -4,7 +4,7 @@ import { player } from '../../engine/player';
 import { canvasFilterSupported, defaultCrop, unsupportedEffectTypes } from '../../engine/renderer';
 import { LOOK_PRESETS, SPEED_PRESETS, TEXT_PRESETS, TEXT_PRESET_GROUPS } from '../../presets';
 import { FPS_OPTIONS, nearestFpsOption, removeClips } from '../../model/ops';
-import { uid } from '../../model/factory';
+import { DEFAULT_TEXT, uid } from '../../model/factory';
 import { buildThreeBand, relayoutThreeBand } from '../../model/threeBand';
 import { useThreeBandLayouts } from './threeBandLayouts';
 import { useFontOptions } from '../fontOptions';
@@ -105,6 +105,17 @@ function InspectorBody() {
 
   const clips = sequence.clips.filter((c) => selection.includes(c.id));
 
+  // 足したばかりのテロップ（文字がまだ「テキストを入力」のまま）を選んだら、文字を打つ「テキスト」のタブを開く。
+  // 以前は前に開いていたタブ（ふつうはプロパティ＝大きさと位置）のままで、文字を直す欄を探す手間があった。
+  const single = clips.length === 1 ? clips[0] : null;
+  const lastSingle = useRef<string | null>(null);
+  useEffect(() => {
+    const id = single?.id ?? null;
+    if (id === lastSingle.current) return;
+    lastSingle.current = id;
+    if (single?.kind === 'text' && single.text?.content === DEFAULT_TEXT.content) setTab('text');
+  }, [single]);
+
   if (clips.length === 0) return <SequenceInspector />;
 
   if (clips.length > 1) {
@@ -189,6 +200,15 @@ function useClipPatch(clip: Clip) {
     );
 }
 
+/** 指で触る端末か（iPad など。ホイールやカーソルの説明を出し分ける）。 */
+function coarsePointer(): boolean {
+  try {
+    return window.matchMedia('(pointer: coarse)').matches;
+  } catch {
+    return false;
+  }
+}
+
 function SequenceInspector() {
   const { project, sequence, dispatch, apply } = useEditor();
   const easy = useEasy();
@@ -239,7 +259,10 @@ function SequenceInspector() {
       <EmptyHint>
         クリップを選ぶと、ここで音量・大きさ・エフェクトを調整できます。
         <br />
-        プレビューはドラッグで移動、ホイールで拡大縮小です。
+        {/* 指の端末（iPad）にはホイールが無いので、指でできることを書く（プレビューのピンチはまだ無い）。 */}
+        {coarsePointer()
+          ? 'プレビューの上で、選んだクリップを指でドラッグすると動かせます。大きさは「大きさ」のつまみで変えます。'
+          : 'プレビューはドラッグで移動、ホイールで拡大縮小です。'}
       </EmptyHint>
     </Panel>
   );

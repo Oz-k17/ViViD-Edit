@@ -47,6 +47,24 @@ export interface RenderOptions {
    * このクリップだけは切り抜かずに元の絵をまるごと描き、選んでいる範囲を重ねて見せる。
    */
   cropTarget?: string | null;
+  /**
+   * 止まっているプレビュー: テロップの頭のコマ（出てくる動き・フェードインの始まり）は、出きった姿で描く。
+   * 出てくる動きの始まりは透明（または小さい）なので、再生位置に足したばかりのテロップが、止まったままでは見えなかった
+   * （どこに出たか分からず、文字を直せない）。頭の 1 コマだけなので、少し進めれば動きの途中も見られる。書き出し・再生には掛けない。
+   */
+  settleStart?: boolean;
+}
+
+/** settleStart で「頭のコマ」とみなす長さ（秒）。60fps の 1 コマより少し短く。 */
+const SETTLE_WINDOW = 1 / 64;
+
+/** テロップが出きる時刻（出てくる動き・タイプライター・フェードインが終わり、消えていく動きにはまだ入らない所）。 */
+export function settledTime(clip: Clip, text: TextProps): number {
+  const d = clip.duration;
+  const typing = text.animation === 'typewriter' ? Math.min(d * 0.6, contentAtomCount(splitTextContent(text.content)) * 0.045) : 0;
+  const wanted = Math.max(text.animationDuration, clip.fadeIn, typing);
+  const latest = d - Math.max(Math.min(0.25, d / 2), clip.fadeOut) - 1e-3;
+  return Math.max(0, Math.min(wanted, latest));
 }
 
 const supportsLetterSpacing = (() => {
@@ -688,12 +706,15 @@ function drawTextClip(
   time: number,
   bounds: Map<string, Rect>,
   sources: RenderSources,
+  settleStart = false,
 ) {
   const text = clip.text;
   if (!text) return;
   const local = time - clip.start;
-  const anim = textAnimation(text, local, clip.duration);
-  const env = fadeEnvelope(local, clip.duration, clip.fadeIn, clip.fadeOut);
+  // 止まっているプレビューの頭のコマは、出きった所の姿で描く（RenderOptions.settleStart）。
+  const shown = settleStart && local < SETTLE_WINDOW ? settledTime(clip, text) : local;
+  const anim = textAnimation(text, shown, clip.duration);
+  const env = fadeEnvelope(shown, clip.duration, clip.fadeIn, clip.fadeOut);
   const alpha = anim.alpha * clip.opacity * env;
   if (alpha <= 0.002) return;
 
@@ -1107,7 +1128,7 @@ export function renderFrame(
     for (const clip of sequence.clips) {
       if (clip.trackId !== track.id) continue;
       if (time < clip.start || time >= clipEnd(clip)) continue;
-      drawTextClip(ctx, sequence, clip, time, bounds, sources);
+      drawTextClip(ctx, sequence, clip, time, bounds, sources, options.settleStart);
     }
   }
 
