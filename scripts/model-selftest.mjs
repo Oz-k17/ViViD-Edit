@@ -2179,6 +2179,17 @@ eq('空文字', wrap('', 10), ['']);
   check('とても短いテロップでも、負にならない', R.settledTime(clip({ duration: 0.1, fadeOut: 0.5 }), text()) === 0);
 }
 
+{
+  // はじめかたの「入れた動画を並べる」: 最後にまとめて入れた動画だけ（古い素材まで並べない）
+  const G = await import('../src/model/latestBatch.ts');
+  {
+    const a = (id, kind, at) => ({ id, name: id, kind, createdAt: at });
+    const now = 10_000_000;
+    eq('2 分以内に入れた動画だけを、入れた順に', G.latestBatch([a('old', 'video', now - 600_000), a('b', 'video', now), a('a', 'video', now - 30_000), a('pic', 'image', now), a('bgm', 'audio', now)]).map((x) => x.id), ['a', 'b']);
+    eq('動画が無ければ空', G.latestBatch([a('pic', 'image', now)]), []);
+  }
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

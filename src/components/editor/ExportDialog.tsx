@@ -513,7 +513,13 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           />
         </Field>
         )}
-        {easy && (
+        {duration <= 0 && !running && (
+          // 空のまま開いたとき、ボタンが押せない理由が分からなかった（「0 秒の動画・約 0 B」とだけ出ていた）。
+          <p className="warn small" role="note">
+            タイムラインに何も置かれていないので、書き出せません。動画をタイムラインに並べてから開いてください。
+          </p>
+        )}
+        {easy && duration > 0 && (
           <p className="muted">
             {Math.floor(duration / 60) > 0 ? `${Math.floor(duration / 60)} 分 ` : ''}
             {Math.round(duration % 60)} 秒の動画 ・ 約 {formatBytes(estimatedBytes)}

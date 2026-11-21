@@ -3152,6 +3152,17 @@ hr {
   font-size: 18px;
 }
 
+.getting-started-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.getting-started button.big:not(.primary) {
+  white-space: normal;
+}
+
 .getting-started ol {
   list-style: none;
   counter-reset: step;
@@ -3719,6 +3730,13 @@ html.tl-zooming .tl-clip {
 }
 
 /* タイムラインの縦の拡大縮小（レーンを低くしたとき） */
+.zoom-pair {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .zoom-label {
   align-self: center;
   padding: 0 2px 0 6px;

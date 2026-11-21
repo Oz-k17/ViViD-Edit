@@ -503,6 +503,8 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
                 <Name plain="再生に合わせて送る" alias="追従" />
               </button>
             </TlHint>
+        {/* 横と縦は 1 組で折り返す（狭い画面で「縦 − ＋」だけが次の行へ落ちないように）。 */}
+        <div className="zoom-pair">
         <div className="zoom" role="group" aria-label="横（時間）の拡大縮小">
           <span className="zoom-label" aria-hidden="true">横</span>
           <button type="button" onClick={() => setPps((p) => Math.max(MIN_PPS, p / 1.4))} title={`横を縮小（長い時間を見る）${hint('zoomOut')}・Ctrl/⌘+ホイールでも`}>
@@ -530,6 +532,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
           >
             <Icon name="plus" size={15} label="縦を拡大" />
           </button>
+        </div>
         </div>
       </div>
 
