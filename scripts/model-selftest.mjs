@@ -2190,6 +2190,44 @@ eq('空文字', wrap('', 10), ['']);
   }
 }
 
+{
+  // カラオケ字幕: 何文字ぶん塗るか（openreel-video の単語強調字幕に倣ったもの）
+  const K = await import('../src/model/karaoke.ts');
+  eq('空白は数えない', K.karaokeChars('あい う\n'), 3);
+  const words = K.karaokeWords([
+    { start: 10, end: 10.5, text: 'こんにちは' },
+    { start: 10.5, end: 10.5, text: ' ' },
+    { start: 11, end: 12, text: '世界' },
+  ], 10);
+  eq('単語の時刻はテロップの頭からに直し、空白だけの語は捨てる', words, [
+    { start: 0, end: 0.5, chars: 5 },
+    { start: 1, end: 2, chars: 2 },
+  ]);
+  const k = { color: '#ff0', words };
+  eq('始まる前は塗らない', K.karaokeProgress(k, -0.1, 7), 0);
+  eq('言葉の途中は割合で塗る', K.karaokeProgress(k, 0.25, 7), 2.5);
+  eq('言葉の間は、言い終えた所まで', K.karaokeProgress(k, 0.8, 7), 5);
+  eq('言い終えたら全部', K.karaokeProgress(k, 5, 7), 7);
+  eq('本文を直して短くなっても、はみ出して塗らない', K.karaokeProgress(k, 5, 4), 4);
+  eq('時刻が無ければ同じ速さで', K.karaokeProgress({ color: '#ff0', span: 2 }, 1, 10), 5);
+  eq('時刻も長さも無ければ塗らない', K.karaokeProgress({ color: '#ff0' }, 1, 10), 0);
+  eq('前のかたまりで使った分を引く', K.karaokeWithin('世界', 5, 6.5), 1.5);
+  eq('空白を飛ばして、字の途中で切る', K.karaokeCut('あい う', 2.5), { index: 3, fraction: 0.5 });
+  eq('全部塗るなら末尾', K.karaokeCut('あい', 2), { index: 2, fraction: 0 });
+  // 字幕を置くとき、言葉の時刻をテロップへ持たせる
+  const T = await import('../src/model/transcript.ts');
+  const base = { fps: 30, aspect: '9:16', width: 1080, height: 1920, background: '#000', tracks: [], clips: [] };
+  const built = T.buildCaptionClips(base, [{ start: 3, end: 5, text: 'やあ 元気', speaker: null, words: [
+    { start: 3, end: 3.4, text: 'やあ' }, { start: 3.6, end: 4.4, text: '元気' },
+  ] }], ['1', '2'], { karaokeColor: '#ffe14d' });
+  const kk = built.clips[0]?.text?.karaoke;
+  eq('カラオケの色と時刻が入る', kk && { color: kk.color, words: kk.words }, { color: '#ffe14d', words: [
+    { start: 0, end: 0.4, chars: 2 }, { start: 0.6, end: 1.4, chars: 2 },
+  ] });
+  const plain = T.buildCaptionClips(base, [{ start: 0, end: 1, text: 'x', speaker: null }], ['1', '2'], {});
+  eq('頼まなければカラオケにしない', plain.clips[0]?.text?.karaoke ?? null, null);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

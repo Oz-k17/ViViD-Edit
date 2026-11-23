@@ -218,6 +218,11 @@ export interface TextProps {
    * 入っている行は、色を付けずに置いてある（推測で色を付けない）。人が話者を決めたら消す。
    */
   speakerGuess?: string | null;
+  /**
+   * カラオケ字幕。話している所まで、字の色を順に変える（`model/karaoke.ts`）。
+   * null / 未定義なら変えない（古い保存ファイルもこれ）。
+   */
+  karaoke?: import('./karaoke').Karaoke | null;
 }
 
 /**

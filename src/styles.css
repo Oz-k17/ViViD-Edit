@@ -5240,3 +5240,11 @@ input[type='checkbox'],
 input[type='radio'] {
   accent-color: var(--accent);
 }
+
+/* カラオケ字幕: 切り替えの横に、話し終えた所の色を並べる */
+.karaoke-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}

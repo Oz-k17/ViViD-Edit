@@ -69,6 +69,7 @@ import { Icon } from '../Icon';
 import { AnalysisSection } from './AnalysisSection';
 import { LearnedNote, useCaptionLearning } from './useCaptionLearning';
 import { applyDictionary, mergeCounts } from '../../model/dictionary';
+import { KARAOKE_DEFAULT_COLOR } from '../../model/karaoke';
 import { TRANSITION_ICON } from './transitionIcon';
 import { TransitionHint, TransitionName } from './TransitionPicker';
 import { Hint } from '../Hint';
@@ -308,6 +309,8 @@ function TranscriptSection() {
   const [extendShort, setExtendShort] = useState(true);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // カラオケ字幕にするなら、言葉ごとの時刻も起こしてもらう（無くても行の長さで塗れる）。
+  const [karaoke, setKaraoke] = useState(false);
 
   /** 整えて置き、やったことをそのまま知らせる。 */
   const place = (cues: Parameters<typeof tidyCues>[0], label: string, extra = '') => {
@@ -329,6 +332,7 @@ function TranscriptSection() {
       buildCaptionClips(seq, tidy.cues, SPEAKERS, {
         style,
         speakerColors: SPEAKER_DEFAULT_COLORS,
+        karaokeColor: karaoke ? KARAOKE_DEFAULT_COLOR : undefined,
         trackName: `${label} ${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}`,
       }),
     );
@@ -342,12 +346,18 @@ function TranscriptSection() {
 
   return (
     <>
+      <Toggle
+        label="カラオケ字幕にする（話した所から字の色が変わる）"
+        checked={karaoke}
+        onChange={setKaraoke}
+      />
       <WhisperSection
         place={(cues, extra) => place(cues, '文字起こし', extra)}
         busy={busy}
         setBusy={setBusy}
         setNote={setNote}
         maxChars={maxChars}
+        words={karaoke}
       />
       {note && <p className="muted small">{note}</p>}
       <MoreSettings summary="くわしい設定（字幕の見た目・1 枚の文字数）">
@@ -391,12 +401,15 @@ function WhisperSection({
   setBusy,
   setNote,
   maxChars,
+  words,
 }: {
   place: (cues: Parameters<typeof tidyCues>[0], extra?: string) => void;
   busy: boolean;
   setBusy: (v: boolean) => void;
   setNote: (v: string) => void;
   maxChars: number;
+  /** 言葉ごとの時刻も起こす（カラオケ字幕用）。 */
+  words: boolean;
 }) {
   const easy = useEasy();
   const { sequence, selection } = useEditor();
@@ -475,6 +488,7 @@ function WhisperSection({
         modelId,
         device,
         maxChars,
+        words,
         beams: careful ? 5 : 1,
         localLibrary: support.localLibrary,
         localModels: local ? 'models/' : null,
@@ -1654,6 +1668,27 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
         </button>
       </div>
 
+      </Field>
+      <Field label="カラオケ" hint={text.karaoke ? (text.karaoke.words?.length ? '話した時刻に合わせて塗る' : 'テロップの長さで同じ速さに塗る') : undefined}>
+        <div className="karaoke-row">
+          <Toggle
+            label="話した所から字の色を変える"
+            checked={!!text.karaoke}
+            onChange={(on) =>
+              set({
+                karaoke: on
+                  ? { color: text.karaoke?.color ?? KARAOKE_DEFAULT_COLOR, words: null, span: clip.duration * 0.9 }
+                  : null,
+              })
+            }
+          />
+          {text.karaoke && (
+            <ColorInput
+              value={text.karaoke.color}
+              onChange={(color) => set({ karaoke: { ...(text.karaoke ?? {}), color } }, 'karaoke-color')}
+            />
+          )}
+        </div>
       </Field>
       {easy ? (
         <details className="more-settings">
