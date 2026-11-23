@@ -9,6 +9,7 @@ import { clipAtTime, previousAdjacent } from '../model/ops';
 import { effectIntensity, effectMotion } from '../model/effects';
 import { karaokeChars, karaokeCut, karaokeProgress, karaokeWithin } from '../model/karaoke';
 import { animatedClipAt } from '../model/keyframes';
+import { gradeFrame } from './colorPass';
 import {
   clipEnd,
   contentAtomCount,
@@ -361,9 +362,17 @@ function drawVisualClip(
 ) {
   // キーフレームがあれば、この時刻の大きさ・位置・濃さ・回転に置き換えてから描く。
   clip = animatedClipAt(clip, time);
-  const frame = dc.sources.frameFor(clip);
-  const size = dc.sources.sizeFor(clip);
-  if (!frame || !size) return;
+  const rawFrame = dc.sources.frameFor(clip);
+  const rawSize = dc.sources.sizeFor(clip);
+  if (!rawFrame || !rawSize) return;
+  // 色調整があれば、描く大きさまで縮めた絵の色を先に変える（`engine/colorPass.ts`）。
+  // 範囲指定中は元の色で見せる（どこを切るか選ぶ間に色が変わると選びにくい）。
+  const graded =
+    clip.color && dc.cropTarget !== clip.id
+      ? gradeFrame(rawFrame, rawSize, clip.color, Math.max(dc.sequence.width, dc.sequence.height) * dc.pixelScale)
+      : null;
+  const frame: CanvasImageSource = graded ? graded.canvas : rawFrame;
+  const size = graded ? { width: graded.width, height: graded.height } : rawSize;
 
   const local = time - clip.start;
   const env = fadeEnvelope(local, clip.duration, clip.fadeIn, clip.fadeOut);

@@ -67,6 +67,7 @@ import { ButtonField, ColorInput, EmptyHint, Field, MuteIcon, Panel, Segmented, 
 import { importFiles, useMediaAssets } from './MediaPanel';
 import { Icon } from '../Icon';
 import { AnalysisSection } from './AnalysisSection';
+import { ColorSection } from './ColorSection';
 import { LearnedNote, useCaptionLearning } from './useCaptionLearning';
 import { applyDictionary, mergeCounts } from '../../model/dictionary';
 import { KARAOKE_DEFAULT_COLOR } from '../../model/karaoke';
@@ -341,7 +342,7 @@ function SoundSection({ clip }: { clip: Clip }) {
   const role = fx.role ?? 'none';
   return (
     <div className="sound-section">
-      <Field label="音の仕上げ">
+      <ButtonField label="音の仕上げ">
         <Segmented
           value={role}
           options={[
@@ -355,7 +356,7 @@ function SoundSection({ clip }: { clip: Clip }) {
               : set({ role: next, clarity: fx.clarity ?? 0.5, ...(next === 'music' ? { duckDb: fx.duckDb ?? 12 } : {}) })
           }
         />
-      </Field>
+      </ButtonField>
       {fx.role === 'voice' && (
         <>
           <Field label="声をくっきり" hint="低い音を切って、言葉の聞こえる帯を持ち上げ、軽く揃えます">
@@ -370,7 +371,7 @@ function SoundSection({ clip }: { clip: Clip }) {
             />
           </Field>
           <Toggle label="低い唸りを消す（エアコン・風・机の振動）" checked={!!fx.rumble} onChange={(rumble) => set({ rumble })} />
-          <Field label="電源のハム（ブーン）を消す">
+          <ButtonField label="電源のハム（ブーン）を消す">
             <Segmented
               value={String(fx.hum ?? 0)}
               options={[
@@ -380,7 +381,7 @@ function SoundSection({ clip }: { clip: Clip }) {
               ]}
               onChange={(v) => set({ hum: v === '0' ? null : (Number(v) as 50 | 60) })}
             />
-          </Field>
+          </ButtonField>
         </>
       )}
       {fx.role === 'music' && (
@@ -1586,6 +1587,8 @@ function EffectsTab({ clip }: { clip: Clip }) {
         </div>
       </Field>
 
+      {(clip.kind === 'video' || clip.kind === 'image') && <ColorSection clip={clip} />}
+
       <ButtonField label="動きを付ける" hint="寄る・揺らす・周りを暗く">
         <div className="chip-row wrap">
           {MOTION_PRESETS.map((preset) => (
@@ -1913,7 +1916,7 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
       </div>
 
       </Field>
-      <Field label="カラオケ" hint={text.karaoke ? (text.karaoke.words?.length ? '話した時刻に合わせて塗る' : 'テロップの長さで同じ速さに塗る') : undefined}>
+      <ButtonField label="カラオケ" hint={text.karaoke ? (text.karaoke.words?.length ? '話した時刻に合わせて塗る' : 'テロップの長さで同じ速さに塗る') : undefined}>
         <div className="karaoke-row">
           <Toggle
             label="話した所から字の色を変える"
@@ -1933,7 +1936,7 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
             />
           )}
         </div>
-      </Field>
+      </ButtonField>
       {easy ? (
         <details className="more-settings">
           <summary>くわしい設定（フォント・フチ・影・動きなど）</summary>

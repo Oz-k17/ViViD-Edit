@@ -279,6 +279,11 @@ export interface Clip {
    * 無ければ素のまま（古い保存ファイルもこれ）。
    */
   sound?: import('./sound').SoundFx;
+  /**
+   * 色調整（色温度・ホイール・カーブ・LUT・プリセット）。`model/color.ts`。
+   * 無ければ色を変えない（古い保存ファイルもこれ）。
+   */
+  color?: import('./color').ColorGrade;
 }
 
 export interface Sequence {

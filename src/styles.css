@@ -5311,3 +5311,105 @@ input[type='radio'] {
   gap: 8px;
   margin-top: 4px;
 }
+
+/* 色調整 */
+.color-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.wheel-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.wheel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.wheel input[type='range'] {
+  width: 100%;
+}
+
+/* 上を赤にして時計回り（model/color.ts の色相と同じ並び）。真ん中に向かって色が抜ける */
+.wheel-disc {
+  position: relative;
+  width: 100%;
+  max-width: 88px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, #8a8a8a 0%, rgba(138, 138, 138, 0) 70%),
+    conic-gradient(from 0deg, #ff4040, #ffd040, #40ff40, #40ffff, #4040ff, #ff40ff, #ff4040);
+  cursor: crosshair;
+  touch-action: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+}
+
+.wheel-dot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+.wheel-label {
+  font-size: var(--ios-caption, 12px);
+  color: var(--text-dim);
+}
+
+.tone-curve {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tone-curve svg {
+  background: var(--bg-input, rgba(118, 118, 128, 0.24));
+  border-radius: 8px;
+  touch-action: none;
+}
+
+.tone-grid {
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 1;
+  fill: none;
+}
+
+.tone-diagonal {
+  stroke: rgba(255, 255, 255, 0.2);
+  stroke-dasharray: 3 3;
+  fill: none;
+}
+
+.tone-line {
+  stroke: var(--text);
+  stroke-width: 2;
+  fill: none;
+}
+
+.tone-point {
+  fill: var(--accent);
+  stroke: #000;
+  stroke-width: 1.5;
+  cursor: ns-resize;
+}
+
+.lut-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}

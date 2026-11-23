@@ -2296,6 +2296,44 @@ eq('空文字', wrap('', 10), ['']);
   check('クリップの声をタイムラインの位置に重ねる', merged.db[50] === -10 && merged.db[49] === -100, `${merged.db[49]} ${merged.db[50]}`);
 }
 
+{
+  // 色調整（openreel-video の Color Grading に倣った項目を、1 枚の 3D LUT に焼く）
+  const C = await import('../src/model/color.ts');
+  const near = (a, b, e = 1 / 255) => a.every((v, i) => Math.abs(v - b[i]) <= e);
+  check('何も変えない設定は素通し', C.isNeutralGrade({}) && C.isNeutralGrade({ exposure: 0, curve: [[0.5, 0.5]] }));
+  check('何も変えなければ色はそのまま', near(C.gradeColor({}, [0.2, 0.5, 0.8]), [0.2, 0.5, 0.8]));
+  check('モノクロは 3 色が揃う', (() => { const c = C.gradeColor({ saturation: -1 }, [0.9, 0.2, 0.1]); return Math.abs(c[0] - c[1]) < 1e-9 && Math.abs(c[1] - c[2]) < 1e-9; })());
+  check('あたたかくすると赤が増えて青が減る', (() => { const c = C.gradeColor({ temperature: 0.5 }, [0.5, 0.5, 0.5]); return c[0] > 0.5 && c[2] < 0.5; })());
+  check('露出を上げると明るくなる', C.gradeColor({ exposure: 0.3 }, [0.3, 0.3, 0.3])[0] > 0.3);
+  check('暗部のホイールは明るい所をほとんど動かさない', (() => {
+    const g = { lift: { hue: 240, amount: 1, luma: 0 } };
+    const dark = C.gradeColor(g, [0.05, 0.05, 0.05]);
+    const light = C.gradeColor(g, [0.95, 0.95, 0.95]);
+    return dark[2] - dark[0] > 0.1 && Math.abs(light[2] - light[0]) < 0.03;
+  })());
+  check('ホイールの色のずれは平均 0（明るさは変えない）', (() => { const o = C.wheelOffset({ hue: 77, amount: 0.8, luma: 0 }); return Math.abs(o[0] + o[1] + o[2]) < 1e-9; })());
+  check('トーンカーブは両端を動かさず、行き過ぎない', (() => {
+    const f = C.makeCurve([[0.25, 0.1], [0.75, 0.95]]);
+    let prev = -1;
+    for (let i = 0; i <= 100; i += 1) { const v = f(i / 100); if (v < prev - 1e-9) return false; prev = v; }
+    return f(0) === 0 && Math.abs(f(1) - 1) < 1e-9 && Math.abs(f(0.25) - 0.1) < 1e-9;
+  })());
+  const cube = 'TITLE "Swap"\nLUT_3D_SIZE 2\n' + [0,0,0, 0,0,1, 0,1,0, 0,1,1, 1,0,0, 1,0,1, 1,1,0, 1,1,1].join(' ').replace(/(\S+ \S+ \S+) ?/g, '$1\n');
+  const lut = C.parseCube(cube, 'x');
+  eq('.cube を読む（名前・大きさ）', [lut.name, lut.size, lut.data.length], ['Swap', 2, 24]);
+  check('LUT は赤と青を入れ替える表として引ける', near(C.sampleCube(lut, [1, 0.5, 0]), [0, 0.5, 1]));
+  check('LUT の効かせ具合を半分に', near(C.gradeColor({ lut, lutMix: 0.5 }, [1, 0, 0]), [0.5, 0, 0.5]));
+  let threw = '';
+  try { C.parseCube('LUT_1D_SIZE 4\n0 0 0', 'x'); } catch (e) { threw = String(e.message); }
+  check('1D の LUT は断る', threw.includes('1D'));
+  const baked = C.bakeLut({}, 5);
+  check('焼いた表: 何も変えなければ格子の色そのまま', baked.length === 5 * 5 * 5 * 3 && baked[3] === 64 && baked[(4 + 4 * 5 + 4 * 25) * 3 + 2] === 255, `${baked[3]} ${baked[(4 + 4 * 5 + 4 * 25) * 3 + 2]}`);
+  const identity65 = { name: 'big', size: 3, data: [] };
+  for (let b = 0; b < 3; b += 1) for (let g = 0; g < 3; g += 1) for (let r = 0; r < 3; r += 1) identity65.data.push(r / 2, g / 2, b / 2);
+  eq('大きい LUT は縮める（小さければそのまま）', [C.shrinkCube(identity65, 2).size, C.shrinkCube(identity65, 5).size], [2, 3]);
+  check('プリセットは全部、何かを変える', C.COLOR_PRESETS.every((p) => !C.isNeutralGrade(p.grade)));
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;
