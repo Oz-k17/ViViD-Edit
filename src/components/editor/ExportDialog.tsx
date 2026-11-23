@@ -127,6 +127,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const videoQualityOf = (mode: ExportSizeMode) => (mode === 'bitrate' || mode === 'target' ? undefined : EXPORT_SIZE_LEVELS[mode]);
   // 大きさを決めて書き出す（openreel-video の compression に倣った）。目標の MB から映像のビットレートを逆算する。
   const [targetMb, setTargetMb] = useState(settings.exportTargetMb ?? 25);
+  const [smartRender, setSmartRender] = useState(settings.exportSmartRender !== false);
   const videoQuality = videoQualityOf(sizeMode);
   const [fps, setFps] = useState(sequence.fps || 30);
   const [finishAudio, setFinishAudio] = useState(false);
@@ -244,7 +245,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     setResult(null);
     setSaved(false);
     setProgress(0);
-    updateSettings({ exportAspect: aspect, exportQuality: effectiveQuality, exportFormat: format, exportSize: effectiveSize, exportTargetMb: targetMb });
+    updateSettings({ exportAspect: aspect, exportQuality: effectiveQuality, exportFormat: format, exportSize: effectiveSize, exportTargetMb: targetMb, exportSmartRender: smartRender });
     startEta();
     try {
       const output = await exporter.run(
@@ -260,6 +261,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           format,
           finishAudio: frameAccurate && finishAudio,
           fast,
+          smartRender,
           tag: withoutCaption ? 'nosub' : undefined,
         },
         onProgress,
@@ -377,7 +379,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           project.name,
           variantSequence(sequence, variant.key),
           player,
-          { aspect, quality, fps, bitrate: bitrateFor(sizeMode, bitrate), videoQuality, format, finishAudio: frameAccurate && finishAudio, fast, tag: variant.tag },
+          { aspect, quality, fps, bitrate: bitrateFor(sizeMode, bitrate), videoQuality, format, finishAudio: frameAccurate && finishAudio, fast, smartRender, tag: variant.tag },
           onProgress,
         );
         await keep(variant, output);
@@ -523,6 +525,15 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           />
         </Field>
 
+        <Field label="手つかずの所" hint={frameAccurate ? 'MP4 で、文字や加工の無い区間は書き直さず、元の動画をそのまま使います（速く、画質も落ちません）' : 'この環境では使えません'}>
+          <Toggle
+            checked={smartRender && frameAccurate}
+            disabled={running || !frameAccurate}
+            onChange={setSmartRender}
+            label="元の動画をそのまま使う（スマートレンダー）"
+          />
+        </Field>
+
         {sizeMode === 'bitrate' && (
         <Field label="ビットレート" hint={`${bitrate} Mbps`}>
           <input type="range" min={2} max={20} step={1} value={bitrate} disabled={running} onChange={(e) => setBitrate(Number(e.target.value))} />
@@ -567,6 +578,15 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             disabled={running || !frameAccurate}
             onChange={setFast}
             label="高速エンコード（WebM 向け）"
+          />
+        </Field>
+
+        <Field label="手つかずの所" hint={frameAccurate ? 'MP4 で、文字や加工の無い区間は書き直さず、元の動画をそのまま使います（速く、画質も落ちません）' : 'この環境では使えません'}>
+          <Toggle
+            checked={smartRender && frameAccurate}
+            disabled={running || !frameAccurate}
+            onChange={setSmartRender}
+            label="元の動画をそのまま使う（スマートレンダー）"
           />
         </Field>
 

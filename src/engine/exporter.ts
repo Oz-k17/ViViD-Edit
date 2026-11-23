@@ -37,6 +37,8 @@ export interface ExportSettings {
   tag?: string;
   /** 画質で決める（0〜1）。渡さなければビットレートで決める。 */
   videoQuality?: number;
+  /** 手を加えていない区間は、素材の H.264 をそのまま写す（既定は入り。MP4 で 1 本だけのときに効く）。 */
+  smartRender?: boolean;
 }
 
 export interface ExportResult {
@@ -223,6 +225,7 @@ export class Exporter {
         finishAudio: settings.finishAudio,
         fast: settings.fast,
         videoQuality: settings.videoQuality,
+        smartRender: settings.smartRender,
         onProgress,
         isCancelled: () => this.cancelled,
       });

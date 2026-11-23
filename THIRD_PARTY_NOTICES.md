@@ -4,7 +4,7 @@
 
 https://github.com/Augani/openreel-video
 
-使った所: `src/model/karaoke.ts`（考え方）、`src/model/keyframes.ts`（行き過ぎて戻る・ばね・はずむの式）、`src/model/sound.ts`（声と BGM の処理の並びと数値）、`src/model/color.ts`（色調整の項目の組み方）。
+使った所: `src/model/karaoke.ts`（考え方）、`src/model/keyframes.ts`（行き過ぎて戻る・ばね・はずむの式）、`src/model/sound.ts`（声と BGM の処理の並びと数値）、`src/model/color.ts`（色調整の項目の組み方）、`src/model/smartRender.ts` と `src/engine/smartRender.ts`（スマートレンダーの条件・素材の調べ方・H.264 の設定の扱い）、`src/model/exportPlan.ts`（残り時間の見積もり・大きさから決める計算）。
 
 ```
 MIT License

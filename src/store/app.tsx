@@ -323,6 +323,8 @@ export interface Settings {
   exportSize?: 'quality' | 'balanced' | 'small' | 'bitrate' | 'target';
   /** 大きさを決めて書き出すときの目標（MB）。 */
   exportTargetMb?: number;
+  /** 手を加えていない区間は、元の動画をそのまま使う（スマートレンダー）。未定義は入り。 */
+  exportSmartRender?: boolean;
   snap: boolean;
   shortcuts: Record<ShortcutAction, string>;
   /** 編集画面のパネル配置。 */

@@ -2360,6 +2360,35 @@ eq('空文字', wrap('', 10), ['']);
   check('きつい目標では画質を下げるよう薦める', tight.tooTightAtCurrent && tight.suggestedQuality < 1080, JSON.stringify(tight));
 }
 
+{
+  // スマートレンダー（openreel-video の smart-render に倣った「写せる所」と「切る所」）
+  const R = await import('../src/model/smartRender.ts');
+  const base = { kind: 'video', mediaId: 'm', sourceIn: 0, speed: 1, volume: 1, muted: false, loop: false, opacity: 1, scale: 1, x: 0, y: 0, rotate: 0, fit: 'cover',
+    bgBlur: { enabled: false, strength: 0, zoom: 1 }, crop: { enabled: false }, effects: [], fadeIn: 0, fadeOut: 0, transitionIn: { type: 'none', duration: 0.5 }, text: null };
+  const seq = (clips, extraTracks = []) => ({ fps: 30, aspect: '9:16', width: 1080, height: 1920, background: '#000',
+    tracks: [{ id: 'v1', kind: 'video', name: 'V1', muted: false, hidden: false, locked: false }, ...extraTracks], clips });
+  const plain = seq([{ ...base, id: 'c', trackId: 'v1', start: 0, duration: 10 }]);
+  eq('手つかずなら素材のコマそのもの', R.untouchedFrameAt(plain, 2), { mediaId: 'm', clipId: 'c', sourceTime: 2 });
+  const withText = seq([{ ...base, id: 'c', trackId: 'v1', start: 0, duration: 10 }, { ...base, kind: 'text', mediaId: null, id: 't', trackId: 't1', start: 1, duration: 1, text: {} }],
+    [{ id: 't1', kind: 'text', name: 'T1', muted: false, hidden: false, locked: false }]);
+  eq('文字が乗っている所は書き直す', R.untouchedFrameAt(withText, 1.5).reason, '文字が乗っている');
+  check('文字の後は写せる', 'mediaId' in R.untouchedFrameAt(withText, 2.5));
+  eq('大きさを変えたら写さない', R.untouchedFrameAt(seq([{ ...base, id: 'c', trackId: 'v1', start: 0, duration: 10, scale: 1.1 }]), 2).reason, '大きさ・位置・濃さ・回転を変えている');
+  eq('フェードの途中は写さない', R.untouchedFrameAt(seq([{ ...base, id: 'c', trackId: 'v1', start: 0, duration: 10, fadeIn: 1 }]), 0.5).reason, 'フェードの途中');
+  const src = { mediaId: 'm', codec: 'avc', width: 1080, height: 1920, frameRate: 30, firstPts: 0, endTime: 10, keyframeTimes: [0, 2, 4, 6, 8], closedGops: true, constantFrameRate: true, nalLengthSize: 4, rotation: 0 };
+  const out = { width: 1080, height: 1920, fps: 30 };
+  const frames = (s) => Array.from({ length: 300 }, (_, i) => R.untouchedFrameAt(s, i / 30));
+  const all = R.planSmartRender(frames(plain), new Map([['m', src]]), out);
+  eq('全部手つかずなら全部写す', [all.copiedFrames, all.segments.length, all.segments[0].kind], [300, 1, 'copy']);
+  const part = R.planSmartRender(frames(withText), new Map([['m', src]]), out);
+  eq('文字の後ろは、次のキーフレームから写す', part.segments.map((x) => `${x.kind}:${x.startFrame}-${x.endFrame}`), ['encode:0-60', 'copy:60-300']);
+  eq('大きさが違えば写さない（理由を添える）', R.planSmartRender(frames(plain), new Map([['m', { ...src, width: 720 }]]), out).reasons[0], '素材と出力の大きさが違う');
+  eq('閉じていない GOP は写さない', R.planSmartRender(frames(plain), new Map([['m', { ...src, closedGops: false }]]), out).copiedFrames, 0);
+  const trimmed = seq([{ ...base, id: 'c', trackId: 'v1', start: 0, duration: 5, sourceIn: 1 }]);
+  const tf = Array.from({ length: 150 }, (_, i) => R.untouchedFrameAt(trimmed, i / 30));
+  eq('頭を詰めた素材は、最初のキーフレーム（素材の 2 秒）から', R.planSmartRender(tf, new Map([['m', src]]), out).segments.map((x) => `${x.kind}:${x.startFrame}-${x.endFrame}`), ['encode:0-30', 'copy:30-150']);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;
