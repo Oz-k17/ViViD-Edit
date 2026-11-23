@@ -5248,3 +5248,58 @@ input[type='radio'] {
   gap: 10px;
   flex-wrap: wrap;
 }
+
+/* キーフレーム: スライダーの横の ◆ と前後の点への矢印 */
+.anim-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.anim-row > .slider {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.key-controls {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.key-controls button {
+  min-height: 32px;
+  min-width: 32px;
+  padding: 4px;
+  color: var(--text-dim);
+}
+
+/* 点がある値は差し色、いまの位置に点があれば塗りつぶした ◆ */
+.key-toggle.some,
+.key-toggle.on {
+  color: var(--accent);
+}
+
+.key-toggle.on {
+  animation: pick 0.3s var(--ease-spring, ease-out);
+}
+
+.motion-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+
+/* タイムライン上の打点（クリップの下端に小さな菱形） */
+.tl-key {
+  position: absolute;
+  bottom: 2px;
+  width: 7px;
+  height: 7px;
+  margin-left: -3.5px;
+  background: var(--accent);
+  transform: rotate(45deg);
+  border-radius: 1px;
+  pointer-events: none;
+}

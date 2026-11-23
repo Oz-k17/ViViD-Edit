@@ -8,6 +8,7 @@ import { CROP_CORNERS, CROP_HANDLES, handlePoint, handleRect, handleSizeFor, sel
 import { clipAtTime, previousAdjacent } from '../model/ops';
 import { effectIntensity, effectMotion } from '../model/effects';
 import { karaokeChars, karaokeCut, karaokeProgress, karaokeWithin } from '../model/karaoke';
+import { animatedClipAt } from '../model/keyframes';
 import {
   clipEnd,
   contentAtomCount,
@@ -358,6 +359,8 @@ function drawVisualClip(
   extraAlpha: number,
   offsetX = 0,
 ) {
+  // キーフレームがあれば、この時刻の大きさ・位置・濃さ・回転に置き換えてから描く。
+  clip = animatedClipAt(clip, time);
   const frame = dc.sources.frameFor(clip);
   const size = dc.sources.sizeFor(clip);
   if (!frame || !size) return;
@@ -709,6 +712,7 @@ function drawTextClip(
   sources: RenderSources,
   settleStart = false,
 ) {
+  clip = animatedClipAt(clip, time);
   const text = clip.text;
   if (!text) return;
   const local = time - clip.start;
@@ -1179,8 +1183,9 @@ export function renderFrame(
 
   // 選択中クリップの枠（クロップ中は切り抜きの配置枠を出す）
   for (const id of selected) {
-    const clip = sequence.clips.find((c) => c.id === id);
-    if (!clip) continue;
+    const found = sequence.clips.find((c) => c.id === id);
+    if (!found) continue;
+    const clip = animatedClipAt(found, time);
     if (time < clip.start || time >= clipEnd(clip)) continue;
     if (clip.crop.enabled && clip.kind !== 'text') {
       // 切り抜いた絵を置く枠。ここは動かすだけでなく、つまみで大きさも変えられる。

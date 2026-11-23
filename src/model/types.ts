@@ -269,6 +269,11 @@ export interface Clip {
   nested?: Sequence;
   /** まとめたクリップの名前（タイムラインに出す）。 */
   name?: string;
+  /**
+   * キーフレーム。大きさ・位置・濃さ・回転を時間で動かす（`model/keyframes.ts`）。
+   * 無ければ素の値のまま（古い保存ファイルもこれ）。描く直前に `animatedClipAt()` で素の値へ戻す。
+   */
+  anim?: import('./keyframes').ClipAnim;
 }
 
 export interface Sequence {

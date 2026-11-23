@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { exporter } from '../../engine/exporter';
 import { formatTime } from '../../engine/media';
 import { player } from '../../engine/player';
+import { animValueAt, writeAnimated, writeAnimatedMany } from '../../model/keyframes';
 import {
   CROP_CORNERS,
   CROP_HANDLES,
@@ -298,7 +299,7 @@ export function PreviewStage() {
       const clip = textClips[i];
       if (hit(boundsRef.current.get(clip.id), point)) {
         setSelection([clip.id]);
-        dragRef.current = { kind: 'move', id: clip.id, startX: point.x, startY: point.y, originX: clip.x, originY: clip.y };
+        dragRef.current = { kind: 'move', id: clip.id, startX: point.x, startY: point.y, originX: animValueAt(clip, 'x', player.time), originY: animValueAt(clip, 'y', player.time) };
         event.currentTarget.setPointerCapture(event.pointerId);
         return;
       }
@@ -310,7 +311,7 @@ export function PreviewStage() {
       const clip = clipAtTime(sequence, videoTracks[i].id, time);
       if (!clip) continue;
       setSelection([clip.id]);
-      dragRef.current = { kind: 'move', id: clip.id, startX: point.x, startY: point.y, originX: clip.x, originY: clip.y };
+      dragRef.current = { kind: 'move', id: clip.id, startX: point.x, startY: point.y, originX: animValueAt(clip, 'x', player.time), originY: animValueAt(clip, 'y', player.time) };
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
     }
@@ -370,7 +371,10 @@ export function PreviewStage() {
     apply(
       (seq) => ({
         ...seq,
-        clips: seq.clips.map((c) => (c.id === drag.id ? { ...c, x: drag.originX + dx, y: drag.originY + dy } : c)),
+        // キーフレームがある値は、いまの時刻の打点として書く（形を壊さない）。
+        clips: seq.clips.map((c) =>
+          c.id === drag.id ? { ...c, ...writeAnimatedMany(c, { x: drag.originX + dx, y: drag.originY + dy }, player.time) } : c,
+        ),
       }),
       `${drag.kind}:${drag.id}`,
     );
@@ -501,9 +505,13 @@ export function PreviewStage() {
     const id = selection[0];
     const clip = id ? sequence.clips.find((c) => c.id === id) : null;
     if (!clip) return;
-    const next = Math.max(0.1, Math.min(6, clip.scale * (event.deltaY > 0 ? 0.96 : 1.04)));
+    const now = player.time;
+    const next = Math.max(0.1, Math.min(6, animValueAt(clip, 'scale', now) * (event.deltaY > 0 ? 0.96 : 1.04)));
     apply(
-      (seq) => ({ ...seq, clips: seq.clips.map((c) => (c.id === clip.id ? { ...c, scale: next } : c)) }),
+      (seq) => ({
+        ...seq,
+        clips: seq.clips.map((c) => (c.id === clip.id ? { ...c, ...writeAnimated(c, 'scale', next, now) } : c)),
+      }),
       `scale:${clip.id}`,
     );
   };

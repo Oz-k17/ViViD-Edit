@@ -2228,6 +2228,47 @@ eq('空文字', wrap('', 10), ['']);
   eq('頼まなければカラオケにしない', plain.clips[0]?.text?.karaoke ?? null, null);
 }
 
+{
+  // キーフレーム（lab/keyframe の持ち方を本体へ。繋ぎ方の一部は openreel-video から）
+  const K = await import('../src/model/keyframes.ts');
+  const O = await import('../src/model/ops.ts');
+  const img = { id: 'c1', trackId: 't', kind: 'image', mediaId: 'm', start: 10, duration: 4, sourceIn: 0, speed: 1, volume: 1, muted: false, loop: false,
+    opacity: 1, scale: 1, x: 0, y: 0, rotate: 0, fit: 'cover', bgBlur: { enabled: false, strength: 0, zoom: 1 }, crop: {}, effects: [], fadeIn: 0, fadeOut: 0,
+    transitionIn: { type: 'none', duration: 0.5 }, text: null };
+  check('動かしていないクリップは同じものを返す', K.animatedClipAt(img, 11) === img);
+  let c = { ...img, ...K.toggleKeyAt(img, 'scale', 10) };
+  c = { ...c, ...K.writeAnimated(c, 'scale', 1, 10) };
+  check('点を打っても、その瞬間の値は変わらない', K.animValueAt(c, 'scale', 10) === 1);
+  c = { ...c, ...K.writeAnimated(c, 'scale', 2, 12) };
+  eq('点の間は動く', K.animValueAt(c, 'scale', 11), 1.5);
+  eq('最後の点より後ろは保つ', K.animValueAt(c, 'scale', 13.5), 2);
+  eq('描く直前に素の値へ戻す', K.animatedClipAt(c, 11).scale, 1.5);
+  eq('静止画は頭からの秒で持つ', c.anim.scale.base, 'local');
+  eq('タイムラインに点を出す時刻', K.keyTimesOf(c), [10, 12]);
+  eq('次の点へ', K.neighborKeyTime(c, 10, 1), 12);
+  {
+    const [left, right] = O.splitOne(c, 11);
+    // 静止画・テロップは「クリップの頭に付く」（lab/keyframe で測って決めた既定）。割った右側は頭から動き直す。
+    eq('静止画を割ると、右側は頭から動き直す', K.animValueAt(right, 'scale', 11.5), 1.25);
+    const video = { ...c, kind: 'video', anim: { scale: { base: 'source', keys: [{ t: 0, v: 1 }, { t: 2, v: 2 }] } } };
+    const [, vr] = O.splitOne(video, 11);
+    eq('動画は素材の秒で持つので、割っても続きから動く', K.animValueAt(vr, 'scale', 11.5), 1.75);
+    eq('割った左側もそのまま', K.animValueAt(left, 'scale', 10.5), 1.25);
+  }
+  const eased = { ...c, ...K.setEaseAt(c, 'scale', 10, 'easeInOut') };
+  check('動き方を変えると途中の値が変わる', K.animValueAt(eased, 'scale', 10.5) < 1.25);
+  let off = { ...c, ...K.toggleKeyAt(c, 'scale', 12) };
+  off = { ...off, ...K.toggleKeyAt(off, 'scale', 10) };
+  check('点を全部外すと素の値に戻る（anim を残さない）', off.anim === undefined && off.scale === 1, JSON.stringify(off.anim));
+  const kb = { ...img, ...K.kenBurns(img) };
+  eq('ゆっくり寄るは尺の割合で持つ', kb.anim.scale.base, 'fraction');
+  eq('尺を伸ばしても最後まで寄り切る', Math.round(K.animValueAt({ ...kb, duration: 8 }, 'scale', 18) * 100) / 100, 1.15);
+  check('行き過ぎて戻る は 1 を超える所がある', K.easeAt('back', 0.7) > 1);
+  check('ばね・はずむ は最後に 1 で止まる', K.easeAt('elastic', 1) === 1 && Math.abs(K.easeAt('bounce', 1) - 1) < 1e-9);
+  const moved = { ...img, ...K.writeAnimatedMany(img, { x: 0.2, y: -0.1 }, 11) };
+  check('点が無い値はそのまま書き換える', moved.x === 0.2 && moved.y === -0.1 && moved.anim === undefined);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;
