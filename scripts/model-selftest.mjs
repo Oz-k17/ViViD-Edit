@@ -2269,6 +2269,33 @@ eq('空文字', wrap('', 10), ['']);
   check('点が無い値はそのまま書き換える', moved.x === 0.2 && moved.y === -0.1 && moved.anim === undefined);
 }
 
+{
+  // 音の仕上げ（openreel-video の Essential Sound に倣った並び・lab/auto-cut のダッキング）
+  const S = await import('../src/model/sound.ts');
+  eq('何も選ばなければ何も掛けない', S.planSoundChain(undefined), []);
+  eq('種類だけでは何も掛けない', S.planSoundChain({ role: 'voice' }), []);
+  const voice = S.planSoundChain({ role: 'voice', clarity: 0.5 });
+  eq('声をくっきり: 80Hz で切って 3kHz を持ち上げ、軽く圧縮', voice.map((st) => st.kind === 'filter' ? `${st.type}@${st.frequency}${st.gain ? `+${st.gain}` : ''}` : 'comp'), ['highpass@80', 'peaking@3000+3', 'comp']);
+  const fixd = S.planSoundChain({ role: 'voice', clarity: 0.5, rumble: true, hum: 50 });
+  eq('唸りとハムを先に消し、低い所は二重に切らない', fixd.map((st) => st.kind === 'filter' ? `${st.type}@${st.frequency}` : 'comp'), ['highpass@100', 'notch@50', 'notch@100', 'notch@150', 'peaking@3000', 'comp']);
+  eq('BGM は声の帯を空ける', S.planSoundChain({ role: 'music', clarity: 1 }).map((st) => `${st.type}@${st.frequency}${st.gain}`), ['peaking@1500-6']);
+  check('並びが同じなら同じ鍵', S.soundChainKey(voice) === S.soundChainKey(S.planSoundChain({ role: 'voice', clarity: 0.5 })));
+  check('ダッキングは BGM で量があるときだけ', S.ducks({ role: 'music', duckDb: 12 }) && !S.ducks({ role: 'music', duckDb: 0 }) && !S.ducks({ role: 'voice', duckDb: 12 }));
+  // 0.5〜1.0 秒だけ声がある
+  const hop = 0.02;
+  const db = new Float32Array(150).fill(-100);
+  for (let i = 25; i < 50; i += 1) db[i] = -20;
+  const pts = S.planDucking({ hop, db, duration: 3 }, { duckDb: -12 });
+  const g = (t) => Math.round(S.duckGainAt(pts, t) * 1000) / 1000;
+  eq('声の前は下げない', g(0.2), 1);
+  eq('声の間は -12dB', g(0.7), Math.round(Math.pow(10, -12 / 20) * 1000) / 1000);
+  check('声が出る前から下げ始める（attack）', g(0.45) < 1 && g(0.45) > g(0.7));
+  check('声が止んでもすぐ戻さない（hold）', g(1.1) === g(0.7));
+  eq('しばらくしたら戻る（release）', g(2.5), 1);
+  const merged = S.mergeVoiceLevels([{ at: 1, levels: { hop: 0.02, db: new Float32Array([-10, -10]), duration: 0.04 } }], 2);
+  check('クリップの声をタイムラインの位置に重ねる', merged.db[50] === -10 && merged.db[49] === -100, `${merged.db[49]} ${merged.db[50]}`);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

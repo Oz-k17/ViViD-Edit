@@ -85,6 +85,7 @@ import {
   type AnimProp,
   type Ease,
 } from '../../model/keyframes';
+import type { SoundFx } from '../../model/sound';
 import { TRANSITION_ICON } from './transitionIcon';
 import { TransitionHint, TransitionName } from './TransitionPicker';
 import { Hint } from '../Hint';
@@ -325,6 +326,96 @@ function MotionSection({ clip, time }: { clip: Clip; time: number }) {
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * 音の仕上げ。声なら「くっきり・唸り・ハム」、BGM なら「声の間だけ下げる・声の帯を空ける」。
+ * プレビューと書き出しで同じものが掛かる（`model/sound.ts`）。
+ */
+function SoundSection({ clip }: { clip: Clip }) {
+  const patch = useClipPatch(clip);
+  const fx: SoundFx = clip.sound ?? {};
+  const set = (changes: Partial<SoundFx>, key?: string) => patch({ sound: { ...fx, ...changes } }, key);
+  const role = fx.role ?? 'none';
+  return (
+    <div className="sound-section">
+      <Field label="音の仕上げ">
+        <Segmented
+          value={role}
+          options={[
+            { value: 'none', label: 'そのまま' },
+            { value: 'voice', label: '声', title: '話し声をくっきりさせ、唸りやハムを消します' },
+            { value: 'music', label: 'BGM', title: '声が鳴っているあいだ、自動で音量を下げます' },
+          ]}
+          onChange={(next) =>
+            next === 'none'
+              ? patch({ sound: undefined })
+              : set({ role: next, clarity: fx.clarity ?? 0.5, ...(next === 'music' ? { duckDb: fx.duckDb ?? 12 } : {}) })
+          }
+        />
+      </Field>
+      {fx.role === 'voice' && (
+        <>
+          <Field label="声をくっきり" hint="低い音を切って、言葉の聞こえる帯を持ち上げ、軽く揃えます">
+            <Slider
+              value={fx.clarity ?? 0}
+              min={0}
+              max={1}
+              step={0.05}
+              onChange={(clarity) => set({ clarity }, 'clarity')}
+              format={(v) => (v <= 0 ? 'なし' : `${Math.round(v * 100)}%`)}
+              onReset={() => set({ clarity: 0.5 })}
+            />
+          </Field>
+          <Toggle label="低い唸りを消す（エアコン・風・机の振動）" checked={!!fx.rumble} onChange={(rumble) => set({ rumble })} />
+          <Field label="電源のハム（ブーン）を消す">
+            <Segmented
+              value={String(fx.hum ?? 0)}
+              options={[
+                { value: '0', label: '消さない' },
+                { value: '50', label: '50Hz（東日本）' },
+                { value: '60', label: '60Hz（西日本）' },
+              ]}
+              onChange={(v) => set({ hum: v === '0' ? null : (Number(v) as 50 | 60) })}
+            />
+          </Field>
+        </>
+      )}
+      {fx.role === 'music' && (
+        <>
+          <Toggle
+            label="声が鳴っているあいだ下げる（ダッキング）"
+            checked={(fx.duckDb ?? 0) > 0}
+            onChange={(on) => set({ duckDb: on ? 12 : 0 })}
+          />
+          {(fx.duckDb ?? 0) > 0 && (
+            <Field label="下げる量">
+              <Slider
+                value={fx.duckDb ?? 12}
+                min={3}
+                max={30}
+                step={1}
+                onChange={(duckDb) => set({ duckDb }, 'duck')}
+                format={(v) => `-${v.toFixed(0)} dB`}
+                onReset={() => set({ duckDb: 12 })}
+              />
+            </Field>
+          )}
+          <Field label="声の帯を空ける" hint="声と重なる辺りを少し下げて、言葉を聞き取りやすくします">
+            <Slider
+              value={fx.clarity ?? 0}
+              min={0}
+              max={1}
+              step={0.05}
+              onChange={(clarity) => set({ clarity }, 'clarity')}
+              format={(v) => (v <= 0 ? 'なし' : `${Math.round(v * 100)}%`)}
+              onReset={() => set({ clarity: 0.5 })}
+            />
+          </Field>
+        </>
+      )}
     </div>
   );
 }
@@ -863,6 +954,7 @@ function PropsTab({ clip }: { clip: Clip }) {
           {clip.kind === 'audio' && !clip.linkId && (
             <Toggle label="素材を繰り返して尺を埋める" checked={clip.loop} onChange={(loop) => patch({ loop })} />
           )}
+          <SoundSection clip={soundClip} />
           {clip.linkId && partner ? (
             <div className="link-row">
               <span className="muted small">

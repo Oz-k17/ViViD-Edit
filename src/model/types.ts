@@ -274,6 +274,11 @@ export interface Clip {
    * 無ければ素の値のまま（古い保存ファイルもこれ）。描く直前に `animatedClipAt()` で素の値へ戻す。
    */
   anim?: import('./keyframes').ClipAnim;
+  /**
+   * 音の仕上げ（声をくっきり・唸りとハムを消す・BGM を声の間だけ下げる）。`model/sound.ts`。
+   * 無ければ素のまま（古い保存ファイルもこれ）。
+   */
+  sound?: import('./sound').SoundFx;
 }
 
 export interface Sequence {

@@ -4,9 +4,15 @@
  * 書き出し時は同じグラフから MediaStream を取り出して MediaRecorder に渡す。
  */
 
+import { buildSoundChain, disposeSoundChain, type SoundChain } from './soundChain';
+import { soundChainKey, type SoundStage } from '../model/sound';
+
 interface Channel {
   source: MediaElementAudioSourceNode;
   gain: GainNode;
+  /** 音の仕上げ（声をくっきり・唸りとハムを消す）。無ければ source から gain へ素通し。 */
+  chain: SoundChain | null;
+  chainKey: string;
 }
 
 export class AudioGraph {
@@ -108,7 +114,7 @@ export class AudioGraph {
       const gain = ctx.createGain();
       source.connect(gain);
       gain.connect(this.master);
-      const channel = { source, gain };
+      const channel: Channel = { source, gain, chain: null, chainKey: '' };
       this.channels.set(el, channel);
       return channel;
     } catch {
@@ -129,6 +135,32 @@ export class AudioGraph {
     }
   }
 
+  /**
+   * 音の仕上げの部品を差し替える（`model/sound.ts` の並び）。同じ並びなら何もしない
+   * （再生中は毎コマ呼ばれるので、組み直すのは中身が変わったときだけ）。
+   */
+  setChain(el: HTMLMediaElement, stages: readonly SoundStage[]) {
+    const channel = this.channel(el);
+    if (!channel || !this.ctx) return;
+    const key = soundChainKey(stages);
+    if (key === channel.chainKey) return;
+    try {
+      channel.source.disconnect();
+    } catch {
+      /* noop */
+    }
+    disposeSoundChain(channel.chain);
+    const chain = buildSoundChain(this.ctx, stages);
+    if (chain) {
+      channel.source.connect(chain.input);
+      chain.output.connect(channel.gain);
+    } else {
+      channel.source.connect(channel.gain);
+    }
+    channel.chain = chain;
+    channel.chainKey = key;
+  }
+
   forget(el: HTMLMediaElement) {
     const channel = this.channels.get(el);
     if (!channel) return;
@@ -138,6 +170,7 @@ export class AudioGraph {
     } catch {
       /* noop */
     }
+    disposeSoundChain(channel.chain);
     this.channels.delete(el);
   }
 

@@ -5303,3 +5303,11 @@ input[type='radio'] {
   border-radius: 1px;
   pointer-events: none;
 }
+
+/* 音の仕上げ */
+.sound-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}

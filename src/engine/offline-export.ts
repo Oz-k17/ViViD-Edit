@@ -36,6 +36,9 @@ import {
 } from 'mediabunny';
 import { VIDEO_INPUT_FORMATS } from './formats';
 import { mediaRegistry } from './media';
+import { buildSoundChain } from './soundChain';
+import { duckPointsFor, measureVoiceLevels } from './ducking';
+import { duckGainAt, ducks, planSoundChain, type GainPoint as DuckPoint, type SoundStage } from '../model/sound';
 import { renderFrame, type RenderSources } from './renderer';
 import { previousAdjacent } from '../model/ops';
 import { sourceTimeAt, type Clip, type Sequence } from '../model/types';
@@ -387,6 +390,10 @@ interface AudioJob {
   gain: GainPoints;
   /** ループするクリップは素材の頭から繰り返す（素材の全体が要る）。 */
   loop: { start: number } | null;
+  /** 音の仕上げ（声をくっきり・唸りとハム）。プレビューと同じ並び。 */
+  stages: SoundStage[];
+  /** BGM を声の間だけ下げる折れ線（タイムラインの秒）。下げないなら null。 */
+  duck: DuckPoint[] | null;
 }
 
 /** 区間ごとに作れるミキサー。全長を 1 本のバッファにせず、30 秒ずつなど必要な所だけ作る。 */
@@ -417,6 +424,10 @@ export async function createAudioMixer(sequence: Sequence, duration: number): Pr
   if (sounding.length === 0) return null;
   const trackById = new Map(sequence.tracks.map((t) => [t.id, t]));
 
+  // 声の間だけ下げる BGM があれば、先に声の大きさを測っておく（プレビューと同じ決め方）。
+  const voiceLevels = sounding.some((c) => ducks(c.sound)) ? await measureVoiceLevels(sequence, duration) : null;
+  const duckOf = (clip: Clip) => (ducks(clip.sound) ? duckPointsFor(voiceLevels, clip.sound?.duckDb ?? 0) : null);
+
   const jobs: AudioJob[] = [];
   for (const clip of sounding) {
     if (clip.muted || trackById.get(clip.trackId)?.muted) continue;
@@ -445,6 +456,8 @@ export async function createAudioMixer(sequence: Sequence, duration: number): Pr
       speed,
       gain,
       loop: clip.loop ? { start: clip.sourceIn } : null,
+      stages: planSoundChain(clip.sound),
+      duck: duckOf(clip),
     });
   }
 
@@ -473,6 +486,8 @@ export async function createAudioMixer(sequence: Sequence, duration: number): Pr
         { t: clip.start + span, v: 0 },
       ],
       loop: null,
+      stages: planSoundChain(previous.sound),
+      duck: duckOf(previous),
     });
   }
   if (jobs.length === 0) return null;
@@ -567,8 +582,27 @@ export async function createAudioMixer(sequence: Sequence, duration: number): Pr
       source.buffer = buffer;
       source.playbackRate.value = speed;
       const gain = ctx.createGain();
-      source.connect(gain);
-      gain.connect(ctx.destination);
+      // 音の仕上げ → 音量 → （BGM なら）声の間だけ下げる、の順につなぐ。
+      const chain = buildSoundChain(ctx, job.stages);
+      if (chain) {
+        source.connect(chain.input);
+        chain.output.connect(gain);
+      } else {
+        source.connect(gain);
+      }
+      if (job.duck) {
+        const duckGain = ctx.createGain();
+        gain.connect(duckGain);
+        duckGain.connect(ctx.destination);
+        const p = duckGain.gain;
+        p.setValueAtTime(duckGainAt(job.duck, at), at - t0);
+        for (const point of job.duck) {
+          if (point.time > at && point.time < at + wall) p.linearRampToValueAtTime(point.gain, point.time - t0);
+        }
+        p.linearRampToValueAtTime(duckGainAt(job.duck, at + wall), at + wall - t0);
+      } else {
+        gain.connect(ctx.destination);
+      }
       // 音量: 折れ線を、この区間内の時刻（区間の先頭が 0 秒）に写して予約する。
       const param = gain.gain;
       param.setValueAtTime(gainAt(job.gain, at), at - t0);

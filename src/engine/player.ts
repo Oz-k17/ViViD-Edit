@@ -1,4 +1,6 @@
 import { audioGraph } from './audio';
+import { duckingStore } from './ducking';
+import { duckGainAt, ducks, planSoundChain, type SoundFx, type SoundStage } from '../model/sound';
 import { logMediaEvent, mediaRegistry } from './media';
 import { hasStrip, stripFrameAt } from './thumbstrip';
 import { fadeEnvelope, type RenderSources } from './renderer';
@@ -23,6 +25,19 @@ import { sourceTimeAt, type Clip, type Sequence } from '../model/types';
  */
 
 /** シーク連発を防ぐ初期クールダウン（ミリ秒）。連発するほど自動で伸びる。 */
+/** 音の仕上げの並びは、同じ設定なら作り直さない（毎コマ呼ばれるので）。 */
+const NO_STAGES: SoundStage[] = [];
+const stageCache = new WeakMap<SoundFx, SoundStage[]>();
+function stagesOf(fx: SoundFx | undefined): SoundStage[] {
+  if (!fx) return NO_STAGES;
+  let stages = stageCache.get(fx);
+  if (!stages) {
+    stages = planSoundChain(fx);
+    stageCache.set(fx, stages);
+  }
+  return stages;
+}
+
 const SEEK_COOLDOWN_MS = 700;
 /** クールダウンの上限（ミリ秒）。 */
 const SEEK_COOLDOWN_MAX_MS = 4000;
@@ -772,6 +787,8 @@ export class Player {
   }
 
   private sync() {
+    // 声の間だけ下げる BGM があれば、声の大きさを測っておく（声の並びが変わったときだけ測り直す）。
+    if (this.sequence) duckingStore.ensure(this.sequence);
     const sequence = this.sequence;
     if (!sequence) return;
 
@@ -846,7 +863,11 @@ export class Player {
       // trailing のときは、トランジションの進捗に応じて音量を滑らかにフェードアウトさせる。
       // 通常のクリップ（trailing=false）は 1 のまま、fadeOut に影響しない。
       const trailingFade = entry.trailing ? Math.max(0, 1 - (entry.transitionProgress ?? 1)) : 1;
-      const baseGain = silent ? 0 : sound.volume * env * trailingFade;
+      // BGM は、声が鳴っているあいだ下げる（ダッキング。測り終えるまでは下げない）。
+      const duck = ducks(sound.sound) ? duckingStore.pointsFor(sound.sound?.duckDb ?? 0) : null;
+      const baseGain = silent ? 0 : sound.volume * env * trailingFade * (duck ? duckGainAt(duck, this.time) : 1);
+      // 声をくっきり・唸りとハムを消す。並びが変わったときだけ部品を組み直す。
+      audioGraph.setChain(el, stagesOf(sound.sound));
 
       if (this.playing) {
         const now = performance.now();
