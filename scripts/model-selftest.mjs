@@ -2334,6 +2334,32 @@ eq('空文字', wrap('', 10), ['']);
   check('プリセットは全部、何かを変える', C.COLOR_PRESETS.every((p) => !C.isNeutralGrade(p.grade)));
 }
 
+{
+  // 書き出しの段取り: 残り時間と、大きさから決める（openreel-video の progress-estimator・compression）
+  const E = await import('../src/model/exportPlan.ts');
+  let now = 0;
+  const est = new E.ProgressEstimator(() => now);
+  est.start();
+  now = 1000;
+  check('始まってすぐは言わない', est.update(0.1).etaSeconds === null);
+  now = 3000;
+  const a = est.update(0.3);
+  check('一定の速さなら、残りはおよそ線形に出る（30% を 3 秒 → 残り 7 秒）', Math.abs(a.etaSeconds - 7) < 0.5, String(a.etaSeconds));
+  now = 3500;
+  check('合間は数え下げる', Math.abs(est.tick().etaSeconds - 6.5) < 0.5);
+  now = 4000;
+  check('進み具合は戻らない', est.update(0.2).fraction === 0.3);
+  now = 9000;
+  eq('終わったら 0', est.update(1).etaSeconds, 0);
+  eq('残りの言い方', [E.formatEta(null), E.formatEta(3), E.formatEta(42), E.formatEta(130)], ['残り時間を見積もっています', 'まもなく終わります', '残り 約 40 秒', '残り 約 2 分 10 秒']);
+  const tiers = [{ quality: 1080, width: 1080, height: 1920 }, { quality: 720, width: 720, height: 1280 }, { quality: 480, width: 480, height: 854 }];
+  const p = E.planTargetSize({ targetMb: 25, durationSec: 60, fps: 30, hasAudio: true, tiers, currentQuality: 1080 });
+  check('目標に収まる見込み', p.bytes <= 25 * 1024 * 1024, String(p.bytes));
+  check('音のぶんを引いてある', p.videoBps < (25 * 1024 * 1024 * 8) / 60);
+  const tight = E.planTargetSize({ targetMb: 10, durationSec: 120, fps: 30, hasAudio: true, tiers, currentQuality: 1080 });
+  check('きつい目標では画質を下げるよう薦める', tight.tooTightAtCurrent && tight.suggestedQuality < 1080, JSON.stringify(tight));
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

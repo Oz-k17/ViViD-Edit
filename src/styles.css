@@ -5413,3 +5413,20 @@ input[type='radio'] {
   gap: 8px;
   flex-wrap: wrap;
 }
+
+/* 書き出し: 目標の大きさ */
+.target-size {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.target-size-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.target-size-input input {
+  width: 96px;
+}

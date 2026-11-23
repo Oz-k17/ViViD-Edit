@@ -320,7 +320,9 @@ export interface Settings {
   exportAspect: AspectKey;
   exportFormat: 'auto' | 'mp4' | 'webm';
   /** 書き出しのファイルの大きさ（画質で決める段か、ビットレートで決めるか）。無ければ「おすすめ」。 */
-  exportSize?: 'quality' | 'balanced' | 'small' | 'bitrate';
+  exportSize?: 'quality' | 'balanced' | 'small' | 'bitrate' | 'target';
+  /** 大きさを決めて書き出すときの目標（MB）。 */
+  exportTargetMb?: number;
   snap: boolean;
   shortcuts: Record<ShortcutAction, string>;
   /** 編集画面のパネル配置。 */

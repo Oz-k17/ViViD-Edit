@@ -654,23 +654,42 @@ function sliceAudio(source: AudioBuffer, fromSample: number, sampleCount: number
 // ---------- 本体 ----------
 
 export async function runFrameAccurateExport(options: FrameExportOptions): Promise<FrameExportOutput> {
-  const fast = options.fast === true;
-  const first = await runPass(options, fast);
-  const { dropped = 0, ...output } = first;
-  if (fast && dropped > 0) {
-    // 高速モードで、エンコーダが追いつかずにコマを落とした。コマ落ちのある動画は渡さず、通常モードでやり直す。
-    const retry = await runPass(options, false);
-    const { dropped: _ignored, ...redone } = retry;
-    return {
-      ...redone,
-      note: [redone.note, `高速モードでコマが ${dropped} 個落ちたので、通常モードで書き出し直しました`].filter(Boolean).join(' / '),
-    };
-  }
+  const [output] = await runFrameAccurateExportMany(options, [options.sequence]);
   return output;
 }
 
-async function runPass(options: FrameExportOptions, fast: boolean): Promise<FrameExportOutput> {
-  const { sequence, fps, duration, onProgress, isCancelled } = options;
+/**
+ * 同じタイムラインの版を、**素材を 1 回読み解くだけで**まとめて書き出す（字幕あり・字幕なしなど）。
+ *
+ * 書き出しの時間の大半（lab/export-cost の測定で 86%）は素材の読み解き（デコード）で、
+ * 版ごとに書き出すと、それを版の数だけ払っていた。1 コマ読んだら版の数だけ絵を描き、
+ * それぞれの出力へ書くので、2 本でも読み解きは 1 回で済む。
+ *
+ * 版どうしは**映像と音のクリップが同じ**であること（違うのは文字だけ）。音も 1 回だけ作って両方へ流す。
+ * 返す順は `sequences` と同じ。
+ */
+export async function runFrameAccurateExportMany(
+  options: FrameExportOptions,
+  sequences: Sequence[],
+): Promise<FrameExportOutput[]> {
+  const fast = options.fast === true;
+  const first = await runPass(options, fast, sequences);
+  const dropped = first.reduce((max, o) => Math.max(max, o.dropped ?? 0), 0);
+  if (fast && dropped > 0) {
+    // 高速モードで、エンコーダが追いつかずにコマを落とした。コマ落ちのある動画は渡さず、通常モードでやり直す。
+    const retry = await runPass(options, false, sequences);
+    return retry.map(({ dropped: _ignored, ...redone }) => ({
+      ...redone,
+      note: [redone.note, `高速モードでコマが ${dropped} 個落ちたので、通常モードで書き出し直しました`].filter(Boolean).join(' / '),
+    }));
+  }
+  return first.map(({ dropped: _ignored, ...output }) => output);
+}
+
+async function runPass(options: FrameExportOptions, fast: boolean, sequences: Sequence[]): Promise<FrameExportOutput[]> {
+  const { fps, duration, onProgress, isCancelled } = options;
+  // 音と、読み解く素材の並びは、最初の版で決める（版どうしで違うのは文字だけ）。
+  const sequence = sequences[0];
   if (!isFrameExportSupported()) {
     throw new FrameExportUnsupported('この環境では WebCodecs が使えません');
   }
@@ -726,45 +745,72 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
   );
   if (!picked) throw new FrameExportUnsupported('この環境では書き出しに使えるコーデックが見つかりませんでした');
 
-  const canvas = document.createElement('canvas');
-  canvas.width = sequence.width;
-  canvas.height = sequence.height;
-  const ctx = canvas.getContext('2d', { alpha: false });
-  if (!ctx) throw new Error('キャンバスを初期化できませんでした');
-
-  const sink = await openExportSink(estimateBytes, picked.ext, fileThreshold);
-  if (sink.wantedFile && sink.kind === 'memory') {
-    const mb = Math.round(estimateBytes / 1024 / 1024);
-    note = [
-      note,
-      `出力が大きい（約 ${mb}MB）のに、この環境ではファイルへ逃がせないため、メモリ上で書き出します。途中で止まるときは、長さを分けるか画質を下げてください`,
-    ]
-      .filter(Boolean)
-      .join(' / ');
-  }
-  const output = new Output({ format: picked.format, target: sink.target });
-  let packets = 0;
   const realtime = fast && picked.videoCodec !== 'avc' && picked.videoCodec !== 'hevc';
-  const videoSource = new CanvasSource(canvas, {
-    codec: picked.videoCodec,
-    quality:
-      options.videoQuality !== undefined
-        ? new Quality({ quality: options.videoQuality })
-        : new Quality({ bitrate: options.bitrate }),
-    keyFrameInterval: 2,
-    latencyMode: realtime ? 'realtime' : 'quality',
-    // 出力に入ったコマを数えておく（高速モードで落とされていないかの確認用）。
-    onEncodedPacket: () => {
-      packets += 1;
-    },
-  });
-  output.addVideoTrack(videoSource, { frameRate: fps });
 
-  const audioSource =
-    mixer && picked.audioCodec
-      ? new AudioBufferSource({ codec: picked.audioCodec, quality: new Quality({ bitrate: 128_000 }) })
-      : null;
-  if (audioSource) output.addAudioTrack(audioSource);
+  /** 版ごとの出口（描くキャンバス・出力・映像と音の入口）。 */
+  interface Lane {
+    sequence: Sequence;
+    canvas: HTMLCanvasElement;
+    ctx: CanvasRenderingContext2D;
+    sink: Awaited<ReturnType<typeof openExportSink>>;
+    output: Output;
+    videoSource: CanvasSource;
+    audioSource: AudioBufferSource | null;
+    packets: number;
+  }
+  const lanes: Lane[] = [];
+  const releaseLanes = () => {
+    for (const lane of lanes) {
+      // 書き出し用のキャンバスの領域を返す（iOS の WebKit は、たまると新しいキャンバスを作れなくなる）。
+      lane.canvas.width = 0;
+      lane.canvas.height = 0;
+    }
+  };
+  try {
+    for (const variant of sequences) {
+      const canvas = document.createElement('canvas');
+      canvas.width = variant.width;
+      canvas.height = variant.height;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      if (!ctx) throw new Error('キャンバスを初期化できませんでした');
+      const sink = await openExportSink(estimateBytes, picked.ext, fileThreshold);
+      if (sink.wantedFile && sink.kind === 'memory' && lanes.length === 0) {
+        const mb = Math.round(estimateBytes / 1024 / 1024);
+        note = [
+          note,
+          `出力が大きい（約 ${mb}MB）のに、この環境ではファイルへ逃がせないため、メモリ上で書き出します。途中で止まるときは、長さを分けるか画質を下げてください`,
+        ]
+          .filter(Boolean)
+          .join(' / ');
+      }
+      const output = new Output({ format: picked.format, target: sink.target });
+      const lane = { sequence: variant, canvas, ctx, sink, output, packets: 0 } as Lane;
+      lane.videoSource = new CanvasSource(canvas, {
+        codec: picked.videoCodec,
+        quality:
+          options.videoQuality !== undefined
+            ? new Quality({ quality: options.videoQuality })
+            : new Quality({ bitrate: options.bitrate }),
+        keyFrameInterval: 2,
+        latencyMode: realtime ? 'realtime' : 'quality',
+        // 出力に入ったコマを数えておく（高速モードで落とされていないかの確認用）。
+        onEncodedPacket: () => {
+          lane.packets += 1;
+        },
+      });
+      output.addVideoTrack(lane.videoSource, { frameRate: fps });
+      lane.audioSource =
+        mixer && picked.audioCodec
+          ? new AudioBufferSource({ codec: picked.audioCodec, quality: new Quality({ bitrate: 128_000 }) })
+          : null;
+      if (lane.audioSource) output.addAudioTrack(lane.audioSource);
+      lanes.push(lane);
+    }
+  } catch (error) {
+    for (const lane of lanes) await lane.sink.discard();
+    releaseLanes();
+    throw error;
+  }
 
   // クリップごとに、必要なフレームの素材内時刻をあらかじめ並べておく。
   // 昇順に並んでいれば mediabunny 側がデコードを 1 パスで済ませてくれる。
@@ -783,7 +829,9 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
 
   for (let i = 0; i < totalFrames; i += 1) {
     const time = i / fps;
-    for (const clip of visibleVideoClips(sequence, time)) {
+    const seen = new Set<string>();
+    const visible = sequences.flatMap((variant) => visibleVideoClips(variant, time)).filter((c) => !seen.has(c.id) && !!seen.add(c.id));
+    for (const clip of visible) {
       if (!clip.mediaId) continue;
       let stream = streams.get(clip.id);
       if (!stream) {
@@ -912,7 +960,7 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
 
   let audioFailed = false;
   try {
-    await output.start();
+    for (const lane of lanes) await lane.output.start();
 
     const mixLength = mixer?.length ?? 0;
     let audioSamplesSent = 0;
@@ -937,14 +985,15 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
     };
 
     const pushAudioUpTo = async (seconds: number) => {
-      if (!mixer || !audioSource) return;
+      if (!mixer || !lanes[0].audioSource) return;
       const wanted = Math.min(mixLength, Math.ceil(seconds * SAMPLE_RATE));
       while (audioSamplesSent < wanted) {
         const current = await segmentAt(audioSamplesSent);
         const inSegment = current.from + current.buffer.length - audioSamplesSent;
         const count = Math.min(chunkSamples, mixLength - audioSamplesSent, inSegment);
         if (count <= 0) break;
-        await audioSource.add(sliceAudio(current.buffer, audioSamplesSent - current.from, count));
+        // 音は版どうしで同じなので、同じ区間を全部の出力へ流す。
+        for (const lane of lanes) await lane.audioSource?.add(sliceAudio(current.buffer, audioSamplesSent - current.from, count));
         audioSamplesSent += count;
       }
     };
@@ -973,7 +1022,8 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
         else advanced.push(stream);
       }
 
-      renderFrame(ctx, sequence, time, sources, { guides: false, selectedIds: [] });
+      // 読んだコマで、版の数だけ絵を描く（読み解きは 1 回）。
+      for (const lane of lanes) renderFrame(lane.ctx, lane.sequence, time, sources, { guides: false, selectedIds: [] });
       // 次のコマのデコードを、エンコードを待つあいだに先に進めておく（描画は済んだので、キャンバスを渡してよい）。
       // デコードとエンコードを直列に待つと、どちらかが必ず遊んでしまう。
       for (const stream of advanced) {
@@ -981,7 +1031,7 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
           ?.next()
           .catch(() => ({ done: true, value: undefined }) as IteratorResult<WrappedCanvas | null, void>);
       }
-      await videoSource.add(time, 1 / fps);
+      for (const lane of lanes) await lane.videoSource.add(time, 1 / fps);
       // 映像より少し先まで音を流し込んでおく（多重化のバッファを膨らませないため）。
       await pushAudioUpTo(time + AUDIO_CHUNK_SECONDS * 2);
 
@@ -989,21 +1039,19 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
     }
 
     await pushAudioUpTo(Number.POSITIVE_INFINITY);
-    await output.finalize();
+    for (const lane of lanes) await lane.output.finalize();
   } catch (error) {
-    if (output.state === 'started' || output.state === 'pending') await output.cancel().catch(() => undefined);
-    await sink.discard();
+    for (const lane of lanes) {
+      if (lane.output.state === 'started' || lane.output.state === 'pending') await lane.output.cancel().catch(() => undefined);
+      await lane.sink.discard();
+    }
     throw error;
   } finally {
     cleanup.forEach((fn) => fn());
     mixer?.dispose();
-    // 書き出し用のキャンバスの領域を返す（iOS の WebKit は、たまると新しいキャンバスを作れなくなる）。
-    canvas.width = 0;
-    canvas.height = 0;
+    releaseLanes();
   }
 
-  const mimeType = await output.getMimeType();
-  const blob = await sink.finish(mimeType);
   // 音のあるプロジェクトなのに音を載せられなかった場合は、黙って無音の動画を渡さない。
   let warning: string | undefined;
   if (soundingClips(sequence) > 0) {
@@ -1011,12 +1059,18 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
     else if (!picked.audioCodec) warning = `この環境では ${picked.ext.toUpperCase()} に音を入れられませんでした。`;
     else if (audioFailed) warning = '一部の区間で音を作れず、その間は無音になっています。';
   }
-  return {
-    blob,
-    mimeType,
-    ext: picked.ext,
-    warning,
-    note,
-    dropped: realtime ? Math.max(0, totalFrames - packets) : 0,
-  };
+  const results: FrameExportOutput[] = [];
+  for (const lane of lanes) {
+    const mimeType = await lane.output.getMimeType();
+    const blob = await lane.sink.finish(mimeType);
+    results.push({
+      blob,
+      mimeType,
+      ext: picked.ext,
+      warning,
+      note,
+      dropped: realtime ? Math.max(0, totalFrames - lane.packets) : 0,
+    });
+  }
+  return results;
 }
