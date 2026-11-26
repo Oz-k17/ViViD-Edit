@@ -2190,6 +2190,15 @@ eq('空文字', wrap('', 10), ['']);
   }
 }
 
+{
+  // プレビューのピンチ（指 2 本）で大きさを変える
+  const P = await import('../src/model/pinch.ts');
+  check('指の間隔が 2 倍なら、大きさも 2 倍', Math.abs(P.pinchScale(1.5, 100, 200) - 3) < 1e-9);
+  check('閉じれば小さく', Math.abs(P.pinchScale(1, 120, 40) - 1 / 3) < 1e-9);
+  eq('上限・下限で止まる（ホイールと同じ 0.1〜6）', [P.pinchScale(2, 10, 1000), P.pinchScale(1, 1000, 1)], [6, 0.1]);
+  check('間隔が 0 のときは変えない', P.pinchScale(1.2, 0, 50) === 1.2 && P.pinchScale(1.2, 50, 0) === 1.2);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;
