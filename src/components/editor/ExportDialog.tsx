@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { canExportM4a, encodableVideoCodecs, exportAudioOnly, VIDEO_CODEC_LABELS, type VideoCodecChoice } from '../../engine/offline-export';
+import { renderFrame } from '../../engine/renderer';
 import {
   EMBEDDED_SAVE_LIMIT_BYTES,
   estimateExportBytes,
@@ -35,13 +37,14 @@ import { uid } from '../../model/factory';
 import { navigate } from '../../router';
 
 const QUALITIES = [
+  { value: 2160, label: '4K' },
   { value: 1080, label: '1080p' },
   { value: 720, label: '720p' },
   { value: 480, label: '480p' },
 ];
 
 /** 「かんたん」での言い方。数字だけ見せても、どれを選べばよいか分からない人向け。 */
-const EASY_QUALITY_LABELS: Record<number, string> = { 1080: 'きれい', 720: 'ふつう', 480: '軽い' };
+const EASY_QUALITY_LABELS: Record<number, string> = { 2160: '最高', 1080: 'きれい', 720: 'ふつう', 480: '軽い' };
 const EASY_ASPECT_LABELS: Record<string, string> = {
   '9:16': '縦長（TikTok・Shorts・Reels）',
   '1:1': '正方形',
@@ -122,6 +125,14 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const [fps, setFps] = useState(sequence.fps || 30);
   const [finishAudio, setFinishAudio] = useState(false);
   const [fast, setFast] = useState(false);
+  // 映像の方式（おまかせ / H.264 / H.265 / AV1 / VP9）。使えるかは端末と大きさで決まるので、選び直すたびに確かめる。
+  const [videoCodec, setVideoCodec] = useState<VideoCodecChoice>('auto');
+  const [codecOk, setCodecOk] = useState<Record<Exclude<VideoCodecChoice, 'auto'>, boolean> | null>(null);
+  const [extraBusy, setExtraBusy] = useState<string | null>(null);
+  const [m4aOk, setM4aOk] = useState<boolean | null>(null);
+  useEffect(() => {
+    void canExportM4a().then(setM4aOk);
+  }, []);
   const [progress, setProgress] = useState<number | null>(null);
   const [result, setResult] = useState<ExportResult | null>(null);
   const [saved, setSaved] = useState(false);
@@ -145,7 +156,113 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const embedded = isEmbeddedHost();
   const mime = pickMimeType(format);
   const size = exportSize(aspect, quality);
-  const running = progress !== null;
+  const running = progress !== null || extraBusy !== null;
+
+  useEffect(() => {
+    let alive = true;
+    setCodecOk(null);
+    void encodableVideoCodecs(size.width, size.height).then((ok) => alive && setCodecOk(ok));
+    return () => {
+      alive = false;
+    };
+  }, [size.width, size.height]);
+  // 選んでいた方式が、大きさを変えたら使えなくなった（4K の H.264 など）ときは、おまかせへ戻す。
+  useEffect(() => {
+    if (videoCodec !== 'auto' && codecOk && !codecOk[videoCodec]) setVideoCodec('auto');
+  }, [codecOk, videoCodec]);
+
+  const codecField = (
+    <Field
+      label="映像の方式"
+      hint={
+        !frameAccurate
+          ? 'この環境では選べません'
+          : videoCodec === 'auto'
+            ? 'おまかせ: どこでも再生できる H.264 の MP4 を優先'
+            : videoCodec === 'vp9'
+              ? 'WebM に入れます（iPhone の写真アプリでは再生できないことがあります）'
+              : videoCodec === 'avc'
+                ? 'MP4 に入れます（いちばんどこでも再生できる）'
+                : `MP4 に入れます（${VIDEO_CODEC_LABELS[videoCodec]} は同じ画質で小さくなりますが、古い端末・一部の SNS で再生できないことがあります）`
+      }
+    >
+      <div className="chip-row wrap">
+        {(['auto', 'avc', 'hevc', 'av1', 'vp9'] as VideoCodecChoice[]).map((codec) => {
+          const usable = codec === 'auto' || (frameAccurate && codecOk?.[codec] === true);
+          return (
+            <button
+              key={codec}
+              type="button"
+              className={videoCodec === codec ? 'chip active' : 'chip'}
+              disabled={running || !usable}
+              title={!usable ? (codecOk ? 'この端末・この大きさでは使えません' : '確かめています…') : undefined}
+              onClick={() => setVideoCodec(codec)}
+            >
+              {codec === 'auto' ? 'おまかせ' : VIDEO_CODEC_LABELS[codec]}
+              {codec !== 'auto' && codecOk && !codecOk[codec] ? '（不可）' : ''}
+            </button>
+          );
+        })}
+      </div>
+    </Field>
+  );
+
+  /** 音だけを書き出す（M4A / WAV）。 */
+  const runAudioOnly = async (kind: 'm4a' | 'wav') => {
+    setExtraBusy(kind);
+    setErrorCode(null);
+    setErrorMessage(null);
+    setNote(null);
+    try {
+      const out = await exportAudioOnly(sequence, duration, kind, {
+        finishAudio: frameAccurate && finishAudio,
+        onProgress: () => undefined,
+        isCancelled: () => false,
+      });
+      const filename = exportFilename(project.name, aspect, out.ext, new Date(), 'audio');
+      await saveBlob(out.blob, filename);
+      setNote([`${filename} を保存しました（音だけ・${formatBytes(out.blob.size)}）`, out.note].filter(Boolean).join(' / '));
+    } catch (e) {
+      setErrorCode('unknown');
+      setErrorMessage(e instanceof Error ? e.message : '音を書き出せませんでした');
+    } finally {
+      setExtraBusy(null);
+    }
+  };
+
+  /** 再生位置のコマを、書き出しと同じ大きさの PNG で保存する（サムネイル・表紙用）。 */
+  const saveStill = async () => {
+    setExtraBusy('png');
+    setErrorCode(null);
+    setErrorMessage(null);
+    setNote(null);
+    try {
+      await document.fonts?.ready;
+      const canvas = document.createElement('canvas');
+      canvas.width = size.width;
+      canvas.height = size.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('画像を作れませんでした');
+      const target = withoutCaption ? withoutCaptions(sequence) : sequence;
+      renderFrame(ctx, { ...target, aspect, width: size.width, height: size.height }, player.time, player.renderSources(), {
+        guides: false,
+        selectedIds: [],
+        settleStart: true,
+      });
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+      canvas.width = 0;
+      canvas.height = 0;
+      if (!blob) throw new Error('画像を作れませんでした');
+      const filename = exportFilename(project.name, aspect, 'png', new Date(), 'still');
+      await saveBlob(blob, filename);
+      setNote(`${filename} を保存しました（${size.width}×${size.height}）`);
+    } catch (e) {
+      setErrorCode('unknown');
+      setErrorMessage(e instanceof Error ? e.message : '画像を保存できませんでした');
+    } finally {
+      setExtraBusy(null);
+    }
+  };
 
   const estimatedBytes = useMemo(
     () =>
@@ -198,6 +315,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           bitrate: effectiveBitrate,
           videoQuality: videoQualityOf(effectiveSize),
           format,
+          videoCodec,
           finishAudio: frameAccurate && finishAudio,
           fast,
           tag: withoutCaption ? 'nosub' : undefined,
@@ -285,7 +403,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           project.name,
           variantSequence(sequence, variant.key),
           player,
-          { aspect, quality, fps, bitrate, videoQuality, format, finishAudio: frameAccurate && finishAudio, fast, tag: variant.tag },
+          { aspect, quality, fps, bitrate, videoQuality, format, videoCodec, finishAudio: frameAccurate && finishAudio, fast, tag: variant.tag },
           setProgress,
         );
         await saveBlob(output.blob, output.filename);
@@ -355,7 +473,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       void run({ sizeMode: 'small' });
       return;
     }
-    const nextQuality = quality > 480 ? (quality === 1080 ? 720 : 480) : quality;
+    const nextQuality = quality > 1080 ? 1080 : quality > 480 ? (quality === 1080 ? 720 : 480) : quality;
     const nextBitrate = Math.max(BITRATE_FLOOR, Math.round(bitrate / 2));
     setQuality(nextQuality);
     setBitrate(nextBitrate);
@@ -394,6 +512,11 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             onChange={(value) => !running && setQuality(Number(value))}
           />
         </Field>
+        {quality > 1080 && (
+          <p className="muted small">
+            4K（{size.width}×{size.height}）はとても重く、書き出しに時間がかかります。iPad ではメモリが足りずに止まることがあります（そのときは 1080p に）。
+          </p>
+        )}
 
         {easy ? (
           <details className="more-settings">
@@ -409,6 +532,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             onChange={(value) => !running && setFormat(value as typeof format)}
           />
         </Field>
+
+        {codecField}
 
         <Field label="フレームレート">
           <Segmented
@@ -456,6 +581,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             onChange={(value) => !running && setFormat(value as typeof format)}
           />
         </Field>
+
+        {codecField}
 
         <Field label="フレームレート">
           <Segmented
@@ -537,7 +664,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           </p>
         )}
 
-        {running ? (
+        {progress !== null ? (
           <>
             <div className="progress running">
               <span style={{ width: `${Math.round((progress ?? 0) * 100)}%` }} />
@@ -600,6 +727,28 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                 <Icon name="export" />
                 まとめて書き出す（{[...batchVariants.map((v) => v.label), ...(wantNote ? ['投稿メモ'] : [])].join('・') || 'なし'}）
               </button>
+            </section>
+            <section className="extra-export">
+              <span className="field-label">ほかの書き出し</span>
+              <div className="chip-row wrap">
+                <button
+                  type="button"
+                  disabled={!supported || duration <= 0 || running || m4aOk === false}
+                  title={m4aOk === false ? 'この端末では AAC で書き出せません（WAV を使ってください）' : undefined}
+                  onClick={() => void runAudioOnly('m4a')}
+                >
+                  {extraBusy === 'm4a' ? '書き出し中…' : m4aOk === false ? '音だけ（M4A・この端末では不可）' : '音だけ（M4A）'}
+                </button>
+                <button type="button" disabled={!supported || duration <= 0 || running} onClick={() => void runAudioOnly('wav')}>
+                  {extraBusy === 'wav' ? '書き出し中…' : '音だけ（WAV）'}
+                </button>
+                <button type="button" disabled={duration <= 0 || running} onClick={() => void saveStill()}>
+                  {extraBusy === 'png' ? '保存中…' : `今のコマを画像（PNG・${size.width}×${size.height}）`}
+                </button>
+              </div>
+              <span className="muted small">
+                音だけ: BGM やナレーションを別に使うとき・音だけ投稿するとき（M4A は小さく、WAV は音を別のソフトで仕上げる用）。画像: 再生位置のコマを、書き出しと同じ大きさで（サムネイル・表紙用）。
+              </span>
             </section>
           </>
         )}

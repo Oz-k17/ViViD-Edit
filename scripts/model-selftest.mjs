@@ -2199,6 +2199,21 @@ eq('空文字', wrap('', 10), ['']);
   check('間隔が 0 のときは変えない', P.pinchScale(1.2, 0, 50) === 1.2 && P.pinchScale(1.2, 50, 0) === 1.2);
 }
 
+{
+  // 音だけ書き出す（WAV）: 頭と 16bit の並び
+  let X = null;
+  try { X = await import('../src/engine/offline-export.ts'); } catch (e) { X = { error: e }; }
+  if (X.wavHeader) {
+    const h = new DataView(X.wavHeader(48000, 2, 48000));
+    const tag = (at) => String.fromCharCode(h.getUint8(at), h.getUint8(at + 1), h.getUint8(at + 2), h.getUint8(at + 3));
+    eq('WAV の頭: RIFF・WAVE・PCM 2ch 48kHz 16bit・中身の長さ', [tag(0), tag(8), h.getUint16(20, true), h.getUint16(22, true), h.getUint32(24, true), h.getUint16(34, true), h.getUint32(40, true), h.getUint32(4, true)], ['RIFF', 'WAVE', 1, 2, 48000, 16, 48000 * 4, 36 + 48000 * 4]);
+    const pcm = new DataView(X.toPcm16([new Float32Array([0, 1, -1, 2]), new Float32Array([0.5, -0.5, 0, -2])], 4));
+    eq('左右を交互に・はみ出しは切る', [0, 1, 2, 3, 4, 5, 6, 7].map((i) => pcm.getInt16(i * 2, true)), [0, 16383, 32767, -16384, -32768, 0, 32767, -32768]);
+  } else {
+    check('offline-export を読み込める（WAV の試験）', false, String(X.error).slice(0, 200));
+  }
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

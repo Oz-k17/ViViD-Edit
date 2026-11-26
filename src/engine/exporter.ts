@@ -15,6 +15,7 @@ import {
   FrameExportUnsupported,
   isFrameExportSupported,
   runFrameAccurateExport,
+  type VideoCodecChoice,
 } from './offline-export';
 import type { Player } from './player';
 import { withWebmDuration } from './webm';
@@ -28,6 +29,8 @@ export interface ExportSettings {
   /** Mbps */
   bitrate: number;
   format: 'auto' | 'mp4' | 'webm';
+  /** 映像の方式（H.264 / H.265 / AV1 / VP9）。'auto' か無ければ今まで通り。 */
+  videoCodec?: VideoCodecChoice;
   /** 音量を整える（試験的。高精度書き出しのときだけ効く）。 */
   finishAudio?: boolean;
   /** 高速エンコード（既定は切。高精度書き出しの WebM で、動きの激しい映像ほど効く）。 */
@@ -166,6 +169,7 @@ export class Exporter {
         fps: settings.fps,
         bitrate: Math.round(settings.bitrate * 1_000_000),
         format: settings.format,
+        videoCodec: settings.videoCodec,
         finishAudio: settings.finishAudio,
         fast: settings.fast,
         videoQuality: settings.videoQuality,

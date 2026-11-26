@@ -25,10 +25,12 @@ import {
   Mp4OutputFormat,
   Output,
   Quality,
+  BufferTarget,
   UrlSource,
   WebMOutputFormat,
   getFirstEncodableAudioCodec,
   getFirstEncodableVideoCodec,
+  canEncodeVideo,
   type AudioCodec,
   type OutputFormat,
   type VideoCodec,
@@ -64,6 +66,11 @@ export interface FrameExportOptions {
    */
   videoQuality?: number;
   format: 'auto' | 'mp4' | 'webm';
+  /**
+   * 映像の方式（コーデック）。'auto' は今まで通り（MP4 の H.264 → H.265 → WebM の順に、使えるもの）。
+   * 選んだときは、入れ物は方式に合わせる（H.264・H.265・AV1 は MP4、VP9 は WebM）。その端末で使えなければ書き出さずに知らせる。
+   */
+  videoCodec?: VideoCodecChoice;
   /** 書き出す音に音量仕上げ（-14 LUFS・-1 dBTP）を当てる（試験的）。 */
   finishAudio?: boolean;
   /** 大きい出力をファイルへ書き始める見込みサイズ（バイト）。試験用に変えられる。 */
@@ -147,6 +154,43 @@ interface PickedTarget {
   audioCodec: AudioCodec | null;
 }
 
+/** 選べる映像の方式。 */
+export type VideoCodecChoice = 'auto' | 'avc' | 'hevc' | 'av1' | 'vp9';
+export const VIDEO_CODEC_LABELS: Record<Exclude<VideoCodecChoice, 'auto'>, string> = {
+  avc: 'H.264',
+  hevc: 'H.265',
+  av1: 'AV1',
+  vp9: 'VP9',
+};
+
+/** この端末で、その大きさで書き出せる映像の方式（書き出しの画面で、使えないものを押せなくするため）。 */
+export async function encodableVideoCodecs(width: number, height: number): Promise<Record<Exclude<VideoCodecChoice, 'auto'>, boolean>> {
+  const result = { avc: false, hevc: false, av1: false, vp9: false };
+  if (!isFrameExportSupported()) return result;
+  await Promise.all(
+    (Object.keys(result) as (keyof typeof result)[]).map(async (codec) => {
+      try {
+        result[codec] = await canEncodeVideo(codec, { width, height, quality: new Quality({ bitrate: 8_000_000 }) });
+      } catch {
+        result[codec] = false;
+      }
+    }),
+  );
+  return result;
+}
+
+/** 音だけを M4A（AAC）で書き出せるか。 */
+export async function canExportM4a(): Promise<boolean> {
+  try {
+    return (await getFirstEncodableAudioCodec(['aac'], { numberOfChannels: CHANNELS, sampleRate: SAMPLE_RATE })) === 'aac';
+  } catch {
+    return false;
+  }
+}
+
+/** 選んだ方式が使えないとき（収録方式へは落とさず、そのまま知らせる）。 */
+export class CodecUnavailable extends Error {}
+
 async function pickTarget(
   prefer: 'auto' | 'mp4' | 'webm',
   width: number,
@@ -154,7 +198,43 @@ async function pickTarget(
   bitrate: number,
   needsAudio: boolean,
   streaming: boolean,
+  codec: VideoCodecChoice = 'auto',
 ): Promise<PickedTarget | null> {
+  if (codec !== 'auto') {
+    // 入れ物は方式に合わせる。H.265・AV1 も MP4 に入れる（iPhone・iPad の写真アプリと多くの SNS が読める）。
+    const makeMp4 = () => new Mp4OutputFormat({ fastStart: streaming ? (false as const) : ('in-memory' as const) });
+    const tries =
+      codec === 'vp9'
+        ? [{ make: () => new WebMOutputFormat(), ext: 'webm', audio: ['opus'] as AudioCodec[] }]
+        : [
+            { make: makeMp4, ext: 'mp4', audio: ['aac'] as AudioCodec[] },
+            { make: () => new WebMOutputFormat(), ext: 'webm', audio: ['opus'] as AudioCodec[] },
+          ];
+    let soundless: PickedTarget | null = null;
+    for (const t of tries) {
+      const format = t.make();
+      const supported = new Set<string>(format.getSupportedCodecs());
+      if (!supported.has(codec)) continue;
+      const ok = await canEncodeVideo(codec, { width, height, quality: new Quality({ bitrate }) }).catch(() => false);
+      if (!ok) break;
+      const audioCodec = await getFirstEncodableAudioCodec(
+        t.audio.filter((c) => supported.has(c)),
+        { numberOfChannels: CHANNELS, sampleRate: SAMPLE_RATE },
+      );
+      const picked: PickedTarget = { format, ext: t.ext, videoCodec: codec, audioCodec };
+      // 音のある作品なのに、この入れ物には音を載せられない（AAC の無いブラウザの MP4 など）ときは、次の入れ物を試す。
+      if (needsAudio && !audioCodec) {
+        soundless ??= picked;
+        continue;
+      }
+      return picked;
+    }
+    // どの入れ物でも音が載らないときだけ、映像だけで書き出す（呼び出し側が「音を入れられませんでした」と知らせる）。
+    if (soundless) return soundless;
+    throw new CodecUnavailable(
+      `この端末では ${VIDEO_CODEC_LABELS[codec]} で ${width}×${height} を書き出せません。映像の方式を「おまかせ」に戻すか、画質を下げてください`,
+    );
+  }
   const mp4 = {
     // ファイルへ書くときは目次（moov）を末尾に置く。先頭に置くには全部をメモリに溜める必要がある。
     make: () => new Mp4OutputFormat({ fastStart: streaming ? (false as const) : ('in-memory' as const) }),
@@ -689,6 +769,7 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
     options.bitrate,
     mixer !== null,
     streaming,
+    options.videoCodec ?? 'auto',
   );
   if (!picked) throw new FrameExportUnsupported('この環境では書き出しに使えるコーデックが見つかりませんでした');
 
@@ -986,3 +1067,124 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
     dropped: realtime ? Math.max(0, totalFrames - packets) : 0,
   };
 }
+
+// ---------- 音だけ書き出す ----------
+
+export interface AudioOnlyOutput {
+  blob: Blob;
+  mimeType: string;
+  ext: string;
+  note?: string;
+}
+
+/** 16bit の WAV の頭（44 バイト）。 */
+export function wavHeader(samples: number, channels: number, sampleRate: number): ArrayBuffer {
+  const bytes = samples * channels * 2;
+  const buffer = new ArrayBuffer(44);
+  const v = new DataView(buffer);
+  const text = (at: number, t: string) => {
+    for (let i = 0; i < t.length; i += 1) v.setUint8(at + i, t.charCodeAt(i));
+  };
+  text(0, 'RIFF');
+  v.setUint32(4, 36 + bytes, true);
+  text(8, 'WAVE');
+  text(12, 'fmt ');
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, channels, true);
+  v.setUint32(24, sampleRate, true);
+  v.setUint32(28, sampleRate * channels * 2, true);
+  v.setUint16(32, channels * 2, true);
+  v.setUint16(34, 16, true);
+  text(36, 'data');
+  v.setUint32(40, bytes, true);
+  return buffer;
+}
+
+/** 音の区間を、16bit の交互並び（左右左右…）にする。 */
+export function toPcm16(channels: Float32Array[], length: number): ArrayBuffer {
+  const n = channels.length;
+  const out = new DataView(new ArrayBuffer(length * n * 2));
+  for (let i = 0; i < length; i += 1) {
+    for (let c = 0; c < n; c += 1) {
+      const x = Math.max(-1, Math.min(1, channels[c][i] ?? 0));
+      out.setInt16((i * n + c) * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+    }
+  }
+  return out.buffer;
+}
+
+/**
+ * タイムラインの音だけを書き出す（BGM・ナレーションの差し替え用、音だけの投稿用）。
+ * - 'm4a': AAC（192kbps）。どこでも再生でき、小さい
+ * - 'wav': 16bit の非圧縮。音を別のソフトで仕上げるとき用
+ * 区間ごとに作って足していくので、長い動画でもメモリは区間ぶんで済む。音量仕上げは、書き出しと同じく短い動画だけ。
+ */
+export async function exportAudioOnly(
+  sequence: Sequence,
+  duration: number,
+  kind: 'm4a' | 'wav',
+  options: { finishAudio?: boolean; onProgress: (ratio: number) => void; isCancelled: () => boolean },
+): Promise<AudioOnlyOutput> {
+  const mixer = await createAudioMixer(sequence, duration);
+  if (!mixer) throw new Error('タイムラインに音がありません（音のある動画か、音声を置いてください）');
+  let note: string | undefined;
+  try {
+    // 書き出す区間の並び（音量仕上げをするときは全長を 1 本で）。
+    let whole: AudioBuffer | null = null;
+    if (options.finishAudio && duration <= FINISH_AUDIO_MAX_SECONDS) {
+      const rendered = await mixer.renderSegment(0, mixer.length);
+      try {
+        const finished = finishMix(rendered);
+        whole = finished.buffer;
+        note = `音量を整えました: ${finished.report.summary}`;
+      } catch {
+        whole = rendered;
+        note = '音量を整えられなかったので、そのまま書き出しました';
+      }
+    }
+    const step = AUDIO_SEGMENT_SECONDS * SAMPLE_RATE;
+    const segments = async function* () {
+      if (whole) {
+        yield whole;
+        return;
+      }
+      for (let from = 0; from < mixer.length; from += step) {
+        if (options.isCancelled()) throw new Error('書き出しを中止しました');
+        yield await mixer.renderSegment(from, Math.min(step, mixer.length - from));
+        options.onProgress(Math.min(0.99, (from + step) / mixer.length));
+      }
+    };
+
+    if (kind === 'wav') {
+      const parts: BlobPart[] = [];
+      let total = 0;
+      let channels = CHANNELS;
+      for await (const buffer of segments()) {
+        channels = buffer.numberOfChannels;
+        const data = Array.from({ length: channels }, (_, c) => buffer.getChannelData(c));
+        parts.push(toPcm16(data, buffer.length));
+        total += buffer.length;
+      }
+      options.onProgress(1);
+      return { blob: new Blob([wavHeader(total, channels, SAMPLE_RATE), ...parts], { type: 'audio/wav' }), mimeType: 'audio/wav', ext: 'wav', note };
+    }
+
+    const format = new Mp4OutputFormat({ fastStart: 'in-memory' });
+    const codec = await getFirstEncodableAudioCodec(['aac'], { numberOfChannels: CHANNELS, sampleRate: SAMPLE_RATE });
+    if (!codec) throw new Error('この端末では AAC で書き出せません。WAV を使ってください');
+    const target = new BufferTarget();
+    const output = new Output({ format, target });
+    const source = new AudioBufferSource({ codec, quality: new Quality({ bitrate: 192_000 }) });
+    output.addAudioTrack(source);
+    await output.start();
+    for await (const buffer of segments()) await source.add(buffer);
+    await output.finalize();
+    options.onProgress(1);
+    if (!target.buffer) throw new Error('音を書き出せませんでした');
+    return { blob: new Blob([target.buffer], { type: 'audio/mp4' }), mimeType: 'audio/mp4', ext: 'm4a', note };
+  } finally {
+    mixer.dispose();
+  }
+}
+
