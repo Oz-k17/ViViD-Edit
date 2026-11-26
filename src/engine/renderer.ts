@@ -7,6 +7,9 @@
 import { CROP_CORNERS, CROP_HANDLES, handlePoint, handleRect, handleSizeFor, selectionRect, type CropHandle } from './crop';
 import { clipAtTime, previousAdjacent } from '../model/ops';
 import { effectIntensity, effectMotion } from '../model/effects';
+import { karaokeChars, karaokeCut, karaokeProgress, karaokeWithin } from '../model/karaoke';
+import { animatedClipAt } from '../model/keyframes';
+import { gradeFrame } from './colorPass';
 import {
   clipEnd,
   contentAtomCount,
@@ -357,9 +360,19 @@ function drawVisualClip(
   extraAlpha: number,
   offsetX = 0,
 ) {
-  const frame = dc.sources.frameFor(clip);
-  const size = dc.sources.sizeFor(clip);
-  if (!frame || !size) return;
+  // キーフレームがあれば、この時刻の大きさ・位置・濃さ・回転に置き換えてから描く。
+  clip = animatedClipAt(clip, time);
+  const rawFrame = dc.sources.frameFor(clip);
+  const rawSize = dc.sources.sizeFor(clip);
+  if (!rawFrame || !rawSize) return;
+  // 色調整があれば、描く大きさまで縮めた絵の色を先に変える（`engine/colorPass.ts`）。
+  // 範囲指定中は元の色で見せる（どこを切るか選ぶ間に色が変わると選びにくい）。
+  const graded =
+    clip.color && dc.cropTarget !== clip.id
+      ? gradeFrame(rawFrame, rawSize, clip.color, Math.max(dc.sequence.width, dc.sequence.height) * dc.pixelScale)
+      : null;
+  const frame: CanvasImageSource = graded ? graded.canvas : rawFrame;
+  const size = graded ? { width: graded.width, height: graded.height } : rawSize;
 
   const local = time - clip.start;
   const env = fadeEnvelope(local, clip.duration, clip.fadeIn, clip.fadeOut);
@@ -708,6 +721,7 @@ function drawTextClip(
   sources: RenderSources,
   settleStart = false,
 ) {
+  clip = animatedClipAt(clip, time);
   const text = clip.text;
   if (!text) return;
   const local = time - clip.start;
@@ -811,6 +825,14 @@ function drawTextClip(
   // 絵文字とテキストをトークンごとに手で並べていくため、canvas 側の揃えは使わず常に left 基準で描く。
   ctx.textAlign = 'left';
 
+  // カラオケ: いま何文字ぶん塗るか。時刻はテロップの頭から（分割した右側も、元の続きから塗る）。
+  const karaoke = text.karaoke ?? null;
+  const karaokeTotal = karaoke
+    ? allSegments.reduce((n, seg) => n + ('text' in seg ? karaokeChars(seg.text) : 0), 0)
+    : 0;
+  const karaokeAt = karaoke ? karaokeProgress(karaoke, shown + (clip.sourceIn || 0), karaokeTotal) : 0;
+  let karaokeSeen = 0;
+
   lines.forEach((line, i) => {
     const y = -blockHeight / 2 + bodyOffsetY + i * lineHeight + lineHeight / 2;
     const w = widths[i];
@@ -857,6 +879,24 @@ function drawTextClip(
         ctx.fillStyle = text.color;
       }
       ctx.fillText(token.text, x, y);
+      if (karaoke) {
+        const within = karaokeWithin(token.text, karaokeSeen, karaokeAt);
+        karaokeSeen += karaokeChars(token.text);
+        if (within > 0) {
+          // 塗り終えた所までを切り抜いて、同じ字を話した色で重ねる。字の途中でも切るので、なめらかに進む。
+          const chars = [...token.text];
+          const cut = karaokeCut(token.text, within);
+          const full = ctx.measureText(chars.slice(0, cut.index).join('')).width;
+          const part = cut.index < chars.length ? ctx.measureText(chars[cut.index]).width * cut.fraction : 0;
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(x, y - lineHeight, full + part, lineHeight * 2);
+          ctx.clip();
+          ctx.fillStyle = karaoke.color;
+          ctx.fillText(token.text, x, y);
+          ctx.restore();
+        }
+      }
       x += ctx.measureText(token.text).width;
     }
   });
@@ -1152,8 +1192,9 @@ export function renderFrame(
 
   // 選択中クリップの枠（クロップ中は切り抜きの配置枠を出す）
   for (const id of selected) {
-    const clip = sequence.clips.find((c) => c.id === id);
-    if (!clip) continue;
+    const found = sequence.clips.find((c) => c.id === id);
+    if (!found) continue;
+    const clip = animatedClipAt(found, time);
     if (time < clip.start || time >= clipEnd(clip)) continue;
     if (clip.crop.enabled && clip.kind !== 'text') {
       // 切り抜いた絵を置く枠。ここは動かすだけでなく、つまみで大きさも変えられる。

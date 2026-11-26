@@ -36,10 +36,24 @@ import {
 } from 'mediabunny';
 import { VIDEO_INPUT_FORMATS } from './formats';
 import { mediaRegistry } from './media';
+import { buildSoundChain } from './soundChain';
+import { duckPointsFor, measureVoiceLevels } from './ducking';
+import { duckGainAt, ducks, planSoundChain, type GainPoint as DuckPoint, type SoundStage } from '../model/sound';
 import { renderFrame, type RenderSources } from './renderer';
+import { SmartMuxer, scanSmartSource } from './smartRender';
+import { planSmartRender, untouchedFrameAt, type SmartPlan, type SmartSegment, type SmartSourceInfo } from '../model/smartRender';
 import { previousAdjacent } from '../model/ops';
 import { sourceTimeAt, type Clip, type Sequence } from '../model/types';
 
+
+/**
+ * 画質で決めるときのビットレートの目安（`exporter.ts` の estimateQualityBitrate と同じ式）。
+ * スマートレンダーの書き直す区間は、自分で VideoEncoder を使うので、画質ではなくビットレートで渡す。
+ */
+function qualityBitrate(width: number, height: number, level: number): number {
+  const scale = Math.pow((width * height) / (1920 * 1080), 0.95);
+  return Math.ceil((3_000_000 * scale * 0.3 * Math.exp(2.5538 * level)) / 1000) * 1000;
+}
 
 const SAMPLE_RATE = 48_000;
 const CHANNELS = 2;
@@ -78,9 +92,17 @@ export interface FrameExportOptions {
    * エンコーダが追いつかずコマを落としたら、自動で通常モードでやり直す。
    */
   fast?: boolean;
+  /**
+   * スマートレンダー（既定は入り）。手を加えていない区間は、素材の H.264 をそのまま写す（`model/smartRender.ts`）。
+   * MP4（H.264）で 1 本だけ書き出すときにだけ効く。写せる所が無ければ、ふつうに書き出す。
+   */
+  smartRender?: boolean;
   onProgress: (ratio: number) => void;
   isCancelled: () => boolean;
 }
+
+/** スマートレンダーの途中で失敗した（呼ぶ側は、写さずに書き出し直す）。 */
+class SmartRenderFailed extends Error {}
 
 export interface FrameExportOutput {
   blob: Blob;
@@ -387,6 +409,10 @@ interface AudioJob {
   gain: GainPoints;
   /** ループするクリップは素材の頭から繰り返す（素材の全体が要る）。 */
   loop: { start: number } | null;
+  /** 音の仕上げ（声をくっきり・唸りとハム）。プレビューと同じ並び。 */
+  stages: SoundStage[];
+  /** BGM を声の間だけ下げる折れ線（タイムラインの秒）。下げないなら null。 */
+  duck: DuckPoint[] | null;
 }
 
 /** 区間ごとに作れるミキサー。全長を 1 本のバッファにせず、30 秒ずつなど必要な所だけ作る。 */
@@ -417,6 +443,10 @@ export async function createAudioMixer(sequence: Sequence, duration: number): Pr
   if (sounding.length === 0) return null;
   const trackById = new Map(sequence.tracks.map((t) => [t.id, t]));
 
+  // 声の間だけ下げる BGM があれば、先に声の大きさを測っておく（プレビューと同じ決め方）。
+  const voiceLevels = sounding.some((c) => ducks(c.sound)) ? await measureVoiceLevels(sequence, duration) : null;
+  const duckOf = (clip: Clip) => (ducks(clip.sound) ? duckPointsFor(voiceLevels, clip.sound?.duckDb ?? 0) : null);
+
   const jobs: AudioJob[] = [];
   for (const clip of sounding) {
     if (clip.muted || trackById.get(clip.trackId)?.muted) continue;
@@ -445,6 +475,8 @@ export async function createAudioMixer(sequence: Sequence, duration: number): Pr
       speed,
       gain,
       loop: clip.loop ? { start: clip.sourceIn } : null,
+      stages: planSoundChain(clip.sound),
+      duck: duckOf(clip),
     });
   }
 
@@ -473,6 +505,8 @@ export async function createAudioMixer(sequence: Sequence, duration: number): Pr
         { t: clip.start + span, v: 0 },
       ],
       loop: null,
+      stages: planSoundChain(previous.sound),
+      duck: duckOf(previous),
     });
   }
   if (jobs.length === 0) return null;
@@ -567,8 +601,27 @@ export async function createAudioMixer(sequence: Sequence, duration: number): Pr
       source.buffer = buffer;
       source.playbackRate.value = speed;
       const gain = ctx.createGain();
-      source.connect(gain);
-      gain.connect(ctx.destination);
+      // 音の仕上げ → 音量 → （BGM なら）声の間だけ下げる、の順につなぐ。
+      const chain = buildSoundChain(ctx, job.stages);
+      if (chain) {
+        source.connect(chain.input);
+        chain.output.connect(gain);
+      } else {
+        source.connect(gain);
+      }
+      if (job.duck) {
+        const duckGain = ctx.createGain();
+        gain.connect(duckGain);
+        duckGain.connect(ctx.destination);
+        const p = duckGain.gain;
+        p.setValueAtTime(duckGainAt(job.duck, at), at - t0);
+        for (const point of job.duck) {
+          if (point.time > at && point.time < at + wall) p.linearRampToValueAtTime(point.gain, point.time - t0);
+        }
+        p.linearRampToValueAtTime(duckGainAt(job.duck, at + wall), at + wall - t0);
+      } else {
+        gain.connect(ctx.destination);
+      }
       // 音量: 折れ線を、この区間内の時刻（区間の先頭が 0 秒）に写して予約する。
       const param = gain.gain;
       param.setValueAtTime(gainAt(job.gain, at), at - t0);
@@ -620,23 +673,53 @@ function sliceAudio(source: AudioBuffer, fromSample: number, sampleCount: number
 // ---------- 本体 ----------
 
 export async function runFrameAccurateExport(options: FrameExportOptions): Promise<FrameExportOutput> {
-  const fast = options.fast === true;
-  const first = await runPass(options, fast);
-  const { dropped = 0, ...output } = first;
-  if (fast && dropped > 0) {
-    // 高速モードで、エンコーダが追いつかずにコマを落とした。コマ落ちのある動画は渡さず、通常モードでやり直す。
-    const retry = await runPass(options, false);
-    const { dropped: _ignored, ...redone } = retry;
-    return {
-      ...redone,
-      note: [redone.note, `高速モードでコマが ${dropped} 個落ちたので、通常モードで書き出し直しました`].filter(Boolean).join(' / '),
-    };
-  }
+  const [output] = await runFrameAccurateExportMany(options, [options.sequence]);
   return output;
 }
 
-async function runPass(options: FrameExportOptions, fast: boolean): Promise<FrameExportOutput> {
-  const { sequence, fps, duration, onProgress, isCancelled } = options;
+/**
+ * 同じタイムラインの版を、**素材を 1 回読み解くだけで**まとめて書き出す（字幕あり・字幕なしなど）。
+ *
+ * 書き出しの時間の大半（lab/export-cost の測定で 86%）は素材の読み解き（デコード）で、
+ * 版ごとに書き出すと、それを版の数だけ払っていた。1 コマ読んだら版の数だけ絵を描き、
+ * それぞれの出力へ書くので、2 本でも読み解きは 1 回で済む。
+ *
+ * 版どうしは**映像と音のクリップが同じ**であること（違うのは文字だけ）。音も 1 回だけ作って両方へ流す。
+ * 返す順は `sequences` と同じ。
+ */
+export async function runFrameAccurateExportMany(
+  options: FrameExportOptions,
+  sequences: Sequence[],
+): Promise<FrameExportOutput[]> {
+  const fast = options.fast === true;
+  let first: FrameExportOutput[];
+  try {
+    first = await runPass(options, fast, sequences);
+  } catch (error) {
+    if (!(error instanceof SmartRenderFailed) || options.isCancelled()) throw error;
+    // 写して組む途中で失敗した。写さずに、ふつうに書き出し直す（理由は結果に添える）。
+    const redone = await runPass({ ...options, smartRender: false }, fast, sequences);
+    return redone.map(({ dropped: _ignored, ...output }) => ({
+      ...output,
+      note: [output.note, `元の動画をそのまま使う書き出しができなかったので、全部を書き直しました（${error.message}）`].filter(Boolean).join(' / '),
+    }));
+  }
+  const dropped = first.reduce((max, o) => Math.max(max, o.dropped ?? 0), 0);
+  if (fast && dropped > 0) {
+    // 高速モードで、エンコーダが追いつかずにコマを落とした。コマ落ちのある動画は渡さず、通常モードでやり直す。
+    const retry = await runPass(options, false, sequences);
+    return retry.map(({ dropped: _ignored, ...redone }) => ({
+      ...redone,
+      note: [redone.note, `高速モードでコマが ${dropped} 個落ちたので、通常モードで書き出し直しました`].filter(Boolean).join(' / '),
+    }));
+  }
+  return first.map(({ dropped: _ignored, ...output }) => output);
+}
+
+async function runPass(options: FrameExportOptions, fast: boolean, sequences: Sequence[]): Promise<FrameExportOutput[]> {
+  const { fps, duration, onProgress, isCancelled } = options;
+  // 音と、読み解く素材の並びは、最初の版で決める（版どうしで違うのは文字だけ）。
+  const sequence = sequences[0];
   if (!isFrameExportSupported()) {
     throw new FrameExportUnsupported('この環境では WebCodecs が使えません');
   }
@@ -692,45 +775,102 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
   );
   if (!picked) throw new FrameExportUnsupported('この環境では書き出しに使えるコーデックが見つかりませんでした');
 
-  const canvas = document.createElement('canvas');
-  canvas.width = sequence.width;
-  canvas.height = sequence.height;
-  const ctx = canvas.getContext('2d', { alpha: false });
-  if (!ctx) throw new Error('キャンバスを初期化できませんでした');
-
-  const sink = await openExportSink(estimateBytes, picked.ext, fileThreshold);
-  if (sink.wantedFile && sink.kind === 'memory') {
-    const mb = Math.round(estimateBytes / 1024 / 1024);
-    note = [
-      note,
-      `出力が大きい（約 ${mb}MB）のに、この環境ではファイルへ逃がせないため、メモリ上で書き出します。途中で止まるときは、長さを分けるか画質を下げてください`,
-    ]
-      .filter(Boolean)
-      .join(' / ');
-  }
-  const output = new Output({ format: picked.format, target: sink.target });
-  let packets = 0;
   const realtime = fast && picked.videoCodec !== 'avc' && picked.videoCodec !== 'hevc';
-  const videoSource = new CanvasSource(canvas, {
-    codec: picked.videoCodec,
-    quality:
-      options.videoQuality !== undefined
-        ? new Quality({ quality: options.videoQuality })
-        : new Quality({ bitrate: options.bitrate }),
-    keyFrameInterval: 2,
-    latencyMode: realtime ? 'realtime' : 'quality',
-    // 出力に入ったコマを数えておく（高速モードで落とされていないかの確認用）。
-    onEncodedPacket: () => {
-      packets += 1;
-    },
-  });
-  output.addVideoTrack(videoSource, { frameRate: fps });
 
-  const audioSource =
-    mixer && picked.audioCodec
-      ? new AudioBufferSource({ codec: picked.audioCodec, quality: new Quality({ bitrate: 128_000 }) })
-      : null;
-  if (audioSource) output.addAudioTrack(audioSource);
+  // スマートレンダー: 1 本だけ・MP4（H.264）のとき、手を加えていない区間を探す。
+  const encodeBitrate = options.videoQuality !== undefined ? qualityBitrate(sequence.width, sequence.height, options.videoQuality) : options.bitrate;
+  let smartPlan: SmartPlan | null = null;
+  if (options.smartRender !== false && sequences.length === 1 && picked.ext === 'mp4' && picked.videoCodec === 'avc') {
+    const untouched = Array.from({ length: totalFrames }, (_, i) => untouchedFrameAt(sequence, i / fps));
+    const mediaIds = [...new Set(untouched.flatMap((f) => ('mediaId' in f ? [f.mediaId] : [])))];
+    if (mediaIds.length > 0 && (await SmartMuxer.supported(sequence.width, sequence.height, fps, encodeBitrate))) {
+      const sources = new Map<string, SmartSourceInfo | null>();
+      for (const id of mediaIds) sources.set(id, await scanSmartSource(id));
+      const plan = planSmartRender(untouched, sources, { width: sequence.width, height: sequence.height, fps });
+      if (plan.copiedFrames > 0) smartPlan = plan;
+    }
+  }
+  /** コマごとに、写す区間か（写す区間のコマは読み解かない）。 */
+  const copyAt: (SmartSegment & { kind: 'copy' })[] = [];
+  if (smartPlan) {
+    for (const segment of smartPlan.segments) {
+      if (segment.kind !== 'copy') continue;
+      for (let f = segment.startFrame; f < segment.endFrame; f += 1) copyAt[f] = segment;
+    }
+  }
+
+  /** 版ごとの出口（描くキャンバス・出力・映像と音の入口）。 */
+  interface Lane {
+    sequence: Sequence;
+    canvas: HTMLCanvasElement;
+    ctx: CanvasRenderingContext2D;
+    sink: Awaited<ReturnType<typeof openExportSink>>;
+    output: Output;
+    /** ふつうの書き出しの映像の入口（スマートレンダーのときは null）。 */
+    videoSource: CanvasSource | null;
+    /** スマートレンダーの映像の入口。 */
+    smart: SmartMuxer | null;
+    audioSource: AudioBufferSource | null;
+    packets: number;
+  }
+  const lanes: Lane[] = [];
+  const releaseLanes = () => {
+    for (const lane of lanes) {
+      // 書き出し用のキャンバスの領域を返す（iOS の WebKit は、たまると新しいキャンバスを作れなくなる）。
+      lane.canvas.width = 0;
+      lane.canvas.height = 0;
+    }
+  };
+  try {
+    for (const variant of sequences) {
+      const canvas = document.createElement('canvas');
+      canvas.width = variant.width;
+      canvas.height = variant.height;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      if (!ctx) throw new Error('キャンバスを初期化できませんでした');
+      const sink = await openExportSink(estimateBytes, picked.ext, fileThreshold);
+      if (sink.wantedFile && sink.kind === 'memory' && lanes.length === 0) {
+        const mb = Math.round(estimateBytes / 1024 / 1024);
+        note = [
+          note,
+          `出力が大きい（約 ${mb}MB）のに、この環境ではファイルへ逃がせないため、メモリ上で書き出します。途中で止まるときは、長さを分けるか画質を下げてください`,
+        ]
+          .filter(Boolean)
+          .join(' / ');
+      }
+      const output = new Output({ format: picked.format, target: sink.target });
+      const lane = { sequence: variant, canvas, ctx, sink, output, packets: 0, smart: null, videoSource: null } as Lane;
+      if (smartPlan) {
+        lane.smart = new SmartMuxer(variant.width, variant.height, fps, encodeBitrate);
+        output.addVideoTrack(lane.smart.source, { frameRate: fps });
+      } else {
+      lane.videoSource = new CanvasSource(canvas, {
+        codec: picked.videoCodec,
+        quality:
+          options.videoQuality !== undefined
+            ? new Quality({ quality: options.videoQuality })
+            : new Quality({ bitrate: options.bitrate }),
+        keyFrameInterval: 2,
+        latencyMode: realtime ? 'realtime' : 'quality',
+        // 出力に入ったコマを数えておく（高速モードで落とされていないかの確認用）。
+        onEncodedPacket: () => {
+          lane.packets += 1;
+        },
+      });
+      output.addVideoTrack(lane.videoSource, { frameRate: fps });
+      }
+      lane.audioSource =
+        mixer && picked.audioCodec
+          ? new AudioBufferSource({ codec: picked.audioCodec, quality: new Quality({ bitrate: 128_000 }) })
+          : null;
+      if (lane.audioSource) output.addAudioTrack(lane.audioSource);
+      lanes.push(lane);
+    }
+  } catch (error) {
+    for (const lane of lanes) await lane.sink.discard();
+    releaseLanes();
+    throw error;
+  }
 
   // クリップごとに、必要なフレームの素材内時刻をあらかじめ並べておく。
   // 昇順に並んでいれば mediabunny 側がデコードを 1 パスで済ませてくれる。
@@ -748,8 +888,12 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
   const streams = new Map<string, ClipStream>();
 
   for (let i = 0; i < totalFrames; i += 1) {
+    // 写す区間のコマは、読み解かない（そこがスマートレンダーで速くなる所）。
+    if (copyAt[i]) continue;
     const time = i / fps;
-    for (const clip of visibleVideoClips(sequence, time)) {
+    const seen = new Set<string>();
+    const visible = sequences.flatMap((variant) => visibleVideoClips(variant, time)).filter((c) => !seen.has(c.id) && !!seen.add(c.id));
+    for (const clip of visible) {
       if (!clip.mediaId) continue;
       let stream = streams.get(clip.id);
       if (!stream) {
@@ -878,7 +1022,7 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
 
   let audioFailed = false;
   try {
-    await output.start();
+    for (const lane of lanes) await lane.output.start();
 
     const mixLength = mixer?.length ?? 0;
     let audioSamplesSent = 0;
@@ -903,14 +1047,15 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
     };
 
     const pushAudioUpTo = async (seconds: number) => {
-      if (!mixer || !audioSource) return;
+      if (!mixer || !lanes[0].audioSource) return;
       const wanted = Math.min(mixLength, Math.ceil(seconds * SAMPLE_RATE));
       while (audioSamplesSent < wanted) {
         const current = await segmentAt(audioSamplesSent);
         const inSegment = current.from + current.buffer.length - audioSamplesSent;
         const count = Math.min(chunkSamples, mixLength - audioSamplesSent, inSegment);
         if (count <= 0) break;
-        await audioSource.add(sliceAudio(current.buffer, audioSamplesSent - current.from, count));
+        // 音は版どうしで同じなので、同じ区間を全部の出力へ流す。
+        for (const lane of lanes) await lane.audioSource?.add(sliceAudio(current.buffer, audioSamplesSent - current.from, count));
         audioSamplesSent += count;
       }
     };
@@ -918,6 +1063,23 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
     for (let i = 0; i < totalFrames; i += 1) {
       if (isCancelled()) throw new Error('書き出しを中止しました');
       const time = i / fps;
+
+      const copy = copyAt[i];
+      if (copy) {
+        // 写す区間: 頭で一度に写し、区間の残りのコマは飛ばす。
+        if (i === copy.startFrame) {
+          for (const lane of lanes) {
+            try {
+              await lane.smart?.copyRun(copy.mediaId, copy.sourceStart, copy.sourceEnd, copy.startFrame / fps);
+            } catch (error) {
+              throw new SmartRenderFailed(error instanceof Error ? error.message : String(error));
+            }
+          }
+        }
+        await pushAudioUpTo(time + AUDIO_CHUNK_SECONDS * 2);
+        onProgress((i + 1) / totalFrames);
+        continue;
+      }
 
       // このフレームで要る素材フレームを取り出す。取り出せるまで待つので、
       // 端末が遅くても「間に合わなかった」コマは発生しない。
@@ -939,7 +1101,8 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
         else advanced.push(stream);
       }
 
-      renderFrame(ctx, sequence, time, sources, { guides: false, selectedIds: [] });
+      // 読んだコマで、版の数だけ絵を描く（読み解きは 1 回）。
+      for (const lane of lanes) renderFrame(lane.ctx, lane.sequence, time, sources, { guides: false, selectedIds: [] });
       // 次のコマのデコードを、エンコードを待つあいだに先に進めておく（描画は済んだので、キャンバスを渡してよい）。
       // デコードとエンコードを直列に待つと、どちらかが必ず遊んでしまう。
       for (const stream of advanced) {
@@ -947,7 +1110,17 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
           ?.next()
           .catch(() => ({ done: true, value: undefined }) as IteratorResult<WrappedCanvas | null, void>);
       }
-      await videoSource.add(time, 1 / fps);
+      for (const lane of lanes) {
+        if (lane.smart) {
+          try {
+            await lane.smart.encode(lane.canvas, i);
+          } catch (error) {
+            throw new SmartRenderFailed(error instanceof Error ? error.message : String(error));
+          }
+        } else {
+          await lane.videoSource?.add(time, 1 / fps);
+        }
+      }
       // 映像より少し先まで音を流し込んでおく（多重化のバッファを膨らませないため）。
       await pushAudioUpTo(time + AUDIO_CHUNK_SECONDS * 2);
 
@@ -955,21 +1128,34 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
     }
 
     await pushAudioUpTo(Number.POSITIVE_INFINITY);
-    await output.finalize();
+    for (const lane of lanes) {
+      if (!lane.smart) continue;
+      try {
+        await lane.smart.finish();
+      } catch (error) {
+        throw new SmartRenderFailed(error instanceof Error ? error.message : String(error));
+      }
+    }
+    for (const lane of lanes) await lane.output.finalize();
   } catch (error) {
-    if (output.state === 'started' || output.state === 'pending') await output.cancel().catch(() => undefined);
-    await sink.discard();
+    for (const lane of lanes) {
+      if (lane.output.state === 'started' || lane.output.state === 'pending') await lane.output.cancel().catch(() => undefined);
+      await lane.sink.discard();
+    }
     throw error;
   } finally {
     cleanup.forEach((fn) => fn());
     mixer?.dispose();
-    // 書き出し用のキャンバスの領域を返す（iOS の WebKit は、たまると新しいキャンバスを作れなくなる）。
-    canvas.width = 0;
-    canvas.height = 0;
+    for (const lane of lanes) lane.smart?.dispose();
+    releaseLanes();
+  }
+  if (smartPlan) {
+    const seconds = smartPlan.copiedFrames / fps;
+    note = [note, `手を加えていない ${seconds.toFixed(1)} 秒ぶん（全体の ${Math.round((smartPlan.copiedFrames / smartPlan.totalFrames) * 100)}%）は、元の動画をそのまま使いました（書き直しなし）`]
+      .filter(Boolean)
+      .join(' / ');
   }
 
-  const mimeType = await output.getMimeType();
-  const blob = await sink.finish(mimeType);
   // 音のあるプロジェクトなのに音を載せられなかった場合は、黙って無音の動画を渡さない。
   let warning: string | undefined;
   if (soundingClips(sequence) > 0) {
@@ -977,12 +1163,18 @@ async function runPass(options: FrameExportOptions, fast: boolean): Promise<Fram
     else if (!picked.audioCodec) warning = `この環境では ${picked.ext.toUpperCase()} に音を入れられませんでした。`;
     else if (audioFailed) warning = '一部の区間で音を作れず、その間は無音になっています。';
   }
-  return {
-    blob,
-    mimeType,
-    ext: picked.ext,
-    warning,
-    note,
-    dropped: realtime ? Math.max(0, totalFrames - packets) : 0,
-  };
+  const results: FrameExportOutput[] = [];
+  for (const lane of lanes) {
+    const mimeType = await lane.output.getMimeType();
+    const blob = await lane.sink.finish(mimeType);
+    results.push({
+      blob,
+      mimeType,
+      ext: picked.ext,
+      warning,
+      note,
+      dropped: realtime && !lane.smart ? Math.max(0, totalFrames - lane.packets) : 0,
+    });
+  }
+  return results;
 }

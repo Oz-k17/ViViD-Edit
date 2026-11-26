@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MutableRefObject, type SyntheticEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type MutableRefObject, type SyntheticEvent } from 'react';
 import { EMOJI_FOLDER, formatTime, mediaRegistry } from '../../engine/media';
 import { player } from '../../engine/player';
 import { canvasFilterSupported, defaultCrop, unsupportedEffectTypes } from '../../engine/renderer';
@@ -67,8 +67,26 @@ import { ButtonField, ColorInput, EmptyHint, Field, MuteIcon, Panel, Segmented, 
 import { importFiles, useMediaAssets } from './MediaPanel';
 import { Icon } from '../Icon';
 import { AnalysisSection } from './AnalysisSection';
+import { ColorSection } from './ColorSection';
 import { LearnedNote, useCaptionLearning } from './useCaptionLearning';
 import { applyDictionary, mergeCounts } from '../../model/dictionary';
+import { KARAOKE_DEFAULT_COLOR } from '../../model/karaoke';
+import {
+  ANIM_PROPS,
+  EASE_LABELS,
+  animValueAt,
+  clearKeys,
+  isAnimated,
+  kenBurns,
+  keyIndexAt,
+  neighborKeyTime,
+  setEaseAt,
+  toggleKeyAt,
+  writeAnimated,
+  type AnimProp,
+  type Ease,
+} from '../../model/keyframes';
+import type { SoundFx } from '../../model/sound';
 import { TRANSITION_ICON } from './transitionIcon';
 import { TransitionHint, TransitionName } from './TransitionPicker';
 import { Hint } from '../Hint';
@@ -200,6 +218,209 @@ function useClipPatch(clip: Clip) {
     );
 }
 
+const noSubscribe = () => () => {};
+
+/** キーフレームを持つクリップのときだけ再生位置を追う（持たなければ、止めた位置の値で足りる）。 */
+function useAnimTime(clip: Clip): number {
+  return useSyncExternalStore(clip.anim ? player.subscribeTime : noSubscribe, player.getTime, player.getTime);
+}
+
+/**
+ * ◆ キーフレームのボタン。押すと、いまの再生位置に点を打つ（もう打ってあれば外す）。
+ * 2 つ以上打つと、その間を動く。点があるときは前後の点へ飛ぶ矢印も出す。
+ */
+function KeyButton({ clip, prop, time }: { clip: Clip; prop: AnimProp; time: number }) {
+  const patch = useClipPatch(clip);
+  const here = keyIndexAt(clip, prop, time) >= 0;
+  const animated = isAnimated(clip, prop);
+  const jump = (direction: -1 | 1) => {
+    const t = neighborKeyTime(clip, player.time, direction);
+    if (t !== null) player.seek(t);
+  };
+  return (
+    <span className="key-controls">
+      {animated && (
+        <button type="button" className="ghost key-step" aria-label="前の点へ" title="前の点へ" onClick={() => jump(-1)}>
+          <Icon name="step-back" size={14} />
+        </button>
+      )}
+      <button
+        type="button"
+        className={`ghost key-toggle${here ? ' on' : animated ? ' some' : ''}`}
+        aria-pressed={here}
+        aria-label={here ? 'この点を外す' : 'いまの位置に点を打つ'}
+        title={here ? 'この点を外す' : 'いまの位置に点を打つ（2 つ以上で動きます）'}
+        onClick={() => patch(toggleKeyAt(clip, prop, player.time))}
+      >
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <path d="M8 1.5 14.5 8 8 14.5 1.5 8Z" fill={here ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {animated && (
+        <button type="button" className="ghost key-step" aria-label="次の点へ" title="次の点へ" onClick={() => jump(1)}>
+          <Icon name="step-forward" size={14} />
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** 動き（キーフレーム）のまとめ: 点の間の動き方、ゆっくり寄る、全部外す。 */
+function MotionSection({ clip, time }: { clip: Clip; time: number }) {
+  const patch = useClipPatch(clip);
+  const animatedProps = ANIM_PROPS.filter((prop) => isAnimated(clip, prop));
+  const hereProps = animatedProps.filter((prop) => keyIndexAt(clip, prop, time) >= 0);
+  const firstHere = hereProps[0];
+  const track = firstHere ? clip.anim?.[firstHere] : undefined;
+  const ease = firstHere && track && 'keys' in track && track.keys ? (track.keys[keyIndexAt(clip, firstHere, time)]?.ease ?? 'linear') : 'linear';
+  const setEase = (next: Ease) => {
+    let current: Clip = clip;
+    let changes: Partial<Clip> = {};
+    for (const prop of hereProps) {
+      const step = setEaseAt(current, prop, player.time, next);
+      current = { ...current, ...step };
+      changes = { ...changes, ...step };
+    }
+    patch(changes);
+  };
+  return (
+    <div className="motion-section">
+      <p className="muted small">
+        ◆ を押すと、いまの再生位置に点を打ちます。位置を変えてもう 1 つ打つと、その間を動きます。
+      </p>
+      {hereProps.length > 0 && (
+        <Field label="この点からの動き方">
+          <select value={ease} onChange={(e) => setEase(e.target.value as Ease)}>
+            {(Object.keys(EASE_LABELS) as Ease[]).map((key) => (
+              <option key={key} value={key}>
+                {EASE_LABELS[key]}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+      <div className="chip-row wrap">
+        <button
+          type="button"
+          className="chip"
+          title="クリップの頭から終わりまでかけて、ゆっくり寄ります（尺を変えても最後まで寄り切ります）"
+          onClick={() => patch(kenBurns(clip))}
+        >
+          ゆっくり寄る
+        </button>
+        {animatedProps.length > 0 && (
+          <button
+            type="button"
+            className="chip"
+            onClick={() => {
+              let current: Clip = clip;
+              let changes: Partial<Clip> = {};
+              for (const prop of animatedProps) {
+                const step = clearKeys(current, prop, player.time);
+                current = { ...current, ...step };
+                changes = { ...changes, ...step };
+              }
+              patch(changes);
+            }}
+          >
+            動きを全部外す
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 音の仕上げ。声なら「くっきり・唸り・ハム」、BGM なら「声の間だけ下げる・声の帯を空ける」。
+ * プレビューと書き出しで同じものが掛かる（`model/sound.ts`）。
+ */
+function SoundSection({ clip }: { clip: Clip }) {
+  const patch = useClipPatch(clip);
+  const fx: SoundFx = clip.sound ?? {};
+  const set = (changes: Partial<SoundFx>, key?: string) => patch({ sound: { ...fx, ...changes } }, key);
+  const role = fx.role ?? 'none';
+  return (
+    <div className="sound-section">
+      <ButtonField label="音の仕上げ">
+        <Segmented
+          value={role}
+          options={[
+            { value: 'none', label: 'そのまま' },
+            { value: 'voice', label: '声', title: '話し声をくっきりさせ、唸りやハムを消します' },
+            { value: 'music', label: 'BGM', title: '声が鳴っているあいだ、自動で音量を下げます' },
+          ]}
+          onChange={(next) =>
+            next === 'none'
+              ? patch({ sound: undefined })
+              : set({ role: next, clarity: fx.clarity ?? 0.5, ...(next === 'music' ? { duckDb: fx.duckDb ?? 12 } : {}) })
+          }
+        />
+      </ButtonField>
+      {fx.role === 'voice' && (
+        <>
+          <Field label="声をくっきり" hint="低い音を切って、言葉の聞こえる帯を持ち上げ、軽く揃えます">
+            <Slider
+              value={fx.clarity ?? 0}
+              min={0}
+              max={1}
+              step={0.05}
+              onChange={(clarity) => set({ clarity }, 'clarity')}
+              format={(v) => (v <= 0 ? 'なし' : `${Math.round(v * 100)}%`)}
+              onReset={() => set({ clarity: 0.5 })}
+            />
+          </Field>
+          <Toggle label="低い唸りを消す（エアコン・風・机の振動）" checked={!!fx.rumble} onChange={(rumble) => set({ rumble })} />
+          <ButtonField label="電源のハム（ブーン）を消す">
+            <Segmented
+              value={String(fx.hum ?? 0)}
+              options={[
+                { value: '0', label: '消さない' },
+                { value: '50', label: '50Hz（東日本）' },
+                { value: '60', label: '60Hz（西日本）' },
+              ]}
+              onChange={(v) => set({ hum: v === '0' ? null : (Number(v) as 50 | 60) })}
+            />
+          </ButtonField>
+        </>
+      )}
+      {fx.role === 'music' && (
+        <>
+          <Toggle
+            label="声が鳴っているあいだ下げる（ダッキング）"
+            checked={(fx.duckDb ?? 0) > 0}
+            onChange={(on) => set({ duckDb: on ? 12 : 0 })}
+          />
+          {(fx.duckDb ?? 0) > 0 && (
+            <Field label="下げる量">
+              <Slider
+                value={fx.duckDb ?? 12}
+                min={3}
+                max={30}
+                step={1}
+                onChange={(duckDb) => set({ duckDb }, 'duck')}
+                format={(v) => `-${v.toFixed(0)} dB`}
+                onReset={() => set({ duckDb: 12 })}
+              />
+            </Field>
+          )}
+          <Field label="声の帯を空ける" hint="声と重なる辺りを少し下げて、言葉を聞き取りやすくします">
+            <Slider
+              value={fx.clarity ?? 0}
+              min={0}
+              max={1}
+              step={0.05}
+              onChange={(clarity) => set({ clarity }, 'clarity')}
+              format={(v) => (v <= 0 ? 'なし' : `${Math.round(v * 100)}%`)}
+              onReset={() => set({ clarity: 0.5 })}
+            />
+          </Field>
+        </>
+      )}
+    </div>
+  );
+}
+
 /** 指で触る端末か（iPad など。ホイールやカーソルの説明を出し分ける）。 */
 function coarsePointer(): boolean {
   try {
@@ -308,6 +529,8 @@ function TranscriptSection() {
   const [extendShort, setExtendShort] = useState(true);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // カラオケ字幕にするなら、言葉ごとの時刻も起こしてもらう（無くても行の長さで塗れる）。
+  const [karaoke, setKaraoke] = useState(false);
 
   /** 整えて置き、やったことをそのまま知らせる。 */
   const place = (cues: Parameters<typeof tidyCues>[0], label: string, extra = '') => {
@@ -329,6 +552,7 @@ function TranscriptSection() {
       buildCaptionClips(seq, tidy.cues, SPEAKERS, {
         style,
         speakerColors: SPEAKER_DEFAULT_COLORS,
+        karaokeColor: karaoke ? KARAOKE_DEFAULT_COLOR : undefined,
         trackName: `${label} ${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}`,
       }),
     );
@@ -342,12 +566,18 @@ function TranscriptSection() {
 
   return (
     <>
+      <Toggle
+        label="カラオケ字幕にする（話した所から字の色が変わる）"
+        checked={karaoke}
+        onChange={setKaraoke}
+      />
       <WhisperSection
         place={(cues, extra) => place(cues, '文字起こし', extra)}
         busy={busy}
         setBusy={setBusy}
         setNote={setNote}
         maxChars={maxChars}
+        words={karaoke}
       />
       {note && <p className="muted small">{note}</p>}
       <MoreSettings summary="くわしい設定（字幕の見た目・1 枚の文字数）">
@@ -391,12 +621,15 @@ function WhisperSection({
   setBusy,
   setNote,
   maxChars,
+  words,
 }: {
   place: (cues: Parameters<typeof tidyCues>[0], extra?: string) => void;
   busy: boolean;
   setBusy: (v: boolean) => void;
   setNote: (v: string) => void;
   maxChars: number;
+  /** 言葉ごとの時刻も起こす（カラオケ字幕用）。 */
+  words: boolean;
 }) {
   const easy = useEasy();
   const { sequence, selection } = useEditor();
@@ -475,6 +708,7 @@ function WhisperSection({
         modelId,
         device,
         maxChars,
+        words,
         beams: careful ? 5 : 1,
         localLibrary: support.localLibrary,
         localModels: local ? 'models/' : null,
@@ -666,6 +900,8 @@ function AutoTab({ clip }: { clip: Clip }) {
 function PropsTab({ clip }: { clip: Clip }) {
   const patch = useClipPatch(clip);
   const easy = useEasy();
+  // キーフレームを持つクリップだけ、再生位置に合わせて値を出し直す（持たないクリップは毎コマ描き直さない）。
+  const time = useAnimTime(clip);
   const { sequence, apply } = useEditor();
   const asset = mediaRegistry.get(clip.mediaId);
   const visual = clip.kind === 'video' || clip.kind === 'image';
@@ -719,6 +955,7 @@ function PropsTab({ clip }: { clip: Clip }) {
           {clip.kind === 'audio' && !clip.linkId && (
             <Toggle label="素材を繰り返して尺を埋める" checked={clip.loop} onChange={(loop) => patch({ loop })} />
           )}
+          <SoundSection clip={soundClip} />
           {clip.linkId && partner ? (
             <div className="link-row">
               <span className="muted small">
@@ -743,37 +980,47 @@ function PropsTab({ clip }: { clip: Clip }) {
       )}
 
       <Field label="大きさ">
+        <div className="anim-row">
         <Slider
-          value={clip.scale}
+          value={animValueAt(clip, 'scale', time)}
           min={0.1}
           max={4}
-          onChange={(scale) => patch({ scale }, 'scale')}
+          onChange={(v) => patch(writeAnimated(clip, 'scale', v, player.time), 'scale')}
           format={(v) => `${v.toFixed(2)}×`}
-          onReset={() => patch({ scale: 1 })}
+          onReset={() => patch(writeAnimated(clip, 'scale', 1, player.time))}
         />
+        <KeyButton clip={clip} prop="scale" time={time} />
+        </div>
       </Field>
       <div className="two-col">
         <Field label="左右の位置">
+          <div className="anim-row">
           <Slider
-            value={clip.x}
+            value={animValueAt(clip, 'x', time)}
             min={-1}
             max={1}
-            onChange={(x) => patch({ x }, 'x')}
+            onChange={(v) => patch(writeAnimated(clip, 'x', v, player.time), 'x')}
             format={(v) => v.toFixed(2)}
-            onReset={() => patch({ x: 0 })}
+            onReset={() => patch(writeAnimated(clip, 'x', 0, player.time))}
           />
+          <KeyButton clip={clip} prop="x" time={time} />
+          </div>
         </Field>
         <Field label="上下の位置">
+          <div className="anim-row">
           <Slider
-            value={clip.y}
+            value={animValueAt(clip, 'y', time)}
             min={-1}
             max={1}
-            onChange={(y) => patch({ y }, 'y')}
+            onChange={(v) => patch(writeAnimated(clip, 'y', v, player.time), 'y')}
             format={(v) => v.toFixed(2)}
-            onReset={() => patch({ y: 0 })}
+            onReset={() => patch(writeAnimated(clip, 'y', 0, player.time))}
           />
+          <KeyButton clip={clip} prop="y" time={time} />
+          </div>
         </Field>
       </div>
+      <MotionSection clip={clip} time={time} />
       <div className="two-col">
         <Field label="フェードイン" hint="秒">
           <Slider
@@ -803,25 +1050,31 @@ function PropsTab({ clip }: { clip: Clip }) {
         <details className="more-settings">
           <summary>くわしい設定（透明度・回転・切り抜きなど）</summary>
       <Field label="濃さ（下げると透ける）">
+        <div className="anim-row">
         <Slider
-          value={clip.opacity}
+          value={animValueAt(clip, 'opacity', time)}
           min={0}
           max={1}
-          onChange={(opacity) => patch({ opacity }, 'opacity')}
+          onChange={(v) => patch(writeAnimated(clip, 'opacity', v, player.time), 'opacity')}
           format={(v) => `${Math.round(v * 100)}%`}
-          onReset={() => patch({ opacity: 1 })}
+          onReset={() => patch(writeAnimated(clip, 'opacity', 1, player.time))}
         />
+        <KeyButton clip={clip} prop="opacity" time={time} />
+        </div>
       </Field>
       <Field label="回転">
+        <div className="anim-row">
         <Slider
-          value={clip.rotate}
+          value={animValueAt(clip, 'rotate', time)}
           min={-180}
           max={180}
           step={1}
-          onChange={(rotate) => patch({ rotate }, 'rotate')}
+          onChange={(v) => patch(writeAnimated(clip, 'rotate', v, player.time), 'rotate')}
           format={(v) => `${v.toFixed(0)}°`}
-          onReset={() => patch({ rotate: 0 })}
+          onReset={() => patch(writeAnimated(clip, 'rotate', 0, player.time))}
         />
+        <KeyButton clip={clip} prop="rotate" time={time} />
+        </div>
       </Field>
 
       {visual && (
@@ -884,25 +1137,31 @@ function PropsTab({ clip }: { clip: Clip }) {
       ) : (
         <>
       <Field label="不透明度">
+        <div className="anim-row">
         <Slider
-          value={clip.opacity}
+          value={animValueAt(clip, 'opacity', time)}
           min={0}
           max={1}
-          onChange={(opacity) => patch({ opacity }, 'opacity')}
+          onChange={(v) => patch(writeAnimated(clip, 'opacity', v, player.time), 'opacity')}
           format={(v) => `${Math.round(v * 100)}%`}
-          onReset={() => patch({ opacity: 1 })}
+          onReset={() => patch(writeAnimated(clip, 'opacity', 1, player.time))}
         />
+        <KeyButton clip={clip} prop="opacity" time={time} />
+        </div>
       </Field>
       <Field label="回転">
+        <div className="anim-row">
         <Slider
-          value={clip.rotate}
+          value={animValueAt(clip, 'rotate', time)}
           min={-180}
           max={180}
           step={1}
-          onChange={(rotate) => patch({ rotate }, 'rotate')}
+          onChange={(v) => patch(writeAnimated(clip, 'rotate', v, player.time), 'rotate')}
           format={(v) => `${v.toFixed(0)}°`}
-          onReset={() => patch({ rotate: 0 })}
+          onReset={() => patch(writeAnimated(clip, 'rotate', 0, player.time))}
         />
+        <KeyButton clip={clip} prop="rotate" time={time} />
+        </div>
       </Field>
 
       {visual && (
@@ -1328,6 +1587,8 @@ function EffectsTab({ clip }: { clip: Clip }) {
         </div>
       </Field>
 
+      {(clip.kind === 'video' || clip.kind === 'image') && <ColorSection clip={clip} />}
+
       <ButtonField label="動きを付ける" hint="寄る・揺らす・周りを暗く">
         <div className="chip-row wrap">
           {MOTION_PRESETS.map((preset) => (
@@ -1655,6 +1916,27 @@ function TextTab({ clip, text, cursorRef }: { clip: Clip; text: TextProps; curso
       </div>
 
       </Field>
+      <ButtonField label="カラオケ" hint={text.karaoke ? (text.karaoke.words?.length ? '話した時刻に合わせて塗る' : 'テロップの長さで同じ速さに塗る') : undefined}>
+        <div className="karaoke-row">
+          <Toggle
+            label="話した所から字の色を変える"
+            checked={!!text.karaoke}
+            onChange={(on) =>
+              set({
+                karaoke: on
+                  ? { color: text.karaoke?.color ?? KARAOKE_DEFAULT_COLOR, words: null, span: clip.duration * 0.9 }
+                  : null,
+              })
+            }
+          />
+          {text.karaoke && (
+            <ColorInput
+              value={text.karaoke.color}
+              onChange={(color) => set({ karaoke: { ...(text.karaoke ?? {}), color } }, 'karaoke-color')}
+            />
+          )}
+        </div>
+      </ButtonField>
       {easy ? (
         <details className="more-settings">
           <summary>くわしい設定（フォント・フチ・影・動きなど）</summary>

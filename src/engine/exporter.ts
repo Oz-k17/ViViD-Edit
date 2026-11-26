@@ -15,6 +15,7 @@ import {
   FrameExportUnsupported,
   isFrameExportSupported,
   runFrameAccurateExport,
+  runFrameAccurateExportMany,
 } from './offline-export';
 import type { Player } from './player';
 import { withWebmDuration } from './webm';
@@ -36,6 +37,8 @@ export interface ExportSettings {
   tag?: string;
   /** 画質で決める（0〜1）。渡さなければビットレートで決める。 */
   videoQuality?: number;
+  /** 手を加えていない区間は、素材の H.264 をそのまま写す（既定は入り。MP4 で 1 本だけのときに効く）。 */
+  smartRender?: boolean;
 }
 
 export interface ExportResult {
@@ -145,6 +148,59 @@ export class Exporter {
     return this.runRealtime(name, sequence, player, settings, onProgress);
   }
 
+  /**
+   * 同じ作品の版（字幕あり・なしなど）を、素材を 1 回読み解くだけでまとめて書き出す。
+   * この方式が使えない環境では、null を返す（呼ぶ側は 1 本ずつ書き出す）。
+   */
+  async runMany(
+    name: string,
+    variants: { sequence: Sequence; tag?: string }[],
+    player: Player,
+    settings: ExportSettings,
+    onProgress: (ratio: number) => void,
+  ): Promise<ExportResult[] | null> {
+    if (player.duration <= 0) throw new Error('書き出す映像がありません');
+    if (!isFrameExportSupported()) return null;
+    this.cancelled = false;
+    const size = exportSize(settings.aspect, settings.quality);
+    const startedAt = performance.now();
+    player.pause();
+    this.active = true;
+    try {
+      const outputs = await runFrameAccurateExportMany(
+        {
+          sequence: variants[0].sequence,
+          duration: player.duration,
+          fps: settings.fps,
+          bitrate: Math.round(settings.bitrate * 1_000_000),
+          format: settings.format,
+          finishAudio: settings.finishAudio,
+          fast: settings.fast,
+          videoQuality: settings.videoQuality,
+          onProgress,
+          isCancelled: () => this.cancelled,
+        },
+        variants.map((v) => ({ ...v.sequence, aspect: settings.aspect, width: size.width, height: size.height })),
+      );
+      onProgress(1);
+      const durationMs = performance.now() - startedAt;
+      return outputs.map((output, i) => ({
+        blob: output.blob,
+        filename: exportFilename(name, settings.aspect, output.ext, new Date(), variants[i].tag),
+        mimeType: output.mimeType,
+        durationMs,
+        warning: output.warning,
+        note: output.note,
+      }));
+    } catch (error) {
+      if (this.cancelled) throw error;
+      if (error instanceof FrameExportUnsupported) return null;
+      throw error;
+    } finally {
+      this.active = false;
+    }
+  }
+
   /** 1 フレームずつ書き出す（既定）。実時間に縛られないのでコマ落ちしない。 */
   private async runFrameAccurate(
     name: string,
@@ -169,6 +225,7 @@ export class Exporter {
         finishAudio: settings.finishAudio,
         fast: settings.fast,
         videoQuality: settings.videoQuality,
+        smartRender: settings.smartRender,
         onProgress,
         isCancelled: () => this.cancelled,
       });
@@ -317,8 +374,8 @@ export const EMBEDDED_SAVE_LIMIT_BYTES = 16 * 1024 * 1024;
  * 同じ 12 秒の 3 分割で、以前の既定（8 Mbps）10.2MB に対し、おすすめ（0.65）は 7.1MB（-30%）。
  * 見た目の差（SSIM）は止まった所 0.9927 → 0.9895、動く所 0.9983 → 0.9988 で、拡大して見比べても分からなかった。
  */
-export type ExportSizeMode = 'quality' | 'balanced' | 'small' | 'bitrate';
-export const EXPORT_SIZE_LEVELS: Record<Exclude<ExportSizeMode, 'bitrate'>, number> = { quality: 0.8, balanced: 0.65, small: 0.5 };
+export type ExportSizeMode = 'quality' | 'balanced' | 'small' | 'bitrate' | 'target';
+export const EXPORT_SIZE_LEVELS: Record<Exclude<ExportSizeMode, 'bitrate' | 'target'>, number> = { quality: 0.8, balanced: 0.65, small: 0.5 };
 
 /**
  * 画質で決めたときの、ビットレートの目安（bps）。画質で決められない環境（Safari の H.264 など）では、

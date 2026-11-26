@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   EMBEDDED_SAVE_LIMIT_BYTES,
   estimateExportBytes,
@@ -24,7 +24,8 @@ import { flattenNests } from '../../model/nest';
 import { ASPECT_PRESETS, type AspectKey } from '../../model/types';
 import { useApp } from '../../store/app';
 import { useEditor } from '../../store/editor';
-import { Field, Segmented, Toggle } from '../ui';
+import { ButtonField, Field, Segmented, Toggle } from '../ui';
+import { ProgressEstimator, TARGET_SIZE_PRESETS, formatEta, planTargetSize } from '../../model/exportPlan';
 import { Icon } from '../Icon';
 import { CheckList } from './CheckList';
 import { EXPORT_VARIANTS, captionScript, normalizeTags, postNote, titleOf, variantSequence, type VariantKey } from '../../model/batchExport';
@@ -103,6 +104,12 @@ function saveErrorMessage(code: SaveErrorCode, blobSize: number): string {
   }
 }
 
+/**
+ * まとめ書き出しで、版を同時に作ってよい合計の大きさ。出力をメモリに持つ環境（Safari・iPad）では、
+ * 同時に作ると全部が書き終わるまで手放せないので、合わせてこれを超えるときは 1 本ずつ作る。
+ */
+const SIMULTANEOUS_LIMIT_BYTES = 400 * 1024 * 1024;
+
 export function ExportDialog({ onClose }: { onClose: () => void }) {
   // 書き出すのは、いちばん外のシーケンス（まとめたクリップの中に入っていても、全体を書き出す）。
   // まとめたクリップは展開してから渡す（中身はふつうのクリップとして合成される）。
@@ -117,7 +124,10 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const [bitrate, setBitrate] = useState(8);
   // ファイルの大きさ。既定は「おすすめ」（画質で決めて、要らない所は小さく）。選んだものは次も使う。
   const [sizeMode, setSizeMode] = useState<ExportSizeMode>(settings.exportSize ?? 'balanced');
-  const videoQualityOf = (mode: ExportSizeMode) => (mode === 'bitrate' ? undefined : EXPORT_SIZE_LEVELS[mode]);
+  const videoQualityOf = (mode: ExportSizeMode) => (mode === 'bitrate' || mode === 'target' ? undefined : EXPORT_SIZE_LEVELS[mode]);
+  // 大きさを決めて書き出す（openreel-video の compression に倣った）。目標の MB から映像のビットレートを逆算する。
+  const [targetMb, setTargetMb] = useState(settings.exportTargetMb ?? 25);
+  const [smartRender, setSmartRender] = useState(settings.exportSmartRender !== false);
   const videoQuality = videoQualityOf(sizeMode);
   const [fps, setFps] = useState(sequence.fps || 30);
   const [finishAudio, setFinishAudio] = useState(false);
@@ -147,15 +157,65 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const size = exportSize(aspect, quality);
   const running = progress !== null;
 
+  const hasSound = useMemo(() => sequence.clips.some((c) => (c.kind === 'video' || c.kind === 'audio') && !!c.mediaId), [sequence]);
+  const targetPlan = useMemo(
+    () =>
+      planTargetSize({
+        targetMb,
+        durationSec: duration,
+        fps,
+        hasAudio: hasSound,
+        tiers: [1080, 720, 480].map((q) => ({ quality: q, ...exportSize(aspect, q) })),
+        currentQuality: quality,
+      }),
+    [targetMb, duration, fps, hasSound, aspect, quality],
+  );
+  /** 書き出しに渡すビットレート（Mbps）。大きさを決めるときは、目標から逆算したもの。 */
+  const bitrateFor = (mode: ExportSizeMode, fallback: number) => (mode === 'target' ? targetPlan.videoBps / 1_000_000 : fallback);
   const estimatedBytes = useMemo(
     () =>
-      estimateExportBytes(
-        duration,
-        videoQuality !== undefined ? estimateQualityBitrate(size.width, size.height, videoQuality) : bitrate * 1_000_000,
-      ),
-    [duration, bitrate, videoQuality, size.width, size.height],
+      sizeMode === 'target'
+        ? targetPlan.bytes
+        : estimateExportBytes(
+            duration,
+            videoQuality !== undefined ? estimateQualityBitrate(size.width, size.height, videoQuality) : bitrate * 1_000_000,
+          ),
+    [duration, bitrate, videoQuality, size.width, size.height, sizeMode, targetPlan.bytes],
   );
   const likelyTooLarge = embedded && estimatedBytes > EMBEDDED_SAVE_LIMIT_BYTES;
+
+  // 残り時間（openreel-video の progress-estimator）。進み具合の知らせのたびに見積もり直し、合間は 1 秒ずつ数え下げる。
+  const estimator = useRef<ProgressEstimator | null>(null);
+  const [eta, setEta] = useState<number | null>(null);
+  const startEta = () => {
+    estimator.current = new ProgressEstimator();
+    estimator.current.start();
+    setEta(null);
+  };
+  const onProgress = (ratio: number) => {
+    setProgress(ratio);
+    if (estimator.current) setEta(estimator.current.update(ratio).etaSeconds);
+  };
+  useEffect(() => {
+    if (progress === null) return;
+    const id = window.setInterval(() => {
+      if (estimator.current) setEta(estimator.current.tick().etaSeconds);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [progress === null]);
+
+  /** 大きさを決めて書き出したのに超えたら、黙らずに知らせる（映像は平均で守るので、場面によっては少し超える）。 */
+  const withSizeCheck = (output: ExportResult, mode: ExportSizeMode): ExportResult => {
+    const limit = targetMb * 1024 * 1024;
+    if (mode !== 'target' || output.blob.size <= limit) return output;
+    const over = Math.round((output.blob.size / limit - 1) * 100);
+    return {
+      ...output,
+      warning: [output.warning, `目標の ${targetMb}MB を ${over}% 超えました（${formatBytes(output.blob.size)}）。目標を少し下げて書き出し直してください`]
+        .filter(Boolean)
+        .join(' / '),
+    };
+  };
 
   /** 保存は viewer 側で断られることがあるので、結果をそのまま伝える。 */
   const save = async (output: ExportResult) => {
@@ -185,7 +245,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     setResult(null);
     setSaved(false);
     setProgress(0);
-    updateSettings({ exportAspect: aspect, exportQuality: effectiveQuality, exportFormat: format, exportSize: effectiveSize });
+    updateSettings({ exportAspect: aspect, exportQuality: effectiveQuality, exportFormat: format, exportSize: effectiveSize, exportTargetMb: targetMb, exportSmartRender: smartRender });
+    startEta();
     try {
       const output = await exporter.run(
         withoutCaption ? `${project.name}_字幕なし` : project.name,
@@ -195,16 +256,17 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           aspect,
           quality: effectiveQuality,
           fps,
-          bitrate: effectiveBitrate,
+          bitrate: bitrateFor(effectiveSize, effectiveBitrate),
           videoQuality: videoQualityOf(effectiveSize),
           format,
           finishAudio: frameAccurate && finishAudio,
           fast,
+          smartRender,
           tag: withoutCaption ? 'nosub' : undefined,
         },
-        setProgress,
+        onProgress,
       );
-      setResult(output);
+      setResult(withSizeCheck(output, effectiveSize));
       await save(output);
       shelve(output, withoutCaption ? '字幕なし' : captions > 0 ? '字幕あり' : '', effectiveQuality);
     } catch (e) {
@@ -244,9 +306,9 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   // 作品の中身か設定が変われば別の書き出しなので、印（batchKey）が同じときだけ「続きから」を出す。
   const batchSteps = [...batchVariants.map((v) => ({ key: v.key as string, label: v.label })), ...(wantNote ? [{ key: 'note', label: '投稿メモ' }] : [])];
   const batchKey = useMemo(
-    () => batchId(sequence, { aspect, quality, fps, bitrate, sizeMode, format, finishAudio, fast, tags: tagInput, steps: batchSteps.map((s) => s.key) }),
+    () => batchId(sequence, { aspect, quality, fps, bitrate: sizeMode === 'target' ? targetMb : bitrate, sizeMode, format, finishAudio, fast, tags: tagInput, steps: batchSteps.map((s) => s.key) }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sequence, aspect, quality, fps, bitrate, sizeMode, format, finishAudio, fast, tagInput, batchSteps.map((s) => s.key).join(',')],
+    [sequence, aspect, quality, fps, bitrate, targetMb, sizeMode, format, finishAudio, fast, tagInput, batchSteps.map((s) => s.key).join(',')],
   );
   const [batchRecord, setBatchRecord] = useState<BatchRecord | null>(loadBatchRecord);
   const resumable = isResumable(batchRecord, batchKey) ? batchRecord : null;
@@ -276,24 +338,51 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     for (const step of record.steps) if (step.done && step.filename) savedNames.push(`${step.label}: ${step.filename}（前回保存済み）`);
     setBatchSaved([...savedNames]);
     const shelved: string[] = [];
+    /** 1 本保存して記録する（同時に作ったときも、1 本ずつ記録するので「続きから」はそのまま効く）。 */
+    const keep = async (variant: (typeof batchVariants)[number], raw: ExportResult) => {
+      const output = withSizeCheck(raw, sizeMode);
+      await saveBlob(output.blob, output.filename);
+      const over = output.warning?.includes('超えました') ? '・目標の大きさを超えました' : '';
+      savedNames.push(`${variant.label}: ${output.filename}（${formatBytes(output.blob.size)}${over}）`);
+      setBatchSaved([...savedNames]);
+      shelved.push(shelve(output, variant.label));
+      record = markDone(record, variant.key, output.filename);
+      remember(record);
+    };
     try {
+      // 残りが 2 本以上なら、素材を 1 回読み解くだけでまとめて作る（字幕あり・なしは文字だけが違う）。
+      // 出力を全部メモリに持つ環境では、合わせて大きくなりすぎるときは 1 本ずつに戻す。
+      const pending = batchVariants.filter((variant) => !finished.has(variant.key));
+      const together = pending.length >= 2 && frameAccurate && estimatedBytes * pending.length < SIMULTANEOUS_LIMIT_BYTES;
+      if (together) {
+        setBatchStep({ index: 0, total: 1, label: `${pending.map((v) => v.label).join('・')}を同時に` });
+        setProgress(0);
+        startEta();
+        const outputs = await exporter.runMany(
+          project.name,
+          pending.map((variant) => ({ sequence: variantSequence(sequence, variant.key), tag: variant.tag })),
+          player,
+          { aspect, quality, fps, bitrate: bitrateFor(sizeMode, bitrate), videoQuality, format, finishAudio: frameAccurate && finishAudio, fast },
+          onProgress,
+        );
+        if (outputs) {
+          for (const [i, variant] of pending.entries()) await keep(variant, outputs[i]);
+          for (const variant of pending) finished.add(variant.key);
+        }
+      }
       for (const [index, variant] of batchVariants.entries()) {
         if (finished.has(variant.key)) continue;
         setBatchStep({ index, total, label: variant.label });
         setProgress(0);
+        startEta();
         const output = await exporter.run(
           project.name,
           variantSequence(sequence, variant.key),
           player,
-          { aspect, quality, fps, bitrate, videoQuality, format, finishAudio: frameAccurate && finishAudio, fast, tag: variant.tag },
-          setProgress,
+          { aspect, quality, fps, bitrate: bitrateFor(sizeMode, bitrate), videoQuality, format, finishAudio: frameAccurate && finishAudio, fast, smartRender, tag: variant.tag },
+          onProgress,
         );
-        await saveBlob(output.blob, output.filename);
-        savedNames.push(`${variant.label}: ${output.filename}（${formatBytes(output.blob.size)}）`);
-        setBatchSaved([...savedNames]);
-        shelved.push(shelve(output, variant.label));
-        record = markDone(record, variant.key, output.filename);
-        remember(record);
+        await keep(variant, output);
       }
       if (wantNote) {
         const text = postNote({
@@ -436,6 +525,15 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           />
         </Field>
 
+        <Field label="手つかずの所" hint={frameAccurate ? 'MP4 で、文字や加工の無い区間は書き直さず、元の動画をそのまま使います（速く、画質も落ちません）' : 'この環境では使えません'}>
+          <Toggle
+            checked={smartRender && frameAccurate}
+            disabled={running || !frameAccurate}
+            onChange={setSmartRender}
+            label="元の動画をそのまま使う（スマートレンダー）"
+          />
+        </Field>
+
         {sizeMode === 'bitrate' && (
         <Field label="ビットレート" hint={`${bitrate} Mbps`}>
           <input type="range" min={2} max={20} step={1} value={bitrate} disabled={running} onChange={(e) => setBitrate(Number(e.target.value))} />
@@ -483,6 +581,15 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           />
         </Field>
 
+        <Field label="手つかずの所" hint={frameAccurate ? 'MP4 で、文字や加工の無い区間は書き直さず、元の動画をそのまま使います（速く、画質も落ちません）' : 'この環境では使えません'}>
+          <Toggle
+            checked={smartRender && frameAccurate}
+            disabled={running || !frameAccurate}
+            onChange={setSmartRender}
+            label="元の動画をそのまま使う（スマートレンダー）"
+          />
+        </Field>
+
         {sizeMode === 'bitrate' && (
         <Field label="ビットレート" hint={`${bitrate} Mbps`}>
           <input type="range" min={2} max={20} step={1} value={bitrate} disabled={running} onChange={(e) => setBitrate(Number(e.target.value))} />
@@ -498,11 +605,57 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               { value: 'quality', label: 'きれい優先' },
               { value: 'balanced', label: 'おすすめ' },
               { value: 'small', label: '小さく' },
+              { value: 'target', label: '大きさを決める' },
               ...(easy ? [] : [{ value: 'bitrate', label: '数値で' }]),
             ]}
             onChange={(value) => !running && setSizeMode(value as ExportSizeMode)}
           />
         </Field>
+        {sizeMode === 'target' && (
+          <ButtonField label="目標の大きさ" hint="この大きさに収まるよう、画質を逆算して書き出します">
+            <div className="target-size">
+              <label className="target-size-input">
+                <input
+                  type="number"
+                  min={1}
+                  max={4000}
+                  step={1}
+                  value={targetMb}
+                  disabled={running}
+                  onChange={(e) => setTargetMb(Math.max(1, Number(e.target.value) || 1))}
+                  aria-label="目標の大きさ（MB）"
+                />
+                MB
+              </label>
+              <div className="chip-row wrap">
+                {TARGET_SIZE_PRESETS.map((preset) => (
+                  <button
+                    key={preset.key}
+                    type="button"
+                    className={targetMb === preset.mb ? 'chip active' : 'chip'}
+                    disabled={running}
+                    onClick={() => setTargetMb(preset.mb)}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              {duration > 0 && targetPlan.tooTightAtCurrent && (
+                <p className="warn small" role="note">
+                  この長さを {targetMb}MB に収めると、{quality}p では粗くなります。
+                  {targetPlan.suggestedQuality !== quality && (
+                    <>
+                      {' '}
+                      <button type="button" className="link" disabled={running} onClick={() => setQuality(targetPlan.suggestedQuality)}>
+                        {targetPlan.suggestedQuality}p にする
+                      </button>
+                    </>
+                  )}
+                </p>
+              )}
+            </div>
+          </ButtonField>
+        )}
         {(!easy || captions > 0) && (
         <Field label="テロップ" hint={captions > 0 ? `字幕は ${captions} 本` : '字幕はまだ無い'}>
           <Toggle
@@ -544,7 +697,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             </div>
             <p className="muted">
               {batchStep && `${batchStep.index + 1} / ${batchStep.total} 本目（${batchStep.label}）・`}
-              {frameAccurate ? '書き出し中' : '収録中'}… {Math.round((progress ?? 0) * 100)}%
+              {frameAccurate ? '書き出し中' : '収録中'}… {Math.round((progress ?? 0) * 100)}%・{formatEta(eta)}
               {frameAccurate
                 ? '（1 コマずつ書き出しています。素材が重いと動画の長さより時間がかかりますが、そのぶんコマ落ちしません）'
                 : '（実時間で録画するため、動画の長さと同じだけかかります）'}

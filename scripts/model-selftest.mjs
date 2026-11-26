@@ -2191,6 +2191,205 @@ eq('空文字', wrap('', 10), ['']);
 }
 
 {
+  // カラオケ字幕: 何文字ぶん塗るか（openreel-video の単語強調字幕に倣ったもの）
+  const K = await import('../src/model/karaoke.ts');
+  eq('空白は数えない', K.karaokeChars('あい う\n'), 3);
+  const words = K.karaokeWords([
+    { start: 10, end: 10.5, text: 'こんにちは' },
+    { start: 10.5, end: 10.5, text: ' ' },
+    { start: 11, end: 12, text: '世界' },
+  ], 10);
+  eq('単語の時刻はテロップの頭からに直し、空白だけの語は捨てる', words, [
+    { start: 0, end: 0.5, chars: 5 },
+    { start: 1, end: 2, chars: 2 },
+  ]);
+  const k = { color: '#ff0', words };
+  eq('始まる前は塗らない', K.karaokeProgress(k, -0.1, 7), 0);
+  eq('言葉の途中は割合で塗る', K.karaokeProgress(k, 0.25, 7), 2.5);
+  eq('言葉の間は、言い終えた所まで', K.karaokeProgress(k, 0.8, 7), 5);
+  eq('言い終えたら全部', K.karaokeProgress(k, 5, 7), 7);
+  eq('本文を直して短くなっても、はみ出して塗らない', K.karaokeProgress(k, 5, 4), 4);
+  eq('時刻が無ければ同じ速さで', K.karaokeProgress({ color: '#ff0', span: 2 }, 1, 10), 5);
+  eq('時刻も長さも無ければ塗らない', K.karaokeProgress({ color: '#ff0' }, 1, 10), 0);
+  eq('前のかたまりで使った分を引く', K.karaokeWithin('世界', 5, 6.5), 1.5);
+  eq('空白を飛ばして、字の途中で切る', K.karaokeCut('あい う', 2.5), { index: 3, fraction: 0.5 });
+  eq('全部塗るなら末尾', K.karaokeCut('あい', 2), { index: 2, fraction: 0 });
+  // 字幕を置くとき、言葉の時刻をテロップへ持たせる
+  const T = await import('../src/model/transcript.ts');
+  const base = { fps: 30, aspect: '9:16', width: 1080, height: 1920, background: '#000', tracks: [], clips: [] };
+  const built = T.buildCaptionClips(base, [{ start: 3, end: 5, text: 'やあ 元気', speaker: null, words: [
+    { start: 3, end: 3.4, text: 'やあ' }, { start: 3.6, end: 4.4, text: '元気' },
+  ] }], ['1', '2'], { karaokeColor: '#ffe14d' });
+  const kk = built.clips[0]?.text?.karaoke;
+  eq('カラオケの色と時刻が入る', kk && { color: kk.color, words: kk.words }, { color: '#ffe14d', words: [
+    { start: 0, end: 0.4, chars: 2 }, { start: 0.6, end: 1.4, chars: 2 },
+  ] });
+  const plain = T.buildCaptionClips(base, [{ start: 0, end: 1, text: 'x', speaker: null }], ['1', '2'], {});
+  eq('頼まなければカラオケにしない', plain.clips[0]?.text?.karaoke ?? null, null);
+}
+
+{
+  // キーフレーム（lab/keyframe の持ち方を本体へ。繋ぎ方の一部は openreel-video から）
+  const K = await import('../src/model/keyframes.ts');
+  const O = await import('../src/model/ops.ts');
+  const img = { id: 'c1', trackId: 't', kind: 'image', mediaId: 'm', start: 10, duration: 4, sourceIn: 0, speed: 1, volume: 1, muted: false, loop: false,
+    opacity: 1, scale: 1, x: 0, y: 0, rotate: 0, fit: 'cover', bgBlur: { enabled: false, strength: 0, zoom: 1 }, crop: {}, effects: [], fadeIn: 0, fadeOut: 0,
+    transitionIn: { type: 'none', duration: 0.5 }, text: null };
+  check('動かしていないクリップは同じものを返す', K.animatedClipAt(img, 11) === img);
+  let c = { ...img, ...K.toggleKeyAt(img, 'scale', 10) };
+  c = { ...c, ...K.writeAnimated(c, 'scale', 1, 10) };
+  check('点を打っても、その瞬間の値は変わらない', K.animValueAt(c, 'scale', 10) === 1);
+  c = { ...c, ...K.writeAnimated(c, 'scale', 2, 12) };
+  eq('点の間は動く', K.animValueAt(c, 'scale', 11), 1.5);
+  eq('最後の点より後ろは保つ', K.animValueAt(c, 'scale', 13.5), 2);
+  eq('描く直前に素の値へ戻す', K.animatedClipAt(c, 11).scale, 1.5);
+  eq('静止画は頭からの秒で持つ', c.anim.scale.base, 'local');
+  eq('タイムラインに点を出す時刻', K.keyTimesOf(c), [10, 12]);
+  eq('次の点へ', K.neighborKeyTime(c, 10, 1), 12);
+  {
+    const [left, right] = O.splitOne(c, 11);
+    // 静止画・テロップは「クリップの頭に付く」（lab/keyframe で測って決めた既定）。割った右側は頭から動き直す。
+    eq('静止画を割ると、右側は頭から動き直す', K.animValueAt(right, 'scale', 11.5), 1.25);
+    const video = { ...c, kind: 'video', anim: { scale: { base: 'source', keys: [{ t: 0, v: 1 }, { t: 2, v: 2 }] } } };
+    const [, vr] = O.splitOne(video, 11);
+    eq('動画は素材の秒で持つので、割っても続きから動く', K.animValueAt(vr, 'scale', 11.5), 1.75);
+    eq('割った左側もそのまま', K.animValueAt(left, 'scale', 10.5), 1.25);
+  }
+  const eased = { ...c, ...K.setEaseAt(c, 'scale', 10, 'easeInOut') };
+  check('動き方を変えると途中の値が変わる', K.animValueAt(eased, 'scale', 10.5) < 1.25);
+  let off = { ...c, ...K.toggleKeyAt(c, 'scale', 12) };
+  off = { ...off, ...K.toggleKeyAt(off, 'scale', 10) };
+  check('点を全部外すと素の値に戻る（anim を残さない）', off.anim === undefined && off.scale === 1, JSON.stringify(off.anim));
+  const kb = { ...img, ...K.kenBurns(img) };
+  eq('ゆっくり寄るは尺の割合で持つ', kb.anim.scale.base, 'fraction');
+  eq('尺を伸ばしても最後まで寄り切る', Math.round(K.animValueAt({ ...kb, duration: 8 }, 'scale', 18) * 100) / 100, 1.15);
+  check('行き過ぎて戻る は 1 を超える所がある', K.easeAt('back', 0.7) > 1);
+  check('ばね・はずむ は最後に 1 で止まる', K.easeAt('elastic', 1) === 1 && Math.abs(K.easeAt('bounce', 1) - 1) < 1e-9);
+  const moved = { ...img, ...K.writeAnimatedMany(img, { x: 0.2, y: -0.1 }, 11) };
+  check('点が無い値はそのまま書き換える', moved.x === 0.2 && moved.y === -0.1 && moved.anim === undefined);
+}
+
+{
+  // 音の仕上げ（openreel-video の Essential Sound に倣った並び・lab/auto-cut のダッキング）
+  const S = await import('../src/model/sound.ts');
+  eq('何も選ばなければ何も掛けない', S.planSoundChain(undefined), []);
+  eq('種類だけでは何も掛けない', S.planSoundChain({ role: 'voice' }), []);
+  const voice = S.planSoundChain({ role: 'voice', clarity: 0.5 });
+  eq('声をくっきり: 80Hz で切って 3kHz を持ち上げ、軽く圧縮', voice.map((st) => st.kind === 'filter' ? `${st.type}@${st.frequency}${st.gain ? `+${st.gain}` : ''}` : 'comp'), ['highpass@80', 'peaking@3000+3', 'comp']);
+  const fixd = S.planSoundChain({ role: 'voice', clarity: 0.5, rumble: true, hum: 50 });
+  eq('唸りとハムを先に消し、低い所は二重に切らない', fixd.map((st) => st.kind === 'filter' ? `${st.type}@${st.frequency}` : 'comp'), ['highpass@100', 'notch@50', 'notch@100', 'notch@150', 'peaking@3000', 'comp']);
+  eq('BGM は声の帯を空ける', S.planSoundChain({ role: 'music', clarity: 1 }).map((st) => `${st.type}@${st.frequency}${st.gain}`), ['peaking@1500-6']);
+  check('並びが同じなら同じ鍵', S.soundChainKey(voice) === S.soundChainKey(S.planSoundChain({ role: 'voice', clarity: 0.5 })));
+  check('ダッキングは BGM で量があるときだけ', S.ducks({ role: 'music', duckDb: 12 }) && !S.ducks({ role: 'music', duckDb: 0 }) && !S.ducks({ role: 'voice', duckDb: 12 }));
+  // 0.5〜1.0 秒だけ声がある
+  const hop = 0.02;
+  const db = new Float32Array(150).fill(-100);
+  for (let i = 25; i < 50; i += 1) db[i] = -20;
+  const pts = S.planDucking({ hop, db, duration: 3 }, { duckDb: -12 });
+  const g = (t) => Math.round(S.duckGainAt(pts, t) * 1000) / 1000;
+  eq('声の前は下げない', g(0.2), 1);
+  eq('声の間は -12dB', g(0.7), Math.round(Math.pow(10, -12 / 20) * 1000) / 1000);
+  check('声が出る前から下げ始める（attack）', g(0.45) < 1 && g(0.45) > g(0.7));
+  check('声が止んでもすぐ戻さない（hold）', g(1.1) === g(0.7));
+  eq('しばらくしたら戻る（release）', g(2.5), 1);
+  const merged = S.mergeVoiceLevels([{ at: 1, levels: { hop: 0.02, db: new Float32Array([-10, -10]), duration: 0.04 } }], 2);
+  check('クリップの声をタイムラインの位置に重ねる', merged.db[50] === -10 && merged.db[49] === -100, `${merged.db[49]} ${merged.db[50]}`);
+}
+
+{
+  // 色調整（openreel-video の Color Grading に倣った項目を、1 枚の 3D LUT に焼く）
+  const C = await import('../src/model/color.ts');
+  const near = (a, b, e = 1 / 255) => a.every((v, i) => Math.abs(v - b[i]) <= e);
+  check('何も変えない設定は素通し', C.isNeutralGrade({}) && C.isNeutralGrade({ exposure: 0, curve: [[0.5, 0.5]] }));
+  check('何も変えなければ色はそのまま', near(C.gradeColor({}, [0.2, 0.5, 0.8]), [0.2, 0.5, 0.8]));
+  check('モノクロは 3 色が揃う', (() => { const c = C.gradeColor({ saturation: -1 }, [0.9, 0.2, 0.1]); return Math.abs(c[0] - c[1]) < 1e-9 && Math.abs(c[1] - c[2]) < 1e-9; })());
+  check('あたたかくすると赤が増えて青が減る', (() => { const c = C.gradeColor({ temperature: 0.5 }, [0.5, 0.5, 0.5]); return c[0] > 0.5 && c[2] < 0.5; })());
+  check('露出を上げると明るくなる', C.gradeColor({ exposure: 0.3 }, [0.3, 0.3, 0.3])[0] > 0.3);
+  check('暗部のホイールは明るい所をほとんど動かさない', (() => {
+    const g = { lift: { hue: 240, amount: 1, luma: 0 } };
+    const dark = C.gradeColor(g, [0.05, 0.05, 0.05]);
+    const light = C.gradeColor(g, [0.95, 0.95, 0.95]);
+    return dark[2] - dark[0] > 0.1 && Math.abs(light[2] - light[0]) < 0.03;
+  })());
+  check('ホイールの色のずれは平均 0（明るさは変えない）', (() => { const o = C.wheelOffset({ hue: 77, amount: 0.8, luma: 0 }); return Math.abs(o[0] + o[1] + o[2]) < 1e-9; })());
+  check('トーンカーブは両端を動かさず、行き過ぎない', (() => {
+    const f = C.makeCurve([[0.25, 0.1], [0.75, 0.95]]);
+    let prev = -1;
+    for (let i = 0; i <= 100; i += 1) { const v = f(i / 100); if (v < prev - 1e-9) return false; prev = v; }
+    return f(0) === 0 && Math.abs(f(1) - 1) < 1e-9 && Math.abs(f(0.25) - 0.1) < 1e-9;
+  })());
+  const cube = 'TITLE "Swap"\nLUT_3D_SIZE 2\n' + [0,0,0, 0,0,1, 0,1,0, 0,1,1, 1,0,0, 1,0,1, 1,1,0, 1,1,1].join(' ').replace(/(\S+ \S+ \S+) ?/g, '$1\n');
+  const lut = C.parseCube(cube, 'x');
+  eq('.cube を読む（名前・大きさ）', [lut.name, lut.size, lut.data.length], ['Swap', 2, 24]);
+  check('LUT は赤と青を入れ替える表として引ける', near(C.sampleCube(lut, [1, 0.5, 0]), [0, 0.5, 1]));
+  check('LUT の効かせ具合を半分に', near(C.gradeColor({ lut, lutMix: 0.5 }, [1, 0, 0]), [0.5, 0, 0.5]));
+  let threw = '';
+  try { C.parseCube('LUT_1D_SIZE 4\n0 0 0', 'x'); } catch (e) { threw = String(e.message); }
+  check('1D の LUT は断る', threw.includes('1D'));
+  const baked = C.bakeLut({}, 5);
+  check('焼いた表: 何も変えなければ格子の色そのまま', baked.length === 5 * 5 * 5 * 3 && baked[3] === 64 && baked[(4 + 4 * 5 + 4 * 25) * 3 + 2] === 255, `${baked[3]} ${baked[(4 + 4 * 5 + 4 * 25) * 3 + 2]}`);
+  const identity65 = { name: 'big', size: 3, data: [] };
+  for (let b = 0; b < 3; b += 1) for (let g = 0; g < 3; g += 1) for (let r = 0; r < 3; r += 1) identity65.data.push(r / 2, g / 2, b / 2);
+  eq('大きい LUT は縮める（小さければそのまま）', [C.shrinkCube(identity65, 2).size, C.shrinkCube(identity65, 5).size], [2, 3]);
+  check('プリセットは全部、何かを変える', C.COLOR_PRESETS.every((p) => !C.isNeutralGrade(p.grade)));
+}
+
+{
+  // 書き出しの段取り: 残り時間と、大きさから決める（openreel-video の progress-estimator・compression）
+  const E = await import('../src/model/exportPlan.ts');
+  let now = 0;
+  const est = new E.ProgressEstimator(() => now);
+  est.start();
+  now = 1000;
+  check('始まってすぐは言わない', est.update(0.1).etaSeconds === null);
+  now = 3000;
+  const a = est.update(0.3);
+  check('一定の速さなら、残りはおよそ線形に出る（30% を 3 秒 → 残り 7 秒）', Math.abs(a.etaSeconds - 7) < 0.5, String(a.etaSeconds));
+  now = 3500;
+  check('合間は数え下げる', Math.abs(est.tick().etaSeconds - 6.5) < 0.5);
+  now = 4000;
+  check('進み具合は戻らない', est.update(0.2).fraction === 0.3);
+  now = 9000;
+  eq('終わったら 0', est.update(1).etaSeconds, 0);
+  eq('残りの言い方', [E.formatEta(null), E.formatEta(3), E.formatEta(42), E.formatEta(130)], ['残り時間を見積もっています', 'まもなく終わります', '残り 約 40 秒', '残り 約 2 分 10 秒']);
+  const tiers = [{ quality: 1080, width: 1080, height: 1920 }, { quality: 720, width: 720, height: 1280 }, { quality: 480, width: 480, height: 854 }];
+  const p = E.planTargetSize({ targetMb: 25, durationSec: 60, fps: 30, hasAudio: true, tiers, currentQuality: 1080 });
+  check('目標に収まる見込み', p.bytes <= 25 * 1024 * 1024, String(p.bytes));
+  check('音のぶんを引いてある', p.videoBps < (25 * 1024 * 1024 * 8) / 60);
+  const tight = E.planTargetSize({ targetMb: 10, durationSec: 120, fps: 30, hasAudio: true, tiers, currentQuality: 1080 });
+  check('きつい目標では画質を下げるよう薦める', tight.tooTightAtCurrent && tight.suggestedQuality < 1080, JSON.stringify(tight));
+}
+
+{
+  // スマートレンダー（openreel-video の smart-render に倣った「写せる所」と「切る所」）
+  const R = await import('../src/model/smartRender.ts');
+  const base = { kind: 'video', mediaId: 'm', sourceIn: 0, speed: 1, volume: 1, muted: false, loop: false, opacity: 1, scale: 1, x: 0, y: 0, rotate: 0, fit: 'cover',
+    bgBlur: { enabled: false, strength: 0, zoom: 1 }, crop: { enabled: false }, effects: [], fadeIn: 0, fadeOut: 0, transitionIn: { type: 'none', duration: 0.5 }, text: null };
+  const seq = (clips, extraTracks = []) => ({ fps: 30, aspect: '9:16', width: 1080, height: 1920, background: '#000',
+    tracks: [{ id: 'v1', kind: 'video', name: 'V1', muted: false, hidden: false, locked: false }, ...extraTracks], clips });
+  const plain = seq([{ ...base, id: 'c', trackId: 'v1', start: 0, duration: 10 }]);
+  eq('手つかずなら素材のコマそのもの', R.untouchedFrameAt(plain, 2), { mediaId: 'm', clipId: 'c', sourceTime: 2 });
+  const withText = seq([{ ...base, id: 'c', trackId: 'v1', start: 0, duration: 10 }, { ...base, kind: 'text', mediaId: null, id: 't', trackId: 't1', start: 1, duration: 1, text: {} }],
+    [{ id: 't1', kind: 'text', name: 'T1', muted: false, hidden: false, locked: false }]);
+  eq('文字が乗っている所は書き直す', R.untouchedFrameAt(withText, 1.5).reason, '文字が乗っている');
+  check('文字の後は写せる', 'mediaId' in R.untouchedFrameAt(withText, 2.5));
+  eq('大きさを変えたら写さない', R.untouchedFrameAt(seq([{ ...base, id: 'c', trackId: 'v1', start: 0, duration: 10, scale: 1.1 }]), 2).reason, '大きさ・位置・濃さ・回転を変えている');
+  eq('フェードの途中は写さない', R.untouchedFrameAt(seq([{ ...base, id: 'c', trackId: 'v1', start: 0, duration: 10, fadeIn: 1 }]), 0.5).reason, 'フェードの途中');
+  const src = { mediaId: 'm', codec: 'avc', width: 1080, height: 1920, frameRate: 30, firstPts: 0, endTime: 10, keyframeTimes: [0, 2, 4, 6, 8], closedGops: true, constantFrameRate: true, nalLengthSize: 4, rotation: 0 };
+  const out = { width: 1080, height: 1920, fps: 30 };
+  const frames = (s) => Array.from({ length: 300 }, (_, i) => R.untouchedFrameAt(s, i / 30));
+  const all = R.planSmartRender(frames(plain), new Map([['m', src]]), out);
+  eq('全部手つかずなら全部写す', [all.copiedFrames, all.segments.length, all.segments[0].kind], [300, 1, 'copy']);
+  const part = R.planSmartRender(frames(withText), new Map([['m', src]]), out);
+  eq('文字の後ろは、次のキーフレームから写す', part.segments.map((x) => `${x.kind}:${x.startFrame}-${x.endFrame}`), ['encode:0-60', 'copy:60-300']);
+  eq('大きさが違えば写さない（理由を添える）', R.planSmartRender(frames(plain), new Map([['m', { ...src, width: 720 }]]), out).reasons[0], '素材と出力の大きさが違う');
+  eq('閉じていない GOP は写さない', R.planSmartRender(frames(plain), new Map([['m', { ...src, closedGops: false }]]), out).copiedFrames, 0);
+  const trimmed = seq([{ ...base, id: 'c', trackId: 'v1', start: 0, duration: 5, sourceIn: 1 }]);
+  const tf = Array.from({ length: 150 }, (_, i) => R.untouchedFrameAt(trimmed, i / 30));
+  eq('頭を詰めた素材は、最初のキーフレーム（素材の 2 秒）から', R.planSmartRender(tf, new Map([['m', src]]), out).segments.map((x) => `${x.kind}:${x.startFrame}-${x.endFrame}`), ['encode:0-30', 'copy:30-150']);
+}
+
+{
   // プレビューのピンチ（指 2 本）で大きさを変える
   const P = await import('../src/model/pinch.ts');
   check('指の間隔が 2 倍なら、大きさも 2 倍', Math.abs(P.pinchScale(1.5, 100, 200) - 3) < 1e-9);

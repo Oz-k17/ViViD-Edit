@@ -14,6 +14,7 @@ import {
   snapTime,
 } from '../../model/ops';
 import { clipFromAsset, uid } from '../../model/factory';
+import { keyTimesOf } from '../../model/keyframes';
 import { nestClips, unnestClips } from '../../model/nest';
 import { clipEnd, previewText, type Clip, type Sequence, type Track } from '../../model/types';
 import { shortcutLabel, useApp, useShortcutHint } from '../../store/app';
@@ -1068,6 +1069,10 @@ const ClipBlock = memo(function ClipBlock({
         {label}
       </span>
       {width > 54 && <span className="tl-clip-time">{clip.duration.toFixed(1)}s</span>}
+      {/* キーフレームの点。どこで動きが変わるかを、タイムラインの上でも見せる */}
+      {keyTimesOf(clip).map((t) => (
+        <span key={t} className="tl-key" style={{ left: (t - clip.start) * pps }} aria-hidden="true" />
+      ))}
       <span className="tl-handle right" onPointerDown={(e) => startTrim(e, 'right')} />
     </div>
   );

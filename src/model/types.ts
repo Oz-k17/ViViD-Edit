@@ -218,6 +218,11 @@ export interface TextProps {
    * 入っている行は、色を付けずに置いてある（推測で色を付けない）。人が話者を決めたら消す。
    */
   speakerGuess?: string | null;
+  /**
+   * カラオケ字幕。話している所まで、字の色を順に変える（`model/karaoke.ts`）。
+   * null / 未定義なら変えない（古い保存ファイルもこれ）。
+   */
+  karaoke?: import('./karaoke').Karaoke | null;
 }
 
 /**
@@ -264,6 +269,21 @@ export interface Clip {
   nested?: Sequence;
   /** まとめたクリップの名前（タイムラインに出す）。 */
   name?: string;
+  /**
+   * キーフレーム。大きさ・位置・濃さ・回転を時間で動かす（`model/keyframes.ts`）。
+   * 無ければ素の値のまま（古い保存ファイルもこれ）。描く直前に `animatedClipAt()` で素の値へ戻す。
+   */
+  anim?: import('./keyframes').ClipAnim;
+  /**
+   * 音の仕上げ（声をくっきり・唸りとハムを消す・BGM を声の間だけ下げる）。`model/sound.ts`。
+   * 無ければ素のまま（古い保存ファイルもこれ）。
+   */
+  sound?: import('./sound').SoundFx;
+  /**
+   * 色調整（色温度・ホイール・カーブ・LUT・プリセット）。`model/color.ts`。
+   * 無ければ色を変えない（古い保存ファイルもこれ）。
+   */
+  color?: import('./color').ColorGrade;
 }
 
 export interface Sequence {

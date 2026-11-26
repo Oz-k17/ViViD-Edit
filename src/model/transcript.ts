@@ -16,6 +16,7 @@ import { wrapJapanese } from '../engine/linebreak';
 import { textClip, uid } from './factory';
 import { addTrack, placeClip, tracksOf } from './ops';
 import type { Clip, Sequence, TextProps } from './types';
+import { karaokeWords } from './karaoke';
 
 export interface TranscriptWord {
   start: number;
@@ -578,7 +579,15 @@ export interface BuildOptions {
   speakerColors?: Record<string, string>;
   /** 置き場所のトラック名。 */
   trackName?: string;
+  /**
+   * カラオケ字幕にするときの「話し終えた所の色」。入れると、言葉の時刻があればそれに合わせ、
+   * 無ければ行の長さに合わせて同じ速さで塗る（`model/karaoke.ts`）。
+   */
+  karaokeColor?: string;
 }
+
+/** 時刻が無いとき、行の尺のうち何割で塗り終えるか。最後まで塗り終えた姿を少し見せておく。 */
+const KARAOKE_SPAN = 0.9;
 
 /** 読み込んだ話者名を、この道具の話者（'1' '2'）へ割り当てる。出てきた順。 */
 export function mapSpeakers(cues: Cue[], slots: readonly string[]): Map<string, string> {
@@ -611,13 +620,18 @@ export function buildCaptionClips(
   for (const cue of cues) {
     const speaker = cue.speaker ? (speakers.get(cue.speaker) ?? null) : null;
     const color = speaker && options.speakerColors ? options.speakerColors[speaker] : undefined;
+    const duration = Math.max(0.1, cue.end - cue.start);
+    const karaoke = options.karaokeColor
+      ? { color: options.karaokeColor, words: karaokeWords(cue.words, cue.start), span: duration * KARAOKE_SPAN }
+      : null;
     const clip: Clip = {
-      ...textClip(track.id, cue.start, Math.max(0.1, cue.end - cue.start), {
+      ...textClip(track.id, cue.start, duration, {
         ...options.style,
         ...(color ? { color } : {}),
         content: cue.text,
         role: 'caption',
         speaker,
+        ...(karaoke ? { karaoke } : {}),
       }),
       id: uid('clip'),
     };
