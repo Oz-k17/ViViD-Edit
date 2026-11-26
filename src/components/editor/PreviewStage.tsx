@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { pinchScale } from '../../model/pinch';
 import { exporter } from '../../engine/exporter';
 import { formatTime } from '../../engine/media';
 import { player } from '../../engine/player';
@@ -56,7 +57,10 @@ type Drag =
   | { kind: 'move'; id: string; startX: number; startY: number; originX: number; originY: number }
   /** 完了後の「切り抜きを置く枠」。動かすのと、四隅で大きさを変えるのと。 */
   | { kind: 'cropDest'; id: string; handle: CropHandle | null; startX: number; startY: number; origin: Rect }
-  | { kind: 'cropSelect'; id: string; source: Rect; drag: CropDrag };
+  | { kind: 'cropSelect'; id: string; source: Rect; drag: CropDrag }
+  /** 指 2 本でつまんで、大きさを変える（iPad。パソコンのホイールと同じ）。位置は、つまみ始めた時のまま。 */
+  | { kind: 'pinch'; id: string; startDist: number; originScale: number; originX: number; originY: number };
+
 
 /** 端や中心へ吸着させる距離（画角の幅に対する割合）。 */
 const SNAP_RATIO = 0.012;
@@ -77,6 +81,12 @@ export function PreviewStage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const boundsRef = useRef<Map<string, Rect>>(new Map());
   const dragRef = useRef<Drag>({ kind: 'none' });
+  /** 画面に触れている指（画面の座標）。2 本になったらピンチにする。 */
+  const touchesRef = useRef(new Map<number, { x: number; y: number }>());
+  const fingerGap = () => {
+    const [a, b] = [...touchesRef.current.values()];
+    return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
+  };
   const [guides, setGuides] = useState(true);
 
   // 描画ループから最新値を読むための箱（RAF ごとに購読し直したくない）
@@ -273,6 +283,33 @@ export function PreviewStage() {
   };
 
   const onPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (event.pointerType === 'touch') {
+      touchesRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (touchesRef.current.size >= 2) {
+        // 2 本目の指: 動かしていたクリップ（無ければ選んでいるクリップ）を、つまんで大きさを変える。範囲指定中は使わない。
+        const drag = dragRef.current;
+        const id = drag.kind === 'move' ? drag.id : selection[0];
+        const clip = id && !cropTarget ? sequence.clips.find((c) => c.id === id) : undefined;
+        const gap = fingerGap();
+        if (clip && touchesRef.current.size === 2 && gap > 0) {
+          // 1 本目の指でずれた分は戻す（つまむつもりで動かしたのではないので）。
+          // キーフレームのある値は、いまの時刻の値から始める。
+          const now = player.time;
+          const originX = drag.kind === 'move' ? drag.originX : animValueAt(clip, 'x', now);
+          const originY = drag.kind === 'move' ? drag.originY : animValueAt(clip, 'y', now);
+          dragRef.current = { kind: 'pinch', id: clip.id, startDist: gap, originScale: animValueAt(clip, 'scale', now), originX, originY };
+          event.currentTarget.setPointerCapture(event.pointerId);
+          apply(
+            (seq) => ({
+              ...seq,
+              clips: seq.clips.map((c) => (c.id === clip.id ? { ...c, ...writeAnimatedMany(c, { x: originX, y: originY }, now) } : c)),
+            }),
+            `scale:${clip.id}`,
+          );
+        }
+        return;
+      }
+    }
     const point = toSequenceCoords(event);
     const time = player.time;
 
@@ -318,8 +355,26 @@ export function PreviewStage() {
   };
 
   const onPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (event.pointerType === 'touch' && touchesRef.current.has(event.pointerId)) {
+      touchesRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    }
     const drag = dragRef.current;
     if (drag.kind === 'none') return;
+    if (drag.kind === 'pinch') {
+      if (touchesRef.current.size < 2) return;
+      const scale = pinchScale(drag.originScale, drag.startDist, fingerGap());
+      apply(
+        (seq) => ({
+          ...seq,
+          // キーフレームのある値は、いまの時刻の点として書く（形を壊さない）。
+          clips: seq.clips.map((c) =>
+            c.id === drag.id ? { ...c, ...writeAnimatedMany(c, { scale, x: drag.originX, y: drag.originY }, player.time) } : c,
+          ),
+        }),
+        `scale:${drag.id}`,
+      );
+      return;
+    }
     const point = toSequenceCoords(event);
 
     if (drag.kind === 'cropSelect') {
@@ -381,6 +436,7 @@ export function PreviewStage() {
   };
 
   const endDrag = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    touchesRef.current.delete(event.pointerId);
     const drag = dragRef.current;
     if (drag.kind !== 'none' && event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
