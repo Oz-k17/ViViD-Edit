@@ -1741,6 +1741,32 @@ hr {
   height: 22px;
   border-bottom: 0.5px solid var(--ios-separator);
   background: var(--bg-panel);
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+}
+
+/* 段を足す（見出しの列のいちばん上）。小さく、でも指で押せる高さは見出しの行いっぱいに。 */
+.tl-add-track {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 20px;
+  min-height: 0;
+  padding: 0 6px;
+  font-size: 11px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim, var(--text));
+}
+
+.tl-add-track:hover {
+  background: var(--bg-raised);
+  color: var(--text);
+}
+
+.tl-remove-track {
+  opacity: 0.6;
 }
 
 /* 黒い箱を並べず、地に馴染ませる。種類は左の色帯だけで見分ける。 */

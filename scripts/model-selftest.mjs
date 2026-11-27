@@ -2214,6 +2214,29 @@ eq('空文字', wrap('', 10), ['']);
   }
 }
 
+{
+  // タイムラインの段を足す・空の段を消す
+  const T = await import('../src/model/tracks.ts');
+  const F = await import('../src/model/factory.ts');
+  let seq = F.createSequence();
+  const added = T.appendTrack(seq, 'video');
+  seq = added.sequence;
+  eq('映像の段を足すと V3（並びの最後＝いちばん上に重なる）', [seq.tracks.at(-1).name, seq.tracks.at(-1).id === added.trackId], ['V3', true]);
+  seq = T.appendTrack(seq, 'text').sequence;
+  seq = T.appendTrack(seq, 'audio').sequence;
+  eq('テロップは T2・音は A3', seq.tracks.slice(-2).map((t) => t.name), ['T2', 'A3']);
+  const v2 = seq.tracks.find((t) => t.name === 'V2');
+  seq = T.removeEmptyTrack(seq, v2.id);
+  eq('途中を消しても、次の名前は重ならない（V1・V3 → V4）', T.appendTrack(seq, 'video').sequence.tracks.filter((t) => t.kind === 'video').map((t) => t.name), ['V1', 'V3', 'V4']);
+  const v1 = seq.tracks.find((t) => t.name === 'V1');
+  const withClip = { ...seq, clips: [{ id: 'c', trackId: v1.id, start: 0, duration: 1 }] };
+  check('クリップのある段は消せない（そのまま）', T.removeEmptyTrack(withClip, v1.id) === withClip && !T.trackRemovable(withClip, v1.id).ok);
+  const t1 = seq.tracks.find((t) => t.name === 'T1');
+  const t2 = seq.tracks.find((t) => t.name === 'T2');
+  const oneText = T.removeEmptyTrack(seq, t2.id);
+  check('種類ごとの最後の 1 段は消せない', T.removeEmptyTrack(oneText, t1.id) === oneText && /最後の 1 つ/.test(T.trackRemovable(oneText, t1.id).reason));
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

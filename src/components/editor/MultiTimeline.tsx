@@ -15,6 +15,7 @@ import {
 } from '../../model/ops';
 import { clipFromAsset, uid } from '../../model/factory';
 import { nestClips, unnestClips } from '../../model/nest';
+import { appendTrack, removeEmptyTrack, trackRemovable } from '../../model/tracks';
 import { clipEnd, previewText, type Clip, type Sequence, type Track } from '../../model/types';
 import { shortcutLabel, useApp, useShortcutHint } from '../../store/app';
 import { useEditor } from '../../store/editor';
@@ -288,6 +289,7 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
   }, []);
 
   const tracks = useMemo(() => displayTracks(sequence), [sequence]);
+  const [addMenu, setAddMenu] = useState<{ x: number; y: number } | null>(null);
   const duration = Math.max(sequenceDuration(sequence), 12);
   // 拡大縮小のあいだは、クリップの「滑る」動き（詰める・ずらすときの演出）を止める。
   // 全クリップの位置と幅が一度に変わるので、動かすと数百個を毎コマ並べ直すことになり、固まる。
@@ -657,7 +659,20 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
       <RowScaleContext.Provider value={rowScale}>
       <div className="tl-body">
         <div className="tl-heads">
-          <div className="tl-head-spacer" />
+          <div className="tl-head-spacer">
+            {/* 段（トラック）を足す。映像の段は、いちばん上に重なる。 */}
+            <button
+              type="button"
+              className="tl-add-track"
+              title="段（トラック）を足す"
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                setAddMenu({ x: r.left, y: r.bottom + 2 });
+              }}
+            >
+              <Icon name="plus" size={12} label="段を足す" />段
+            </button>
+          </div>
           {tracks.map((track) => (
             <TrackHead key={track.id} track={track} compact={compact} />
           ))}
@@ -709,12 +724,34 @@ export function MultiTimeline({ pps, setPps, onPickTransition, compact = false }
       </div>
       </RowScaleContext.Provider>
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems()} onClose={closeMenu} />}
+      {addMenu && (
+        <ContextMenu
+          x={addMenu.x}
+          y={addMenu.y}
+          onClose={() => setAddMenu(null)}
+          items={(
+            [
+              ['video', '映像の段を足す（いちばん上に重なる）'],
+              ['text', 'テロップの段を足す'],
+              ['audio', '音の段を足す'],
+            ] as const
+          ).map(([kind, label]) => ({
+            label,
+            onSelect: () => {
+              apply((seq) => appendTrack(seq, kind).sequence);
+              setAddMenu(null);
+            },
+          }))}
+        />
+      )}
     </div>
   );
 }
 
 function TrackHead({ track, compact }: { track: Track; compact: boolean }) {
-  const { apply } = useEditor();
+  const { apply, sequence } = useEditor();
+  // 足した段が空なら、消せる（クリップのある段・種類ごとの最後の 1 段は消せない）。
+  const removable = trackRemovable(sequence, track.id).ok;
   const rowScale = useContext(RowScaleContext);
   const patch = (changes: Partial<Track>) =>
     apply((seq) => ({ ...seq, tracks: seq.tracks.map((t) => (t.id === track.id ? { ...t, ...changes } : t)) }));
@@ -741,6 +778,11 @@ function TrackHead({ track, compact }: { track: Track; compact: boolean }) {
             onClick={() => patch({ muted: !track.muted })}
           >
             {track.muted ? <MuteIcon /> : <SoundIcon />}
+          </button>
+        )}
+        {removable && (
+          <button type="button" className="tl-remove-track" title="この段を消す（空の段だけ）" onClick={() => apply((seq) => removeEmptyTrack(seq, track.id))}>
+            <Icon name="xmark" size={12} label={`${track.name} の段を消す`} />
           </button>
         )}
       </div>
