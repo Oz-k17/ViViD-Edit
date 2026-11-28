@@ -35,7 +35,10 @@ let package = Package(
                 .landscapeLeft
             ],
             capabilities: [
-                .photoLibraryAdd(purposeString: "書き出した動画をカメラロールに保存します。")
+                .photoLibraryAdd(purposeString: "書き出した動画をカメラロールに保存します。"),
+                // 素材パネルの「録画」で、カメラの映像とマイクの音を録って素材に入れるため。
+                .camera(purposeString: "録画で、カメラの映像を素材として録ります。"),
+                .microphone(purposeString: "録画で、マイクの音を素材として録ります。")
             ]
         )
     ],

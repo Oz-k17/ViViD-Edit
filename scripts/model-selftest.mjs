@@ -2237,6 +2237,15 @@ eq('空文字', wrap('', 10), ['']);
   check('種類ごとの最後の 1 段は消せない', T.removeEmptyTrack(oneText, t1.id) === oneText && /最後の 1 つ/.test(T.trackRemovable(oneText, t1.id).reason));
 }
 
+{
+  // 録画: 入れ物の選び方と、ファイル名
+  const R = await import('../src/engine/recorder.ts');
+  eq('MP4 が使えれば MP4（Safari・iPad）', R.pickRecordType((m) => m.startsWith('video/mp4'))?.ext, 'mp4');
+  eq('MP4 が無ければ WebM（Chromium）', R.pickRecordType((m) => m.startsWith('video/webm'))?.mime, 'video/webm;codecs=vp9,opus');
+  eq('どれも無ければ null', R.pickRecordType(() => false), null);
+  eq('名前に種類と日時', [R.recordingName('camera', 'mp4', new Date(2026, 10, 28, 9, 5, 7)), R.recordingName('screen', 'webm', new Date(2026, 0, 2, 3, 4, 5))], ['カメラ録画_20261128-090507.mp4', '画面録画_20260102-030405.webm']);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed += 1;

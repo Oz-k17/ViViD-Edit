@@ -16,6 +16,7 @@ import { startAssetDrag } from './assetDrag';
 import { BinTree, type BinSelection } from './BinTree';
 import { LabelDot, LabelFilterBar, NoteBadge } from './LabelControls';
 import { NasBrowser } from './NasBrowser';
+import { RecordDialog } from './RecordDialog';
 import { EmptyHint, Panel } from '../ui';
 import { Icon } from '../Icon';
 
@@ -115,6 +116,7 @@ export function MediaPanel() {
     setShown(CHUNK);
   }, [folder, query, sortKey, direction, labelFilter]);
 
+  const [recordingOpen, setRecordingOpen] = useState(false);
   const handleFiles = async (files: FileList | File[]) => {
     setBusy(true);
     setError(null);
@@ -195,6 +197,9 @@ export function MediaPanel() {
           >
             NAS
           </button>
+          <button type="button" className="ghost" title="カメラ・画面を録って、素材に入れる" onClick={() => setRecordingOpen(true)} disabled={busy}>
+            録画
+          </button>
           <button type="button" className="ghost" onClick={() => inputRef.current?.click()} disabled={busy}>
             {busy ? '読込中…' : '追加'}
           </button>
@@ -202,6 +207,7 @@ export function MediaPanel() {
       }
     >
       {browsing && <NasBrowser onClose={() => setBrowsing(false)} />}
+      {recordingOpen && <RecordDialog onClose={() => setRecordingOpen(false)} onRecorded={(file) => handleFiles([file])} />}
       <input
         ref={inputRef}
         type="file"
